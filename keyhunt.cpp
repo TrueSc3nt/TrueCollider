@@ -1538,7 +1538,7 @@ int main(int argc, char **argv)	{
 				range_start = range_low.GetBase16();
 				range_end = range_high.GetBase16();
 				uint64_t range_size = range_high.GetInt64() - range_low.GetInt64();
-				if(N_SEQUENTIAL_MAX > range_size) {
+				if(FLAGMODE != MODE_BSGS && N_SEQUENTIAL_MAX > range_size) {
 					uint64_t rounded = (range_size / 1024) * 1024;
 					if(rounded < 1024) rounded = 1024;
 					N_SEQUENTIAL_MAX = rounded;
