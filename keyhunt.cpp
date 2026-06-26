@@ -67,6 +67,7 @@ static int rand_r(unsigned int *seed) {
 #define MODE_MNEMONIC 7
 #define MODE_POETRY 8
 #define MODE_BRAINWALLET 9
+#define MODE_PUB2ADDR 10
 
 #define SEARCH_UNCOMPRESS 0
 #define SEARCH_COMPRESS 1
@@ -213,6 +214,7 @@ DWORD WINAPI thread_process(LPVOID vargp);
 DWORD WINAPI thread_process_mnemonic(LPVOID vargp);
 DWORD WINAPI thread_process_poetry(LPVOID vargp);
 DWORD WINAPI thread_process_brainwallet(LPVOID vargp);
+DWORD WINAPI thread_process_pub2addr(LPVOID vargp);
 DWORD WINAPI thread_process_bsgs(LPVOID vargp);
 DWORD WINAPI thread_process_bsgs_backward(LPVOID vargp);
 DWORD WINAPI thread_process_bsgs_both(LPVOID vargp);
@@ -227,6 +229,7 @@ void *thread_process(void *vargp);
 void *thread_process_mnemonic(void *vargp);
 void *thread_process_poetry(void *vargp);
 void *thread_process_brainwallet(void *vargp);
+void *thread_process_pub2addr(void *vargp);
 void *thread_process_bsgs(void *vargp);
 void *thread_process_bsgs_backward(void *vargp);
 void *thread_process_bsgs_both(void *vargp);
@@ -251,7 +254,7 @@ char *bit_range_str_min;
 char *bit_range_str_max;
 
 const char *bsgs_modes[5] = {"sequential","backward","both","random","dance"};
-const char *modes[10] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet"};
+const char *modes[11] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr"};
 const char *cryptos[3] = {"btc","eth","all"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
 const char *searchmodes[7] = {"sequential","random","chaos","gravity","spiral","reverse","auto"};
@@ -1356,7 +1359,7 @@ int main(int argc, char **argv)	{
 				printf("[+] Matrix screen\n");
 			break;
 			case 'm':
-				switch(indexOf(optarg,modes,10)) {
+				switch(indexOf(optarg,modes,11)) {
 					case MODE_XPOINT: //xpoint
 						FLAGMODE = MODE_XPOINT;
 						printf("[+] Mode xpoint\n");
@@ -1402,6 +1405,12 @@ int main(int argc, char **argv)	{
 					case MODE_BRAINWALLET:
 						FLAGMODE = MODE_BRAINWALLET;
 						printf("[+] Mode brainwallet\n");
+					break;
+					case MODE_PUB2ADDR:
+						FLAGMODE = MODE_PUB2ADDR;
+						FLAGSEARCHMODE = SEARCHMODE_RANDOM;
+						printf("[+] Mode pubkey2addr (random pubkey->address search)\n");
+						printf("[+] Defaulting to -x random\n");
 					break;
 					default:
 						fprintf(stderr,"[E] Unknow mode value %s\n",optarg);
@@ -1623,7 +1632,7 @@ int main(int argc, char **argv)	{
 		fileName =(char*) default_fileName;
 	}
 	
-	if(FLAGMODE == MODE_ADDRESS && FLAGCRYPTO == CRYPTO_NONE) {	//When none crypto is defined the default search is for Bitcoin
+	if((FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_PUB2ADDR) && FLAGCRYPTO == CRYPTO_NONE) {	//When none crypto is defined the default search is for Bitcoin
 		FLAGCRYPTO = CRYPTO_BTC;
 		printf("[+] Setting search for btc adddress\n");
 	}
@@ -1755,6 +1764,7 @@ int main(int argc, char **argv)	{
 			case MODE_MNEMONIC:
 			case MODE_POETRY:
 			case MODE_BRAINWALLET:
+			case MODE_PUB2ADDR:
 				if(!readFileAddress(fileName))	{
 					fprintf(stderr,"[E] Unenexpected error\n");
 					exit(EXIT_FAILURE);
@@ -2985,6 +2995,9 @@ int main(int argc, char **argv)	{
 				case MODE_BRAINWALLET:
 					tid[j] = CreateThread(NULL, 0, thread_process_brainwallet, (void*)tt, 0, &s);
 				break;
+				case MODE_PUB2ADDR:
+					tid[j] = CreateThread(NULL, 0, thread_process_pub2addr, (void*)tt, 0, &s);
+				break;
 #else
 				case MODE_ADDRESS:
 				case MODE_XPOINT:
@@ -3005,6 +3018,9 @@ int main(int argc, char **argv)	{
 				break;
 				case MODE_BRAINWALLET:
 					s = pthread_create(&tid[j],NULL,thread_process_brainwallet,(void *)tt);
+				break;
+				case MODE_PUB2ADDR:
+					s = pthread_create(&tid[j],NULL,thread_process_pub2addr,(void *)tt);
 				break;
 #endif
 			}
@@ -3865,6 +3881,88 @@ void *thread_process_brainwallet(void *vargp) {
 			printf("\r[Thread %d] Brainwallet: %s (%d words, %llu tested)... ",
 				thread_number, passphrase, word_count, (unsigned long long)steps[thread_number]);
 			fflush(stdout);
+		}
+	}
+	return NULL;
+}
+
+
+#if defined(_WIN64) && !defined(__CYGWIN__)
+DWORD WINAPI thread_process_pub2addr(LPVOID vargp) {
+#else
+void *thread_process_pub2addr(void *vargp) {
+#endif
+	struct tothread *tt;
+	int thread_number, continue_flag = 1, r;
+	Point publickey;
+	uint8_t addr_hash[20];
+	char found_address[64];
+	tt = (struct tothread *)vargp;
+	thread_number = tt->nt;
+	free(tt);
+	unsigned int thread_seed = (unsigned int)(time(NULL) ^ (thread_number * 7919));
+	Int key_mpz;
+
+	while(continue_flag) {
+		key_mpz.Rand(&n_range_start, &n_range_end);
+
+		publickey = secp->ComputePublicKey(&key_mpz);
+
+		if(FLAGCRYPTO == CRYPTO_ETH) {
+			generate_binaddress_eth(publickey, addr_hash);
+			snprintf(found_address, sizeof(found_address), "0x");
+			for(int i = 0; i < 20; i++) {
+				snprintf(found_address + 2 + i*2, 3, "%02x", addr_hash[i]);
+			}
+		}
+		else {
+			secp->GetHash160(P2PKH, true, publickey, addr_hash);
+			rmd160toaddress_dst((char*)addr_hash, found_address);
+		}
+
+		r = bf_check(&bf_filter, addr_hash, 20);
+		if(r) {
+			r = searchbinary(addressTable, (char*)addr_hash, N);
+			if(r) {
+				char *hextemp = key_mpz.GetBase16();
+				printf("\n[+] PUBKEY2ADDR FOUND!\n");
+				printf("[+] Private Key (hex): %s\n", hextemp);
+				if(FLAGCRYPTO == CRYPTO_ETH) {
+					printf("[+] ETH Address: %s\n", found_address);
+				}
+				else {
+					char pubkey_hex[256];
+					secp->GetPublicKeyHex(true, publickey, pubkey_hex);
+					printf("[+] Public Key: %s\n", pubkey_hex);
+					printf("[+] BTC Address: %s\n", found_address);
+				}
+#if defined(_WIN64) && !defined(__CYGWIN__)
+				WaitForSingleObject(write_keys, INFINITE);
+#else
+				pthread_mutex_lock(&write_keys);
+#endif
+				FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+				if(f) {
+					fprintf(f, "Private Key: %s\nAddress: %s\n", hextemp, found_address);
+					fclose(f);
+				}
+#if defined(_WIN64) && !defined(__CYGWIN__)
+				ReleaseMutex(write_keys);
+#else
+				pthread_mutex_unlock(&write_keys);
+#endif
+				free(hextemp);
+				notify_key_found(&key_mpz);
+				return NULL;
+			}
+		}
+
+		steps[thread_number]++;
+		if(FLAGQUIET == 0 && steps[thread_number] % 100 == 0) {
+			char *hextemp = key_mpz.GetBase16();
+			printf("\r[Thread %d] Key: %s -> %s     \r", thread_number, hextemp, found_address);
+			fflush(stdout);
+			free(hextemp);
 		}
 	}
 	return NULL;
@@ -7180,7 +7278,10 @@ void menu() {
 	printf("             and check against target addresses.\n");
 	printf("  brainwallet  SHA256 hash passphrases from wordlist to derive private keys.\n");
 	printf("             Tests single words, multi-word combos, and mutations.\n");
-	printf("             Wordlist file: tests/brainwalletwords.txt\n\n");
+	printf("             Wordlist file: tests/brainwalletwords.txt\n");
+	printf("  pubkey2addr  Generate random private keys, derive address, check against\n");
+	printf("             target file. Uses -x random by default. Works with BTC and ETH.\n");
+	printf("             Example: keyhunt -m pubkey2addr -f btc_target.txt -t 4\n\n");
 
 	printf("BRAINWALLET OPTIONS (-m brainwallet):\n");
 	printf("  -w count   Word count: 1, 2, 3, 6, 9, 12, 15, 18, 21, 24, or 0 for random.\n");
@@ -7830,6 +7931,7 @@ bool readFileAddress(char *fileName)	{
 			case MODE_MNEMONIC:
 			case MODE_POETRY:
 			case MODE_BRAINWALLET:
+			case MODE_PUB2ADDR:
 				return forceReadFileAddress(fileName);
 			break;
 			case MODE_XPOINT:
