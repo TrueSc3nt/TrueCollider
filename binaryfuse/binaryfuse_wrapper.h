@@ -59,9 +59,9 @@ static inline int bf_add(struct binaryfuse_wrapper *bf, const void *buffer, int 
 }
 
 static inline int bf_build(struct binaryfuse_wrapper *bf) {
-    if (bf->count == 0) {
-        bf->count = 1;
-        bf->keys[0] = 0;
+    if (bf->count < 100) {
+        bf->use_bloom_fallback = 1;
+        return -1;
     }
     if (!binary_fuse8_allocate(bf->count, &bf->filter)) {
         bf->use_bloom_fallback = 1;

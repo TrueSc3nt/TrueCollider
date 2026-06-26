@@ -1537,6 +1537,13 @@ int main(int argc, char **argv)	{
 				}
 				range_start = range_low.GetBase16();
 				range_end = range_high.GetBase16();
+				uint64_t range_size = range_high.GetInt64() - range_low.GetInt64();
+				if(N_SEQUENTIAL_MAX > range_size) {
+					uint64_t rounded = (range_size / 1024) * 1024;
+					if(rounded < 1024) rounded = 1024;
+					N_SEQUENTIAL_MAX = rounded;
+					printf("[+] Auto-set N to %" PRIu64 " to fit range\n", N_SEQUENTIAL_MAX);
+				}
 				printf("[+] Stripped %d leading zero bytes\n", strip_bytes);
 				printf("[+] Effective range: 0x%s to 0x%s\n", range_start, range_end);
 				printf("[+] Searching %d-bit keys with %d zero bytes stripped\n", bitrange, strip_bytes);
@@ -8498,7 +8505,7 @@ bool forceReadFileXPoint(char *fileName)	{
 */
 
 int address_check(const void *buffer, int len) {
-	int r = address_check( buffer, len);
+	int r = bf_check(&bf_filter, buffer, len);
 	if(r == -1 && bf_filter.use_bloom_fallback) {
 		r = bloom_check(&bloom, buffer, len);
 	}
