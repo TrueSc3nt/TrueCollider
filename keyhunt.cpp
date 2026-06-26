@@ -1225,7 +1225,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSB:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:T:v:G:8:z:x:w:L:W")) != -1) {
+	while ((c = getopt(argc, argv, "deh6MqRSZ:B:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:T:v:G:8:z:x:w:L:W")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
@@ -1508,6 +1508,38 @@ int main(int argc, char **argv)	{
 				printf("[+] Timestamp: %ld (0x%s)\n", timestamp, range_start);
 				printf("[+] Range: 0x%s to 0x%s\n", range_start, range_end);
 				printf("[+] Searching ~4B keys around timestamp\n");
+			}
+			break;
+			case 'Z': {
+				int strip_bytes = strtol(optarg, NULL, 10);
+				if(strip_bytes < 1 || strip_bytes > 31) {
+					fprintf(stderr, "[E] Strip bytes must be 1-31\n");
+					exit(EXIT_FAILURE);
+				}
+				if(!FLAGBITRANGE) {
+					fprintf(stderr, "[E] -Z requires -b (bit range) to be set first\n");
+					exit(EXIT_FAILURE);
+				}
+				FLAGRANGE = 1;
+				FLAGBITRANGE = 0;
+				Int range_low, range_high;
+				int remaining_bits = bitrange - (strip_bytes * 8);
+				if(remaining_bits < 1) {
+					fprintf(stderr, "[E] Strip bytes exceeds bit range\n");
+					exit(EXIT_FAILURE);
+				}
+				range_low.SetInt32(1);
+				range_low.ShiftL(remaining_bits - 1);
+				range_high.SetInt32(1);
+				range_high.ShiftL(remaining_bits);
+				if(range_high.IsGreater(&secp->order)) {
+					range_high.Set(&secp->order);
+				}
+				range_start = range_low.GetBase16();
+				range_end = range_high.GetBase16();
+				printf("[+] Stripped %d leading zero bytes\n", strip_bytes);
+				printf("[+] Effective range: 0x%s to 0x%s\n", range_start, range_end);
+				printf("[+] Searching %d-bit keys with %d zero bytes stripped\n", bitrange, strip_bytes);
 			}
 			break;
 			case 'v':
@@ -7485,6 +7517,9 @@ void menu() {
 	printf("  -T timestamp Unix timestamp (seconds since epoch). Sets search range\n");
 	printf("               to ~4B keys centered around that timestamp value.\n");
 	printf("               Useful for puzzles where key was generated at a known time.\n");
+	printf("  -Z bytes     Strip N leading zero bytes from key (requires -b).\n");
+	printf("               Reduces search space for padded keys.\n");
+	printf("               Example: -b 72 -Z 6 strips 6 zero bytes, searches ~16M keys\n");
 	printf("  -n number    Sequential keys per cycle / BSGS baby-step table size\n");
 	printf("               Must be divisible by 1024 for BSGS mode\n");
 	printf("  -b bits      Bit range - only test keys with this many bits\n\n");
