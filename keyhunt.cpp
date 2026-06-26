@@ -1356,7 +1356,7 @@ int main(int argc, char **argv)	{
 				printf("[+] Matrix screen\n");
 			break;
 			case 'm':
-				switch(indexOf(optarg,modes,9)) {
+				switch(indexOf(optarg,modes,10)) {
 					case MODE_XPOINT: //xpoint
 						FLAGMODE = MODE_XPOINT;
 						printf("[+] Mode xpoint\n");
