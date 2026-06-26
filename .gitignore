@@ -1,0 +1,31 @@
+# Build artifacts
+*.o
+keyhunt
+keyhunt_nolto.o
+
+# Bloom filter files
+*.blm
+*.tbl
+
+# Data files
+data_*.dat
+
+# Found keys
+KEYFOUND*.txt
+
+# Test files
+*.txt
+!tests/bip39/*.txt
+!tests/poetry.txt
+!tests/brainwalletwords.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
