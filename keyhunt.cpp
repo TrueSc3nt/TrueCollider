@@ -721,8 +721,11 @@ void get_next_key_auto(Int *result, Int *range_start, Int *range_end) {
 	if(auto_cycles >= AUTO_PHASE_CYCLES[auto_phase]) {
 		auto_cycles = 0;
 		auto_phase = (auto_phase + 1) % 4;
-		const char *phase_names[] = {"SPIRAL", "CHAOS", "GRAVITY", "REVERSE"};
-		printf("[+] Auto: switching to %s phase\n", phase_names[auto_phase]);
+		if(FLAGQUIET == 0) {
+			const char *phase_names[] = {"SPIRAL", "CHAOS", "GRAVITY", "REVERSE"};
+			printf("\r[+] Auto: switching to %s phase                        \r", phase_names[auto_phase]);
+			fflush(stdout);
+		}
 	}
 
 	switch(auto_phase) {
@@ -766,7 +769,10 @@ void notify_key_found(Int *found_key) {
 	if(FLAGSEARCHMODE == SEARCHMODE_GRAVITY) {
 		gravity_center.Set(found_key);
 		gravity_found_count++;
-		printf("[+] Gravity: key found, centering search around new key\n");
+		if(FLAGQUIET == 0) {
+			printf("\r[+] Gravity: key found, centering search around new key   \r");
+			fflush(stdout);
+		}
 	}
 }
 
