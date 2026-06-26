@@ -21,6 +21,7 @@ struct binaryfuse_wrapper {
     uint32_t count;
     int state;
     long double error;
+    int use_bloom_fallback;
 };
 
 static inline void bf_init(struct binaryfuse_wrapper *bf, uint32_t expected, long double error) {
@@ -63,9 +64,12 @@ static inline int bf_build(struct binaryfuse_wrapper *bf) {
         bf->keys[0] = 0;
     }
     if (!binary_fuse8_allocate(bf->count, &bf->filter)) {
+        bf->use_bloom_fallback = 1;
         return -1;
     }
     if (!binary_fuse8_populate(bf->keys, bf->count, &bf->filter)) {
+        binary_fuse8_free(&bf->filter);
+        bf->use_bloom_fallback = 1;
         return -1;
     }
     free(bf->keys);
@@ -76,6 +80,7 @@ static inline int bf_build(struct binaryfuse_wrapper *bf) {
 
 static inline int bf_check(struct binaryfuse_wrapper *bf, const void *buffer, int len) {
     if (bf->state != BF_STATE_BUILT) return -1;
+    if (bf->use_bloom_fallback) return -1;
     uint64_t h = 0;
     const uint8_t *p = (const uint8_t *)buffer;
     if (len >= 8) {

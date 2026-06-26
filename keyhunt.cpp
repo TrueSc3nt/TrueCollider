@@ -203,6 +203,8 @@ bool processOneVanity();
 
 bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom);
 
+int address_check(const void *buffer, int len);
+
 void writeFileIfNeeded(const char *fileName);
 
 void calcualteindex(int i,Int *key);
@@ -1223,7 +1225,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSXB:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:v:G:8:z:x:w:L:W")) != -1) {
+	while ((c = getopt(argc, argv, "deh6MqRSB:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:T:v:G:8:z:x:w:L:W")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
@@ -1430,11 +1432,6 @@ int main(int argc, char **argv)	{
 				FLAGRANDOM = 1;
 				FLAGBSGSMODE =  3;
 			break;
-			case 'X':
-				printf("[+] Random key generation enabled for all modes\n");
-				FLAGSEARCHMODE = SEARCHMODE_RANDOM;
-				FLAGRANDOM = 1;
-			break;
 			case 'r':
 				if(optarg != NULL)	{
 					stringtokenizer(optarg,&t);
@@ -1493,6 +1490,25 @@ int main(int argc, char **argv)	{
 					NTHREADS = 1;
 				}
 				printf((NTHREADS > 1) ? "[+] Threads : %u\n": "[+] Thread : %u\n",NTHREADS);
+			break;
+			case 'T': {
+				long timestamp = strtol(optarg, NULL, 10);
+				if(timestamp <= 0) {
+					fprintf(stderr, "[E] Invalid timestamp: %s\n", optarg);
+					exit(EXIT_FAILURE);
+				}
+				FLAGRANGE = 1;
+				Int ts_start, ts_end, ts_window;
+				ts_start.SetInt64((uint64_t)timestamp);
+				ts_window.SetInt64(0x100000000ULL);
+				ts_end.Set(&ts_start);
+				ts_end.Add(&ts_window);
+				range_start = ts_start.GetBase16();
+				range_end = ts_end.GetBase16();
+				printf("[+] Timestamp: %ld (0x%s)\n", timestamp, range_start);
+				printf("[+] Range: 0x%s to 0x%s\n", range_start, range_end);
+				printf("[+] Searching ~4B keys around timestamp\n");
+			}
 			break;
 			case 'v':
 				FLAGVANITY = 1;
@@ -3368,7 +3384,7 @@ void *thread_process_minikeys(void *vargp)	{
 					secp->GetHash160(P2PKH,false,publickey[0],publickey[1],publickey[2],publickey[3],(uint8_t*)publickeyhashrmd160_uncompress[0],(uint8_t*)publickeyhashrmd160_uncompress[1],(uint8_t*)publickeyhashrmd160_uncompress[2],(uint8_t*)publickeyhashrmd160_uncompress[3]);
 					
 					for(k = 0; k < 4; k++)	{
-						r = bf_check(&bf_filter,publickeyhashrmd160_uncompress[k],20);
+						r = address_check(publickeyhashrmd160_uncompress[k],20);
 						if(r) {
 							r = searchbinary(addressTable,publickeyhashrmd160_uncompress[k],N);
 							if(r) {
@@ -3495,7 +3511,7 @@ void *thread_process_mnemonic(void *vargp) {
 					rmd160toaddress_dst((char*)addr_hash, found_address);
 				}
 				
-				r = bf_check(&bf_filter, addr_hash, 20);
+				r = address_check( addr_hash, 20);
 				if(r) {
 					r = searchbinary(addressTable, (char*)addr_hash, N);
 					if(r) {
@@ -3648,7 +3664,7 @@ void *thread_process_poetry(void *vargp) {
 				uint8_t rmd160hash[20];
 				secp->GetHash160(P2PKH, true, publickey, rmd160hash);
 				
-				int r = bf_check(&bf_filter, rmd160hash, 20);
+				int r = address_check( rmd160hash, 20);
 				if(r) {
 					r = searchbinary(addressTable, (char*)rmd160hash, N);
 					if(r) {
@@ -3753,7 +3769,7 @@ static int brainwallet_check(const char *passphrase, uint8_t *privkey_data, int 
 		uint8_t rmd160hash[20];
 		secp->GetHash160(P2PKH, true, publickey, rmd160hash);
 
-		int r = bf_check(&bf_filter, rmd160hash, 20);
+		int r = address_check( rmd160hash, 20);
 		if(r) {
 			r = searchbinary(addressTable, (char*)rmd160hash, N);
 			if(r) {
@@ -3924,7 +3940,7 @@ void *thread_process_pub2addr(void *vargp) {
 			rmd160toaddress_dst((char*)addr_hash, found_address);
 		}
 
-		r = bf_check(&bf_filter, addr_hash, 20);
+		r = address_check( addr_hash, 20);
 		if(r) {
 			r = searchbinary(addressTable, (char*)addr_hash, N);
 			if(r) {
@@ -4269,7 +4285,7 @@ void *thread_process(void *vargp)	{
 									if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH){
 										if(FLAGENDOMORPHISM)	{
 											for(l = 0;l < 6; l++)	{
-												r = bf_check(&bf_filter,publickeyhashrmd160_endomorphism[l][k],MAXLENGTHADDRESS);
+												r = address_check(publickeyhashrmd160_endomorphism[l][k],MAXLENGTHADDRESS);
 												if(r) {
 													r = searchbinary(addressTable,publickeyhashrmd160_endomorphism[l][k],N);
 													if(r) {
@@ -4333,7 +4349,7 @@ void *thread_process(void *vargp)	{
 										}
 										else	{
 											for(l = 0;l < 2; l++)	{
-												r = bf_check(&bf_filter,publickeyhashrmd160_endomorphism[l][k],MAXLENGTHADDRESS);
+												r = address_check(publickeyhashrmd160_endomorphism[l][k],MAXLENGTHADDRESS);
 												if(r) {
 													r = searchbinary(addressTable,publickeyhashrmd160_endomorphism[l][k],N);
 													if(r) {
@@ -4358,7 +4374,7 @@ void *thread_process(void *vargp)	{
 									if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH)	{
 										if(FLAGENDOMORPHISM)	{
 											for(l = 6;l < 12; l++)	{	//We check the array from 6 to 12(excluded) because we save the uncompressed information there
-												r = bf_check(&bf_filter,publickeyhashrmd160_endomorphism[l][k],MAXLENGTHADDRESS);	//Check in Bloom filter
+												r = address_check(publickeyhashrmd160_endomorphism[l][k],MAXLENGTHADDRESS);	//Check in Bloom filter
 												if(r) {
 													r = searchbinary(addressTable,publickeyhashrmd160_endomorphism[l][k],N);		//Check in Array using Binary search
 													if(r) {
@@ -4403,7 +4419,7 @@ void *thread_process(void *vargp)	{
 											}
 										}
 										else	{
-											r = bf_check(&bf_filter,publickeyhashrmd160_uncompress[k],MAXLENGTHADDRESS);
+											r = address_check(publickeyhashrmd160_uncompress[k],MAXLENGTHADDRESS);
 											if(r) {
 												r = searchbinary(addressTable,publickeyhashrmd160_uncompress[k],N);
 												if(r) {
@@ -4422,7 +4438,7 @@ void *thread_process(void *vargp)	{
 								if(FLAGENDOMORPHISM)	{
 									for(k = 0; k < 4;k++)	{
 										for(l = 0;l < 6; l++)	{
-											r = bf_check(&bf_filter,publickeyhashrmd160_endomorphism[l][k],MAXLENGTHADDRESS);
+											r = address_check(publickeyhashrmd160_endomorphism[l][k],MAXLENGTHADDRESS);
 											if(r) {
 												r = searchbinary(addressTable,publickeyhashrmd160_endomorphism[l][k],N);
 												if(r) {												
@@ -4468,7 +4484,7 @@ void *thread_process(void *vargp)	{
 								}
 								else	{
 									for(k = 0; k < 4;k++)	{
-										r = bf_check(&bf_filter,publickeyhashrmd160_uncompress[k],MAXLENGTHADDRESS);
+										r = address_check(publickeyhashrmd160_uncompress[k],MAXLENGTHADDRESS);
 										if(r) {
 											r = searchbinary(addressTable,publickeyhashrmd160_uncompress[k],N);
 											if(r) {
@@ -4486,7 +4502,7 @@ void *thread_process(void *vargp)	{
 							for(k = 0; k < 4;k++)	{
 								if(FLAGENDOMORPHISM)	{
 									pts[(4*j)+k].x.Get32Bytes((unsigned char *)rawvalue);
-									r = bf_check(&bf_filter,rawvalue,MAXLENGTHADDRESS);
+									r = address_check(rawvalue,MAXLENGTHADDRESS);
 									if(r) {
 										r = searchbinary(addressTable,rawvalue,N);
 										if(r) {
@@ -4499,7 +4515,7 @@ void *thread_process(void *vargp)	{
 										}
 									}
 									endomorphism_beta[(j*4)+k].x.Get32Bytes((unsigned char *)rawvalue);
-									r = bf_check(&bf_filter,rawvalue,MAXLENGTHADDRESS);
+									r = address_check(rawvalue,MAXLENGTHADDRESS);
 									if(r) {
 										r = searchbinary(addressTable,rawvalue,N);
 										if(r) {
@@ -4514,7 +4530,7 @@ void *thread_process(void *vargp)	{
 									}
 									
 									endomorphism_beta2[(j*4)+k].x.Get32Bytes((unsigned char *)rawvalue);
-									r = bf_check(&bf_filter,rawvalue,MAXLENGTHADDRESS);
+									r = address_check(rawvalue,MAXLENGTHADDRESS);
 									if(r) {
 										r = searchbinary(addressTable,rawvalue,N);
 										if(r) {
@@ -4529,7 +4545,7 @@ void *thread_process(void *vargp)	{
 								}
 								else	{
 									pts[(4*j)+k].x.Get32Bytes((unsigned char *)rawvalue);
-									r = bf_check(&bf_filter,rawvalue,MAXLENGTHADDRESS);
+									r = address_check(rawvalue,MAXLENGTHADDRESS);
 									if(r) {
 										r = searchbinary(addressTable,rawvalue,N);
 										if(r) {
@@ -7466,6 +7482,9 @@ void menu() {
 	printf("RANGE:\n");
 	printf("  -r SR:EN     Hex range StartRange:EndRange\n");
 	printf("               EndRange optional (defaults to curve order)\n");
+	printf("  -T timestamp Unix timestamp (seconds since epoch). Sets search range\n");
+	printf("               to ~4B keys centered around that timestamp value.\n");
+	printf("               Useful for puzzles where key was generated at a known time.\n");
 	printf("  -n number    Sequential keys per cycle / BSGS baby-step table size\n");
 	printf("               Must be divisible by 1024 for BSGS mode\n");
 	printf("  -b bits      Bit range - only test keys with this many bits\n\n");
@@ -7508,9 +7527,6 @@ void menu() {
 
 	printf("THREADING & SEARCH PATTERNS:\n");
 	printf("  -t tn        Number of threads. Default: 1\n");
-	printf("  -X           Force random key generation for ANY mode.\n");
-	printf("               Enables pubkey2addr behavior in address, rmd160, xpoint,\n");
-	printf("               bsgs, vanity, minikeys, mnemonic, poetry, brainwallet.\n");
 	printf("  -x mode      Key generation / search pattern:\n");
 	printf("                 sequential - Linear walk from start to end of range\n");
 	printf("                 random     - Random key selection across full range\n");
@@ -7592,17 +7608,14 @@ void menu() {
 	printf("  keyhunt -m address -f targets.txt -b 40 -t 8\n");
 	printf("    Only test keys with 40 bits (for short-key puzzles)\n\n");
 
+	printf("  keyhunt -m address -f targets.txt -T 1609459200 -t 8\n");
+	printf("    Search around Jan 1 2021 timestamp (~4B keys range)\n\n");
+
+	printf("  keyhunt -m address -f targets.txt -T 1609459200 -b 32 -t 8\n");
+	printf("    Timestamp + bit range for tighter search window\n\n");
+
 	printf("  keyhunt -m pubkey2addr -f targets.txt -q -s 10 -t 4\n");
 	printf("    Quiet mode, stats every 10 seconds\n\n");
-
-	printf("  keyhunt -m address -f targets.txt -X -t 8\n");
-	printf("    Random key generation in address mode (same as pubkey2addr)\n\n");
-
-	printf("  keyhunt -m bsgs -f pubkeys.txt -X -t 8\n");
-	printf("    Random key generation for BSGS mode\n\n");
-
-	printf("  keyhunt -m rmd160 -f hashes.rmd -X -t 8\n");
-	printf("    Random key generation for RMD160 mode\n\n");
 
 	printf("===============================================================\n");
 	printf("  TrueCollider Search Modes + Binary Fuse Filters\n");
@@ -8114,10 +8127,12 @@ bool readFileAddress(char *fileName)	{
 			printf("[+] Building binary fuse filter from %" PRIu64 " cached keys... ", N);
 			fflush(stdout);
 			if(bf_build(&bf_filter) != 0) {
-				fprintf(stderr,"\n[E] error building binary fuse filter from cache\n");
-				return false;
+				printf("\n[!] Binary fuse failed for cached data, falling back to bloom filter\n");
+				bf_filter.use_bloom_fallback = 1;
 			}
-			printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
+			else {
+				printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
+			}
 		}
 	}
 	if(FLAGVANITY)	{
@@ -8229,10 +8244,13 @@ bool forceReadFileAddress(char *fileName)	{
 	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
 	fflush(stdout);
 	if(bf_build(&bf_filter) != 0) {
-		fprintf(stderr,"\n[E] error building binary fuse filter\n");
-		return false;
+		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		bf_filter.use_bloom_fallback = 1;
+		bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
 	}
-	printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
+	else {
+		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
+	}
 	return true;
 }
 
@@ -8303,7 +8321,7 @@ bool forceReadFileAddressEth(char *fileName)	{
 					i++;
 					validAddress = true;
 				}
-				break;
+					break;
 			}
 		}
 		if(!validAddress)	{
@@ -8316,10 +8334,12 @@ bool forceReadFileAddressEth(char *fileName)	{
 	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
 	fflush(stdout);
 	if(bf_build(&bf_filter) != 0) {
-		fprintf(stderr,"\n[E] error building binary fuse filter\n");
-		return false;
+		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		bf_filter.use_bloom_fallback = 1;
 	}
-	printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
+	else {
+		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
+	}
 	return true;
 }
 
@@ -8428,10 +8448,12 @@ bool forceReadFileXPoint(char *fileName)	{
 	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
 	fflush(stdout);
 	if(bf_build(&bf_filter) != 0) {
-		fprintf(stderr,"\n[E] error building binary fuse filter\n");
-		return false;
+		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		bf_filter.use_bloom_fallback = 1;
 	}
-	printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
+	else {
+		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
+	}
 	return true;
 }
 
@@ -8439,6 +8461,14 @@ bool forceReadFileXPoint(char *fileName)	{
 /*
 	I write this as a function because i have the same segment of code in 3 different functions
 */
+
+int address_check(const void *buffer, int len) {
+	int r = address_check( buffer, len);
+	if(r == -1 && bf_filter.use_bloom_fallback) {
+		r = bloom_check(&bloom, buffer, len);
+	}
+	return r;
+}
 
 bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom)	{
 	bool r = true;
