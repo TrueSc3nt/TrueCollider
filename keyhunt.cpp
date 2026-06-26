@@ -2000,8 +2000,19 @@ int main(int argc, char **argv)	{
 
 
 		if(n_range_diff.IsLower(&BSGS_N) )	{
-			fprintf(stderr,"[E] the given range is small\n");
-			exit(EXIT_FAILURE);
+			uint64_t max_n = n_range_diff.GetInt64();
+			max_n = (max_n / 1024) * 1024;
+			if(max_n < 1024) {
+				fprintf(stderr,"[E] the given range is too small for BSGS\n");
+				exit(EXIT_FAILURE);
+			}
+			BSGS_N.SetInt64(max_n);
+			bsgs_m = (uint64_t)sqrt((double)max_n);
+			bsgs_m = (bsgs_m / 1024) * 1024;
+			if(bsgs_m < 1024) bsgs_m = 1024;
+			BSGS_M.SetInt64(bsgs_m);
+			printf("[+] Auto-adjusted BSGS_N to %" PRIu64 " to fit range\n", max_n);
+			printf("[+] Auto-adjusted baby-step size to %" PRIu64 "\n", bsgs_m);
 		}
 		
 		/*
