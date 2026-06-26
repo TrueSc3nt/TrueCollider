@@ -1,6 +1,5 @@
 /*
-Develop by Alberto
-email: albertobsd@gmail.com
+Developed & Modified by TrueScent
 */
 
 #include <stdio.h>
@@ -143,7 +142,7 @@ char *raw_baseminikey = NULL;
 char *minikeyN = NULL;
 int minikey_n_limit;
 	
-const char *version = "0.3.1 Satoshi Quest + Collider Search Modes + Binary Fuse Filters";
+const char *version = "TrueCollider Search Modes + Binary Fuse Filters";
 
 #define CPU_GRP_SIZE 1024
 
@@ -1222,7 +1221,7 @@ int main(int argc, char **argv)	{
 	
 	
 	
-	printf("[+] Version %s, developed by AlbertoBSD\n",version);
+	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
 	while ((c = getopt(argc, argv, "deh6MqRSB:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:v:G:8:z:x:w:L:W")) != -1) {
 		switch(c) {
@@ -7252,8 +7251,8 @@ void sha256sse_23(uint8_t *src0, uint8_t *src1, uint8_t *src2, uint8_t *src3, ui
 void menu() {
 	printf("\n");
 	printf("===============================================================\n");
-	printf("  TrueCollider by Truescent\n");
-	printf("  Based on KeyHunt by AlbertoBSD\n");
+	printf("  TrueCollider Search Modes + Binary Fuse Filters\n");
+	printf("  Developed & Modified by TrueScent\n");
 	printf("===============================================================\n\n");
 	printf("USAGE:\n");
 	printf("  keyhunt -m <mode> [options]\n\n");
@@ -7392,11 +7391,14 @@ void menu() {
 	printf("  keyhunt -m brainwallet -w 3 -f targets.txt -t 8\n\n");
 	printf("  # Brainwallet random word count:\n");
 	printf("  keyhunt -m brainwallet -w 0 -f targets.txt -t 8\n\n");
+	printf("  # Random pubkey->address search (BTC):\n");
+	printf("  keyhunt -m pubkey2addr -f btc_targets.txt -t 8\n\n");
+	printf("  # Random pubkey->address search (ETH) with auto mode:\n");
+	printf("  keyhunt -m pubkey2addr -c eth -f eth_targets.txt -x auto -t 8\n\n");
 
 	printf("===============================================================\n");
-	printf("  TrueCollider by Truescent\n");
-	printf("  Based on KeyHunt by AlbertoBSD\n");
-	printf("  Thanks to AlbertoBSD for this amazing tool!\n\n");
+	printf("  TrueCollider Search Modes + Binary Fuse Filters\n");
+	printf("  Developed & Modified by TrueScent\n");
 	printf("  Donations:\n");
 	printf("    BTC:  1HmztBLDnwwaKAGbtALsYvCNBuoJYEic3h\n");
 	printf("    Tips to Iceland: bc1q39meky2mn5qjq704zz0nnkl0v7kj4uz6r529at\n");
