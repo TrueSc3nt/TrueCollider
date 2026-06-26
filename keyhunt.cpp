@@ -7257,144 +7257,173 @@ void menu() {
 	printf("USAGE:\n");
 	printf("  keyhunt -m <mode> [options]\n\n");
 
-	printf("SEARCH MODES (-m):\n");
-	printf("  address    Search for private keys that produce addresses in the target file.\n");
-	printf("             Input file can contain Bitcoin (base58) or ETH (0x...) addresses.\n");
-	printf("             This is the default mode.\n");
-	printf("  rmd160     Search for private keys matching target RIPEMD-160 hashes.\n");
-	printf("             Input file contains raw 40-char hex RMD160 hashes.\n");
-	printf("  xpoint     Search by matching x-coordinate of public keys.\n");
-	printf("             Input file contains 64 or 128-char hex public key x-coords.\n");
-	printf("  bsgs       Baby-Step Giant-Step mode for solving Crypto Riddle puzzles.\n");
-	printf("             Input file contains compressed or uncompressed public keys.\n");
-	printf("             Best for puzzles where the public key is known but the private key is not.\n");
-	printf("  vanity     Search for a specific vanity address pattern.\n");
-	printf("             Use -v to specify the target prefix (e.g. 1Cool).\n");
-	printf("  minikeys   Generate and test minikeys (short Bitcoin private keys).\n");
-	printf("  mnemonic   Generate random BIP39 mnemonics, derive keys, and check against\n");
-	printf("             target addresses. Supports all 10 BIP39 languages.\n");
-	printf("  poetry     Generate random poetry words, encode as hex private keys,\n");
-	printf("             and check against target addresses.\n");
+	printf("SEARCH MODES (-m):\n\n");
+
+	printf("  address      Search for private keys that produce addresses in target file.\n");
+	printf("               Input: Bitcoin (base58) or ETH (0x...) addresses.\n");
+	printf("               Default mode. Supports -c btc/eth, -l, -r, -x modes.\n\n");
+
+	printf("  pubkey2addr  Generate random private keys, derive BTC/ETH address, check\n");
+	printf("               against target file. Defaults to -x random.\n");
+	printf("               Input: BTC or ETH addresses (same format as address mode).\n\n");
+
+	printf("  rmd160       Search for private keys matching target RIPEMD-160 hashes.\n");
+	printf("               Input: raw 40-char hex RMD160 hashes.\n\n");
+
+	printf("  xpoint       Search by matching x-coordinate of public keys.\n");
+	printf("               Input: 64 or 128-char hex public key x-coordinates.\n\n");
+
+	printf("  bsgs         Baby-Step Giant-Step mode for solving Crypto Riddle puzzles.\n");
+	printf("               Input: compressed or uncompressed public keys.\n");
+	printf("               Uses 3-tier bloom filter for fast lookups.\n");
+	printf("               Supports all -x search patterns (chaos, gravity, etc.).\n\n");
+
+	printf("  vanity       Search for a specific vanity address prefix.\n");
+	printf("               Use -v to specify the target (e.g. 1Cool, bc1qabc).\n\n");
+
+	printf("  minikeys     Generate and test minikeys (short Bitcoin private keys).\n");
+	printf("               Supports custom base58 alphabet (-8) and base string (-C).\n\n");
+
+	printf("  mnemonic     Generate random BIP39 mnemonics, derive keys via BIP-32/44/49/84.\n");
+	printf("               Supports all 10 BIP39 languages and ETH via -W.\n\n");
+
+	printf("  poetry       Generate random poetry words, encode as hex private keys,\n");
+	printf("               and check against target addresses.\n\n");
+
 	printf("  brainwallet  SHA256 hash passphrases from wordlist to derive private keys.\n");
-	printf("             Tests single words, multi-word combos, and mutations.\n");
-	printf("             Wordlist file: tests/brainwalletwords.txt\n");
-	printf("  pubkey2addr  Generate random private keys, derive address, check against\n");
-	printf("             target file. Uses -x random by default. Works with BTC and ETH.\n");
-	printf("             Example: keyhunt -m pubkey2addr -f btc_target.txt -t 4\n\n");
+	printf("               Tests single words, multi-word combos, and mutations.\n");
+	printf("               Wordlist: tests/brainwalletwords.txt\n\n");
 
-	printf("BRAINWALLET OPTIONS (-m brainwallet):\n");
-	printf("  -w count   Word count: 1, 2, 3, 6, 9, 12, 15, 18, 21, 24, or 0 for random.\n");
-	printf("             Default: 0 (random selection each iteration)\n\n");
-	printf("  Features applied to each passphrase:\n");
-	printf("    - SHA256 hash (standard brainwallet)\n");
-	printf("    - Double SHA256 hash (SHA256(SHA256()))\n");
-	printf("    - Number suffix (1, 123, 0, 2024, 69, 420, 7, 13, 99)\n");
-	printf("    - Leet speak (a->@, e->3, o->0, s->$, etc.)\n");
-	printf("    - Capitalize first letter\n");
-	printf("    - ALL CAPS\n");
-	printf("    - Separators: space, dash, underscore, dot, none\n");
+	printf("===============================================================\n");
+	printf("  OPTIONS\n");
+	printf("===============================================================\n\n");
 
-	printf("REQUIRED OPTIONS:\n");
-	printf("  -m mode    Search mode (see above). Default: address\n");
-	printf("  -f file    Input file with targets (addresses, hashes, public keys, etc.)\n\n");
+	printf("REQUIRED:\n");
+	printf("  -m mode      Search mode (see above). Default: address\n");
+	printf("  -f file      Input file with targets\n\n");
 
-	printf("TARGET OPTIONS:\n");
-	printf("  -c crypto  Cryptocurrency: btc, eth (only with -m address). Default: btc\n");
-	printf("  -l look    Address type to match: compress, uncompress, both\n");
-	printf("             Only for rmd160 and address modes. Default: both\n");
-	printf("  -b bits    Bit range - only test private keys with this many bits.\n");
-	printf("             Useful for some puzzles where the key is known to be short.\n");
-	printf("  -z value   Binary fuse filter size multiplier (>= 1). Larger = faster but more RAM.\n\n");
+	printf("CRYPTO:\n");
+	printf("  -c crypto    btc, eth. Default: btc\n");
+	printf("               Applies to: address, pubkey2addr, mnemonic (-W)\n\n");
 
-	printf("MNEMONIC OPTIONS (-m mnemonic):\n");
-	printf("  -w count   BIP39 word count: 12, 15, 18, 21, or 24.\n");
-	printf("             Use 0 for random selection each iteration. Default: 0\n");
-	printf("  -W         Search for Ethereum addresses (keccak256) instead of BTC\n");
-	printf("  -L lang    BIP39 mnemonic language. Default: english\n");
-	printf("             Languages: english, spanish, french, italian, czech,\n");
-	printf("                        portuguese, japanese, korean,\n");
-	printf("                        chinese_simplified, chinese_traditional\n");
-	printf("             Use 'all' to cycle through all languages\n");
-	printf("  -D count   Number of address indices to check per derivation path.\n");
-	printf("             Checks indices 0 through count-1. Range: 1-100. Default: 1\n");
-	printf("             Example: -D 20 checks indices 0-19 for each path (60 total)\n");
-	printf("  Wordlist files must be in tests/bip39/<lang>.txt (2048 words each)\n\n");
-	printf("  MNEMONIC DERIVATION PATHS:\n");
-	printf("  Each generated mnemonic is validated with BIP-39 checksum (SHA-256)\n");
-	printf("  and derived using PBKDF2-HMAC-SHA512 (2048 iterations).\n");
-	printf("  Three standard derivation paths are checked per mnemonic:\n");
-	printf("    BIP-44  m/44'/0'/0'/0/N  Legacy P2PKH      (addresses starting with 1)\n");
-	printf("    BIP-49  m/49'/0'/0'/0/N  Wrapped SegWit     (addresses starting with 3)\n");
-	printf("    BIP-84  m/84'/0'/0'/0/N  Native SegWit      (addresses starting with bc1)\n");
-	printf("  Where N is the address index (0 to -D value - 1).\n");
-	printf("  With -W flag, ETH addresses are checked instead (keccak256).\n\n");
+	printf("RANGE:\n");
+	printf("  -r SR:EN     Hex range StartRange:EndRange\n");
+	printf("               EndRange optional (defaults to curve order)\n");
+	printf("  -n number    Sequential keys per cycle / BSGS baby-step table size\n");
+	printf("  -b bits      Bit range - only test keys with this many bits\n\n");
 
-	printf("VANITY OPTIONS (-m vanity):\n");
-	printf("  -v value   Target vanity address prefix (e.g. \"1Cool\", \"bc1qabc\")\n\n");
+	printf("BSGS (-m bsgs):\n");
+	printf("  -B mode      sequential, backward, both, random, dance\n");
+	printf("  -k value     K factor for M (more speed, more RAM)\n");
+	printf("  -S           Save/load BSGS bloom filters and baby-step table\n");
+	printf("  -z value     Bloom filter size multiplier (>= 1)\n\n");
 
-	printf("BSGS OPTIONS (-m bsgs):\n");
-	printf("  -B mode    BSGS search mode: sequential, backward, both, random, dance\n");
-	printf("  -k value   K factor for M (more speed but more RAM). Use wisely.\n");
-	printf("  -S         Save BSGS data to files (Bloom filters and baby-step table)\n");
-	printf("  Note: -x search patterns (chaos, gravity, spiral, auto) work with BSGS.\n\n");
+	printf("MNEMONIC (-m mnemonic):\n");
+	printf("  -w count     Word count: 0=random, 12, 15, 18, 21, 24. Default: 0\n");
+	printf("  -W           Search ETH addresses (keccak256) instead of BTC\n");
+	printf("  -L lang      BIP39 language. Default: english\n");
+	printf("               english, spanish, french, italian, czech, portuguese,\n");
+	printf("               japanese, korean, chinese_simplified, chinese_traditional\n");
+	printf("               Use 'all' to cycle through all languages\n");
+	printf("  -D count     Address indices per path (1-100). Default: 1\n");
+	printf("               3 paths checked: BIP-44, BIP-49, BIP-84\n\n");
 
-	printf("RANGE OPTIONS:\n");
-	printf("  -r SR:EN   Hex range: StartRange:EndRange\n");
-	printf("             EndRange can be omitted to search from StartRange to curve order.\n");
-	printf("             Example: -r 1:FFFF (search first 65536 keys)\n");
-	printf("  -n number  Check N sequential numbers from each random starting point.\n");
-	printf("             Also used to set baby-step table size for BSGS (more RAM).\n\n");
+	printf("VANITY (-m vanity):\n");
+	printf("  -v value     Target prefix (e.g. \"1Cool\", \"bc1qabc\")\n\n");
 
-	printf("THREADING & PERFORMANCE:\n");
-	printf("  -t tn      Number of threads. Default: 1\n");
-	printf("  -x mode    Search pattern mode:\n");
-	printf("               sequential - Linear search from start to end\n");
-	printf("               random     - Random key selection (default)\n");
-	printf("               chaos      - Logistic map chaotic sequence\n");
-	printf("               gravity    - Adaptive search around found keys\n");
-	printf("               spiral     - Archimedean spiral from midpoint\n");
-	printf("               reverse    - Inverted BSGS baby/giant step roles\n");
-	printf("               auto       - Intelligent cycling through all modes\n");
-	printf("  -e         Enable endomorphism search (address, rmd160, vanity only)\n");
-	printf("  -I stride  Stride value for xpoint, rmd160, and address modes.\n\n");
+	printf("MINIKEYS (-m minikeys):\n");
+	printf("  -C mini      Base minikey string (22 char)\n");
+	printf("  -8 alpha     Custom base58 alphabet (58 char)\n\n");
 
-	printf("OUTPUT OPTIONS:\n");
-	printf("  -s ns      Stats output interval in seconds. 0 = no stats. Default: 30\n");
-	printf("  -q         Quiet mode - suppress thread output\n");
-	printf("  -M         Matrix screen effect (reduces performance)\n");
-	printf("  -6         Skip SHA-256 checksum on cached data files\n\n");
+	printf("BRAINWALLET (-m brainwallet):\n");
+	printf("  -w count     0=random, 1,2,3,6,9,12,15,18,21,24. Default: 0\n");
+	printf("  Mutations: SHA256, double-SHA256, number suffix, leet speak,\n");
+	printf("             capitalize, ALL CAPS, separators (space/dash/dot/none)\n\n");
 
-	printf("MINIKEY OPTIONS (-m minikeys):\n");
-	printf("  -C mini    Set the minikey base string (22 char). Ex: SRPqx8QiwnW4WNWnTVa2W5\n");
-	printf("  -8 alpha   Set the custom base58 alphabet for minikeys\n\n");
+	printf("THREADING & SEARCH PATTERNS:\n");
+	printf("  -t tn        Number of threads. Default: 1\n");
+	printf("  -x mode      Key generation pattern:\n");
+	printf("                 sequential - Linear from start to end\n");
+	printf("                 random     - Random key selection\n");
+	printf("                 chaos      - Logistic map chaotic sequence\n");
+	printf("                 gravity    - Adaptive search around found keys\n");
+	printf("                 spiral     - Archimedean spiral from midpoint\n");
+	printf("                 reverse    - Inverted BSGS baby/giant step roles\n");
+	printf("                 auto       - Cycling: spiral->chaos->gravity->reverse\n");
+	printf("               All -x modes work with ALL search modes including BSGS.\n\n");
 
-	printf("EXAMPLES:\n\n");
-	printf("  # Search for BTC address matches (default mode):\n");
+	printf("ADDRESS FILTER:\n");
+	printf("  -l look      compress, uncompress, both. Default: both\n");
+	printf("               Applies to: address, rmd160, pubkey2addr\n\n");
+
+	printf("PERFORMANCE:\n");
+	printf("  -e           Enable endomorphism (3x speed for address/rmd160/vanity)\n");
+	printf("  -I stride    Stride value for address/rmd160/xpoint modes\n\n");
+
+	printf("OUTPUT:\n");
+	printf("  -s seconds   Stats output interval. 0=off. Default: 30\n");
+	printf("  -q           Quiet mode - suppress thread output\n");
+	printf("  -M           Matrix screen effect (reduces performance)\n");
+	printf("  -6           Skip SHA-256 checksum on cached data files\n");
+	printf("  -S           Save/load BSGS bloom filter files to disk\n\n");
+
+	printf("===============================================================\n");
+	printf("  EXAMPLES\n");
+	printf("===============================================================\n\n");
+
+	printf("  # Address search (default, BTC):\n");
 	printf("  keyhunt -m address -f targets.txt -t 8\n\n");
-	printf("  # Search RMD160 hashes with compressed keys only:\n");
-	printf("  keyhunt -m rmd160 -f hashes.rmd -l compress -x chaos -t 8\n\n");
-	printf("  # Solve a puzzle with known public key (BSGS):\n");
-	printf("  keyhunt -m bsgs -f puzzle_pubkey.txt -B sequential -t 8\n\n");
-	printf("  # Generate 24-word English mnemonics (checks BIP-44/49/84 paths):\n");
+
+	printf("  # Random pubkey->address (BTC):\n");
+	printf("  keyhunt -m pubkey2addr -f targets.txt -t 8\n\n");
+
+	printf("  # Random pubkey->address (ETH, auto mode):\n");
+	printf("  keyhunt -m pubkey2addr -c eth -f eth_targets.txt -x auto -t 8\n\n");
+
+	printf("  # Address search with chaos pattern:\n");
+	printf("  keyhunt -m address -f targets.txt -x chaos -t 8\n\n");
+
+	printf("  # RMD160 with compressed keys, gravity search:\n");
+	printf("  keyhunt -m rmd160 -f hashes.rmd -l compress -x gravity -t 8\n\n");
+
+	printf("  # BSGS puzzle solver (sequential):\n");
+	printf("  keyhunt -m bsgs -f pubkeys.txt -B sequential -t 8\n\n");
+
+	printf("  # BSGS with chaos search pattern:\n");
+	printf("  keyhunt -m bsgs -f pubkeys.txt -x chaos -n 0x1000000 -t 4\n\n");
+
+	printf("  # BSGS with auto cycling (all patterns):\n");
+	printf("  keyhunt -m bsgs -f pubkeys.txt -x auto -t 8\n\n");
+
+	printf("  # 24-word English mnemonics (BIP-44/49/84):\n");
 	printf("  keyhunt -m mnemonic -w 24 -L english -f targets.txt -t 4\n\n");
-	printf("  # Generate 12-word Japanese mnemonics:\n");
+
+	printf("  # 12-word Japanese mnemonics:\n");
 	printf("  keyhunt -m mnemonic -w 12 -L japanese -f targets.txt -t 4\n\n");
-	printf("  # Random word count, all languages, ETH addresses:\n");
-	printf("  keyhunt -m mnemonic -W -f eth_targets.txt -t 8\n\n");
-	printf("  # Check first 50 address indices per path (150 total per mnemonic):\n");
+
+	printf("  # Mnemonics, all languages, ETH addresses:\n");
+	printf("  keyhunt -m mnemonic -W -L all -f eth_targets.txt -t 8\n\n");
+
+	printf("  # Mnemonics, check indices 0-49 (150 total per mnemonic):\n");
 	printf("  keyhunt -m mnemonic -D 50 -f targets.txt -t 8\n\n");
-	printf("  # Vanity address search:\n");
+
+	printf("  # Vanity search:\n");
 	printf("  keyhunt -m vanity -v 1Cool -t 8\n\n");
-	printf("  # Brainwallet search (single + multi-word combos):\n");
-	printf("  keyhunt -m brainwallet -f targets.txt -t 8\n\n");
+
 	printf("  # Brainwallet with 3-word phrases:\n");
 	printf("  keyhunt -m brainwallet -w 3 -f targets.txt -t 8\n\n");
-	printf("  # Brainwallet random word count:\n");
-	printf("  keyhunt -m brainwallet -w 0 -f targets.txt -t 8\n\n");
-	printf("  # Random pubkey->address search (BTC):\n");
-	printf("  keyhunt -m pubkey2addr -f btc_targets.txt -t 8\n\n");
-	printf("  # Random pubkey->address search (ETH) with auto mode:\n");
-	printf("  keyhunt -m pubkey2addr -c eth -f eth_targets.txt -x auto -t 8\n\n");
+
+	printf("  # Minikeys with custom base:\n");
+	printf("  keyhunt -m minikeys -C SRPqx8QiwnW4WNWnTVa2W5 -f targets.txt -t 8\n\n");
+
+	printf("  # Range search first 65536 keys:\n");
+	printf("  keyhunt -m address -f targets.txt -r 1:FFFF -t 8\n\n");
+
+	printf("  # Endomorphism (3x speed, address mode only):\n");
+	printf("  keyhunt -m address -f targets.txt -e -t 8\n\n");
+
+	printf("  # Quiet mode with stats every 10 seconds:\n");
+	printf("  keyhunt -m pubkey2addr -f targets.txt -q -s 10 -t 4\n\n");
 
 	printf("===============================================================\n");
 	printf("  TrueCollider Search Modes + Binary Fuse Filters\n");
