@@ -1223,7 +1223,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSB:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:v:G:8:z:x:w:L:W")) != -1) {
+	while ((c = getopt(argc, argv, "deh6MqRSXB:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:v:G:8:z:x:w:L:W")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
@@ -1429,6 +1429,11 @@ int main(int argc, char **argv)	{
 				printf("[+] Random mode\n");
 				FLAGRANDOM = 1;
 				FLAGBSGSMODE =  3;
+			break;
+			case 'X':
+				printf("[+] Random key generation enabled for all modes\n");
+				FLAGSEARCHMODE = SEARCHMODE_RANDOM;
+				FLAGRANDOM = 1;
 			break;
 			case 'r':
 				if(optarg != NULL)	{
@@ -7503,6 +7508,9 @@ void menu() {
 
 	printf("THREADING & SEARCH PATTERNS:\n");
 	printf("  -t tn        Number of threads. Default: 1\n");
+	printf("  -X           Force random key generation for ANY mode.\n");
+	printf("               Enables pubkey2addr behavior in address, rmd160, xpoint,\n");
+	printf("               bsgs, vanity, minikeys, mnemonic, poetry, brainwallet.\n");
 	printf("  -x mode      Key generation / search pattern:\n");
 	printf("                 sequential - Linear walk from start to end of range\n");
 	printf("                 random     - Random key selection across full range\n");
@@ -7586,6 +7594,15 @@ void menu() {
 
 	printf("  keyhunt -m pubkey2addr -f targets.txt -q -s 10 -t 4\n");
 	printf("    Quiet mode, stats every 10 seconds\n\n");
+
+	printf("  keyhunt -m address -f targets.txt -X -t 8\n");
+	printf("    Random key generation in address mode (same as pubkey2addr)\n\n");
+
+	printf("  keyhunt -m bsgs -f pubkeys.txt -X -t 8\n");
+	printf("    Random key generation for BSGS mode\n\n");
+
+	printf("  keyhunt -m rmd160 -f hashes.rmd -X -t 8\n");
+	printf("    Random key generation for RMD160 mode\n\n");
 
 	printf("===============================================================\n");
 	printf("  TrueCollider Search Modes + Binary Fuse Filters\n");
