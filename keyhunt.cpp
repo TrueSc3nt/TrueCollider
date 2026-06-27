@@ -55,6 +55,7 @@ static int rand_r(unsigned int *seed) {
 #define CRYPTO_BTC 1
 #define CRYPTO_ETH 2
 #define CRYPTO_ALL 3
+#define CRYPTO_TROOT 4
 
 #define MODE_XPOINT 0
 #define MODE_ADDRESS 1
@@ -94,6 +95,10 @@ struct bsgs_xvalue	{
 
 struct address_value	{
 	uint8_t value[20];
+};
+
+struct troot_value	{
+	uint8_t value[32];
 };
 
 struct tothread {
@@ -214,6 +219,7 @@ DWORD WINAPI thread_process_minikeys(LPVOID vargp);
 DWORD WINAPI thread_process(LPVOID vargp);
 DWORD WINAPI thread_process_mnemonic(LPVOID vargp);
 DWORD WINAPI thread_process_derived(LPVOID vargp);
+DWORD WINAPI thread_process_troot(LPVOID vargp);
 DWORD WINAPI thread_process_poetry(LPVOID vargp);
 DWORD WINAPI thread_process_brainwallet(LPVOID vargp);
 DWORD WINAPI thread_process_pub2addr(LPVOID vargp);
@@ -230,6 +236,7 @@ void *thread_process_minikeys(void *vargp);
 void *thread_process(void *vargp);
 void *thread_process_mnemonic(void *vargp);
 void *thread_process_derived(void *vargp);
+void *thread_process_troot(void *vargp);
 void *thread_process_poetry(void *vargp);
 void *thread_process_brainwallet(void *vargp);
 void *thread_process_pub2addr(void *vargp);
@@ -258,7 +265,7 @@ char *bit_range_str_max;
 
 const char *bsgs_modes[5] = {"sequential","backward","both","random","dance"};
 const char *modes[11] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr"};
-const char *cryptos[3] = {"btc","eth","all"};
+const char *cryptos[4] = {"btc","eth","all","troot"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
 const char *searchmodes[7] = {"sequential","random","chaos","gravity","spiral","reverse","auto"};
 const char *default_fileName = "addresses.txt";
@@ -490,6 +497,11 @@ struct bloom *vanity_bloom = NULL;
 
 struct bloom bloom;
 struct binaryfuse_wrapper bf_filter;
+
+struct bloom troot_bloom;
+struct binaryfuse_wrapper troot_bf_filter;
+struct troot_value *trootTable = NULL;
+uint64_t N_TROOT = 0;
 
 uint64_t *steps = NULL;
 unsigned int *ends = NULL;
@@ -1295,7 +1307,7 @@ int main(int argc, char **argv)	{
 				}
 			break;
 			case 'c':
-				index_value = indexOf(optarg,cryptos,3);
+				index_value = indexOf(optarg,cryptos,4);
 				switch(index_value) {
 					case 0: //btc
 						FLAGCRYPTO = CRYPTO_BTC;
@@ -1309,6 +1321,10 @@ int main(int argc, char **argv)	{
 						FLAGCRYPTO = CRYPTO_ALL;
 					break;
 					*/
+					case 3: //troot
+						FLAGCRYPTO = CRYPTO_TROOT;
+						printf("[+] Setting search for Taproot (P2TR) addresses.\n");
+					break;
 					default:
 						FLAGCRYPTO = CRYPTO_NONE;
 						fprintf(stderr,"[E] Unknow crypto value %s\n",optarg);
@@ -3092,6 +3108,8 @@ int main(int argc, char **argv)	{
 				case MODE_RMD160:
 					if(FLAGPATH) {
 						tid[j] = CreateThread(NULL, 0, thread_process_derived, (void*)tt, 0, &s);
+					} else if(FLAGCRYPTO == CRYPTO_TROOT) {
+						tid[j] = CreateThread(NULL, 0, thread_process_troot, (void*)tt, 0, &s);
 					} else {
 						tid[j] = CreateThread(NULL, 0, thread_process, (void*)tt, 0, &s);
 					}
@@ -3122,6 +3140,8 @@ int main(int argc, char **argv)	{
 				case MODE_RMD160:
 					if(FLAGPATH) {
 						s = pthread_create(&tid[j],NULL,thread_process_derived,(void *)tt);
+					} else if(FLAGCRYPTO == CRYPTO_TROOT) {
+						s = pthread_create(&tid[j],NULL,thread_process_troot,(void *)tt);
 					} else {
 						s = pthread_create(&tid[j],NULL,thread_process,(void *)tt);
 					}
@@ -3866,6 +3886,201 @@ void *thread_process_derived(void *vargp) {
 			}
 		}
 		free(master_hex);
+
+		steps[thread_number]++;
+		if(FLAGQUIET == 0 && steps[thread_number] % 100 == 0) {
+			char *hextemp = key_mpz.GetBase16();
+			printf("\r[Thread %d] Base key: %s    \r", thread_number, hextemp);
+			free(hextemp);
+			fflush(stdout);
+		}
+	}
+	return NULL;
+}
+
+
+void compute_taproot_output(Point &pubkey, uint8_t *x_only_out) {
+	uint8_t pubkey_x[32];
+	pubkey.x.Get32Bytes(pubkey_x);
+
+	uint8_t tag_hash[32];
+	sha256((uint8_t *)"TapTweak", 8, tag_hash);
+
+	uint8_t tag_msg[96];
+	memcpy(tag_msg, tag_hash, 32);
+	memcpy(tag_msg + 32, tag_hash, 32);
+	memcpy(tag_msg + 64, pubkey_x, 32);
+
+	uint8_t tweak_hash[32];
+	sha256(tag_msg, 96, tweak_hash);
+
+	Int tweak;
+	tweak.Set32Bytes(tweak_hash);
+
+	Point tG = secp->ScalarMultiplication(secp->G, &tweak);
+	Point output = secp->Add(pubkey, tG);
+
+	output.x.Get32Bytes(x_only_out);
+}
+
+int troot_searchbinary(struct troot_value *arr, uint8_t *data, int64_t array_length) {
+	int64_t low = 0, high = array_length - 1, mid;
+	while(low <= high) {
+		mid = low + (high - low) / 2;
+		int cmp = memcmp(arr[mid].value, data, 32);
+		if(cmp == 0) return 1;
+		if(cmp < 0) low = mid + 1;
+		else high = mid - 1;
+	}
+	return 0;
+}
+
+void troot_sort(struct troot_value *arr, int64_t n) {
+	for(int64_t i = 1; i < n; i++) {
+		struct troot_value key = arr[i];
+		int64_t j = i - 1;
+		while(j >= 0 && memcmp(arr[j].value, key.value, 32) > 0) {
+			arr[j + 1] = arr[j];
+			j--;
+		}
+		arr[j + 1] = key;
+	}
+}
+
+bool forceReadFileTroot(char *fileName) {
+	FILE *f = fopen(fileName, "r");
+	if(!f) {
+		fprintf(stderr, "[E] Cannot open taproot target file: %s\n", fileName);
+		return false;
+	}
+
+	uint64_t count = 0;
+	char line[128];
+	while(fgets(line, sizeof(line), f)) {
+		int len = strlen(line);
+		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+		if(len == 64) count++;
+	}
+	if(count == 0) {
+		fprintf(stderr, "[E] No valid 64-char hex keys found in %s\n", fileName);
+		fclose(f);
+		return false;
+	}
+
+	trootTable = (struct troot_value *)malloc(sizeof(struct troot_value) * count);
+	if(!trootTable) {
+		fprintf(stderr, "[E] Memory allocation failed for troot table\n");
+		fclose(f);
+		return false;
+	}
+
+	fseek(f, 0, SEEK_SET);
+	uint64_t i = 0;
+	while(i < count && fgets(line, sizeof(line), f)) {
+		int len = strlen(line);
+		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+		if(len == 64 && isValidHex(line)) {
+			hexs2bin(line, trootTable[i].value);
+			bloom_add(&troot_bloom, trootTable[i].value, 32);
+			bf_add(&troot_bf_filter, trootTable[i].value, 32);
+			i++;
+		}
+	}
+	fclose(f);
+
+	N_TROOT = count;
+	troot_sort(trootTable, N_TROOT);
+
+	printf("[+] Building taproot binary fuse filter from %" PRIu64 " keys... ", N_TROOT);
+	fflush(stdout);
+	if(bf_build(&troot_bf_filter) != 0) {
+		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		troot_bf_filter.use_bloom_fallback = 1;
+	} else {
+		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&troot_bf_filter) / (double)1048576);
+	}
+	return true;
+}
+
+#if defined(_WIN64) && !defined(__CYGWIN__)
+DWORD WINAPI thread_process_troot(LPVOID vargp) {
+#else
+void *thread_process_troot(void *vargp) {
+#endif
+	struct tothread *tt;
+	int thread_number, continue_flag = 1;
+	Point publickey;
+	tt = (struct tothread *)vargp;
+	thread_number = tt->nt;
+	free(tt);
+
+	Int key_mpz;
+
+	while(continue_flag) {
+		get_next_search_key(&key_mpz, &n_range_start, &n_range_end);
+
+		uint8_t key_bytes[32];
+		key_mpz.Get32Bytes(key_bytes);
+
+		for(int i = 0; i < CPU_GRP_SIZE; i++) {
+			Int current_key;
+			current_key.Set(&key_mpz);
+			Int offset;
+			offset.SetInt64(i);
+			offset.Mult(&stride);
+			current_key.Add(&offset);
+
+			publickey = secp->ComputePublicKey(&current_key);
+
+			uint8_t troot_out[32];
+			compute_taproot_output(publickey, troot_out);
+
+			int r = bf_check(&troot_bf_filter, troot_out, 32);
+			if(r == -1 && troot_bf_filter.use_bloom_fallback) {
+				r = bloom_check(&troot_bloom, troot_out, 32);
+			}
+			if(r) {
+				r = troot_searchbinary(trootTable, troot_out, N_TROOT);
+				if(r) {
+					char *hextemp = current_key.GetBase16();
+					char pubkey_hex[132];
+					secp->GetPublicKeyHex(true, publickey, pubkey_hex);
+					char troot_addr[63];
+					troot_addr[0] = 'b'; troot_addr[1] = 'c'; troot_addr[2] = '1'; troot_addr[3] = 'p';
+					char x_hex[65];
+					for(int b = 0; b < 32; b++) sprintf(x_hex + b * 2, "%02x", troot_out[b]);
+					x_hex[64] = '\0';
+					printf("\n[+] TAPROOT ADDRESS FOUND!\n");
+					printf("[+] Private Key (hex): %s\n", hextemp);
+					printf("[+] Public Key: %s\n", pubkey_hex);
+					printf("[+] Taproot Output Key (x-only): %s\n", x_hex);
+#if defined(_WIN64) && !defined(__CYGWIN__)
+					WaitForSingleObject(write_keys, INFINITE);
+#else
+					pthread_mutex_lock(&write_keys);
+#endif
+					FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+					if(f) {
+						fprintf(f, "Mode: address (taproot)\nPrivate Key: %s\nPublic Key: %s\nTaproot Output Key: %s\n\n",
+							hextemp, pubkey_hex, x_hex);
+						fclose(f);
+					}
+#if defined(_WIN64) && !defined(__CYGWIN__)
+					ReleaseMutex(write_keys);
+#else
+					pthread_mutex_unlock(&write_keys);
+#endif
+					free(hextemp);
+					notify_key_found(&current_key);
+					return NULL;
+				}
+			}
+		}
+
+		Int grp_stride;
+		grp_stride.SetInt64(CPU_GRP_SIZE);
+		grp_stride.Mult(&stride);
+		key_mpz.Add(&grp_stride);
 
 		steps[thread_number]++;
 		if(FLAGQUIET == 0 && steps[thread_number] % 100 == 0) {
@@ -7569,9 +7784,9 @@ void menu() {
 	printf("    The default mode. Generates random private keys (or walks a range),\n");
 	printf("    derives the public key and BTC/ETH address, then checks the address\n");
 	printf("    against a target file loaded into a binary fuse filter.\n");
-	printf("    Supports: -c btc/eth, -l compress/uncompress/both, -r range, -x modes\n");
+	printf("    Supports: -c btc/eth/troot, -l compress/uncompress/both, -r range, -x modes\n");
 	printf("    Supports: -p path -D count (BIP-32 derivation for each key)\n");
-	printf("    Input file: one BTC address (base58) or ETH address (0x...) per line\n\n");
+	printf("    Input file: one BTC/ETH/Taproot address per line\n\n");
 
 	printf("    How it works:\n");
 	printf("      1. Load target addresses into binary fuse filter + sorted array\n");
@@ -7761,8 +7976,9 @@ void menu() {
 	printf("  -f file      Input file with target data\n\n");
 
 	printf("CRYPTO:\n");
-	printf("  -c crypto    btc, eth. Default: btc\n");
-	printf("               Applies to: address, pubkey2addr modes\n\n");
+	printf("  -c crypto    btc, eth, troot. Default: btc\n");
+	printf("               troot = Taproot (P2TR) bc1p... addresses\n");
+	printf("               Applies to: address mode\n\n");
 
 	printf("RANGE:\n");
 	printf("  -r SR:EN     Hex range StartRange:EndRange\n");
@@ -8475,6 +8691,11 @@ bool readFileAddress(char *fileName)	{
 				}
 				if(FLAGCRYPTO == CRYPTO_ETH)	{
 					return forceReadFileAddressEth(fileName);
+				}
+				if(FLAGCRYPTO == CRYPTO_TROOT)	{
+					if(!initBloomFilter(&troot_bloom, 1024)) return false;
+					bf_init(&troot_bf_filter, 1024, 0.000001);
+					return forceReadFileTroot(fileName);
 				}
 			break;
 			case MODE_MINIKEYS:
