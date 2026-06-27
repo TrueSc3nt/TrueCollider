@@ -213,6 +213,7 @@ DWORD WINAPI thread_process_vanity(LPVOID vargp);
 DWORD WINAPI thread_process_minikeys(LPVOID vargp);
 DWORD WINAPI thread_process(LPVOID vargp);
 DWORD WINAPI thread_process_mnemonic(LPVOID vargp);
+DWORD WINAPI thread_process_derived(LPVOID vargp);
 DWORD WINAPI thread_process_poetry(LPVOID vargp);
 DWORD WINAPI thread_process_brainwallet(LPVOID vargp);
 DWORD WINAPI thread_process_pub2addr(LPVOID vargp);
@@ -225,9 +226,10 @@ DWORD WINAPI thread_bPload(LPVOID vargp);
 DWORD WINAPI thread_bPload_2blooms(LPVOID vargp);
 #else
 void *thread_process_vanity(void *vargp);
-void *thread_process_minikeys(void *vargp);	
+void *thread_process_minikeys(void *vargp);
 void *thread_process(void *vargp);
 void *thread_process_mnemonic(void *vargp);
+void *thread_process_derived(void *vargp);
 void *thread_process_poetry(void *vargp);
 void *thread_process_brainwallet(void *vargp);
 void *thread_process_pub2addr(void *vargp);
@@ -281,6 +283,11 @@ int FLAGDP = 1;
 char mnemonic_lang_name[64] = "english";
 int FLAGPOETRY_WORDS = 0;
 int FLAGBRAINWALLET_WORDS = 0;
+
+int FLAGPATH = 0;
+char *path_string = NULL;
+uint32_t parsed_path[16];
+int parsed_path_len = 0;
 
 const int NUM_BIP39_LANGUAGES = 10;
 const char *bip39_language_names[] = {
@@ -424,6 +431,29 @@ bool load_brainwallet_words(const char *path) {
     fclose(f);
     printf("[+] Loaded brainwallet wordlist: %d words\n", brainwallet_words_size);
     return true;
+}
+
+bool parse_derivation_path(const char *path) {
+    if(!path || path[0] != 'm') return false;
+    parsed_path_len = 0;
+    const char *p = path + 1;
+    while(*p && parsed_path_len < 16) {
+        if(*p == '/') { p++; continue; }
+        uint32_t index = 0;
+        bool hardened = false;
+        if(*p == '\0' || *p == '/') return false;
+        while(*p >= '0' && *p <= '9') {
+            index = index * 10 + (*p - '0');
+            p++;
+        }
+        if(*p == '\'' || *p == 'H' || *p == 'h') {
+            hardened = true;
+            index += 0x80000000;
+            p++;
+        }
+        parsed_path[parsed_path_len++] = index;
+    }
+    return parsed_path_len > 0;
 }
 
 #if defined(_WIN64) && !defined(__CYGWIN__)
@@ -1652,6 +1682,15 @@ int main(int argc, char **argv)	{
 				FLAGMNEMONIC_ETH = 1;
 				printf("[+] Mnemonic mode: Ethereum (keccak256)\n");
 			break;
+			case 'p':
+				FLAGPATH = 1;
+				path_string = optarg;
+				if(!parse_derivation_path(path_string)) {
+					fprintf(stderr,"[E] Invalid derivation path: %s\n", path_string);
+					exit(EXIT_FAILURE);
+				}
+				printf("[+] Custom derivation path: %s (%d components)\n", path_string, parsed_path_len);
+			break;
 			default:
 				fprintf(stderr,"[E] Unknow opcion -%c\n",c);
 				exit(EXIT_FAILURE);
@@ -1661,6 +1700,10 @@ int main(int argc, char **argv)	{
 	
 	if(  FLAGBSGSMODE == MODE_BSGS && FLAGENDOMORPHISM)	{
 		fprintf(stderr,"[E] Endomorphism doesn't work with BSGS\n");
+		exit(EXIT_FAILURE);
+	}
+	if(FLAGPATH && FLAGMODE != MODE_ADDRESS && FLAGMODE != MODE_RMD160) {
+		fprintf(stderr,"[E] -p (derivation path) only works with -m address or -m rmd160\n");
 		exit(EXIT_FAILURE);
 	}
 	
@@ -3046,8 +3089,14 @@ int main(int argc, char **argv)	{
 			switch(FLAGMODE)	{
 #if defined(_WIN64) && !defined(__CYGWIN__)
 				case MODE_ADDRESS:
-				case MODE_XPOINT:
 				case MODE_RMD160:
+					if(FLAGPATH) {
+						tid[j] = CreateThread(NULL, 0, thread_process_derived, (void*)tt, 0, &s);
+					} else {
+						tid[j] = CreateThread(NULL, 0, thread_process, (void*)tt, 0, &s);
+					}
+				break;
+				case MODE_XPOINT:
 					tid[j] = CreateThread(NULL, 0, thread_process, (void*)tt, 0, &s);
 				break;
 				case MODE_MINIKEYS:
@@ -3070,8 +3119,14 @@ int main(int argc, char **argv)	{
 				break;
 #else
 				case MODE_ADDRESS:
-				case MODE_XPOINT:
 				case MODE_RMD160:
+					if(FLAGPATH) {
+						s = pthread_create(&tid[j],NULL,thread_process_derived,(void *)tt);
+					} else {
+						s = pthread_create(&tid[j],NULL,thread_process,(void *)tt);
+					}
+				break;
+				case MODE_XPOINT:
 					s = pthread_create(&tid[j],NULL,thread_process,(void *)tt);
 				break;
 				case MODE_MINIKEYS:
@@ -3642,6 +3697,184 @@ void *thread_process_mnemonic(void *vargp) {
 		}
 	}
 	free(publickey);
+	return NULL;
+}
+
+
+#if defined(_WIN64) && !defined(__CYGWIN__)
+DWORD WINAPI thread_process_derived(LPVOID vargp) {
+#else
+void *thread_process_derived(void *vargp) {
+#endif
+	struct tothread *tt;
+	int thread_number, continue_flag = 1, r;
+	Point publickey;
+	tt = (struct tothread *)vargp;
+	thread_number = tt->nt;
+	free(tt);
+
+	Int key_mpz;
+
+	while(continue_flag) {
+		get_next_search_key(&key_mpz, &n_range_start, &n_range_end);
+
+		uint8_t master_key_raw[32];
+		key_mpz.Get32Bytes(master_key_raw);
+
+		uint8_t master_hmac[64];
+		hmac_sha512((uint8_t *)"Bitcoin seed", 12, master_key_raw, 32, master_hmac);
+		uint8_t master_key[32], master_chain[32];
+		memcpy(master_key, master_hmac, 32);
+		memcpy(master_chain, master_hmac + 32, 32);
+
+		char *master_hex = key_mpz.GetBase16();
+
+		for(int idx = 0; idx < FLAGDP; idx++) {
+			uint32_t full_path[16];
+			memcpy(full_path, parsed_path, parsed_path_len * sizeof(uint32_t));
+			full_path[parsed_path_len] = (uint32_t)idx;
+
+			uint8_t derived_key[32], derived_chain[32];
+			bip32_derive_path(master_key, master_chain, full_path, parsed_path_len + 1, derived_key, derived_chain);
+
+			Int derivedInt;
+			derivedInt.Set32Bytes(derived_key);
+			publickey = secp->ComputePublicKey(&derivedInt);
+
+			if(FLAGCRYPTO == CRYPTO_BTC) {
+				uint8_t addr_hash[20];
+
+				if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+					secp->GetHash160(P2PKH, true, publickey, addr_hash);
+					r = address_check(addr_hash, MAXLENGTHADDRESS);
+					if(r) {
+						r = searchbinary(addressTable, (char*)addr_hash, N);
+						if(r) {
+							char *hextemp = derivedInt.GetBase16();
+							char pubkey_hex[132];
+							secp->GetPublicKeyHex(true, publickey, pubkey_hex);
+							char address[64];
+							rmd160toaddress_dst((char*)addr_hash, address);
+							printf("\n[+] ADDRESS FOUND (derived)!\n");
+							printf("[+] Path: %s/%d\n", path_string, idx);
+							printf("[+] Base Key (hex): %s\n", master_hex);
+							printf("[+] Derived Private Key (hex): %s\n", hextemp);
+							printf("[+] Public Key: %s\n", pubkey_hex);
+							printf("[+] Address: %s\n", address);
+#if defined(_WIN64) && !defined(__CYGWIN__)
+							WaitForSingleObject(write_keys, INFINITE);
+#else
+							pthread_mutex_lock(&write_keys);
+#endif
+							FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+							if(f) {
+								fprintf(f, "Mode: address (derived)\nPath: %s/%d\nBase Key: %s\nDerived Private Key: %s\nPublic Key: %s\nAddress: %s\n\n",
+									path_string, idx, master_hex, hextemp, pubkey_hex, address);
+								fclose(f);
+							}
+#if defined(_WIN64) && !defined(__CYGWIN__)
+							ReleaseMutex(write_keys);
+#else
+							pthread_mutex_unlock(&write_keys);
+#endif
+							free(hextemp);
+							free(master_hex);
+							notify_key_found(&derivedInt);
+							return NULL;
+						}
+					}
+				}
+				if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+					secp->GetHash160(P2PKH, false, publickey, addr_hash);
+					r = address_check(addr_hash, MAXLENGTHADDRESS);
+					if(r) {
+						r = searchbinary(addressTable, (char*)addr_hash, N);
+						if(r) {
+							char *hextemp = derivedInt.GetBase16();
+							char pubkey_hex[132];
+							secp->GetPublicKeyHex(false, publickey, pubkey_hex);
+							char address[64];
+							rmd160toaddress_dst((char*)addr_hash, address);
+							printf("\n[+] ADDRESS FOUND (derived)!\n");
+							printf("[+] Path: %s/%d\n", path_string, idx);
+							printf("[+] Base Key (hex): %s\n", master_hex);
+							printf("[+] Derived Private Key (hex): %s\n", hextemp);
+							printf("[+] Public Key: %s\n", pubkey_hex);
+							printf("[+] Address: %s\n", address);
+#if defined(_WIN64) && !defined(__CYGWIN__)
+							WaitForSingleObject(write_keys, INFINITE);
+#else
+							pthread_mutex_lock(&write_keys);
+#endif
+							FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+							if(f) {
+								fprintf(f, "Mode: address (derived)\nPath: %s/%d\nBase Key: %s\nDerived Private Key: %s\nPublic Key: %s\nAddress: %s\n\n",
+									path_string, idx, master_hex, hextemp, pubkey_hex, address);
+								fclose(f);
+							}
+#if defined(_WIN64) && !defined(__CYGWIN__)
+							ReleaseMutex(write_keys);
+#else
+							pthread_mutex_unlock(&write_keys);
+#endif
+							free(hextemp);
+							free(master_hex);
+							notify_key_found(&derivedInt);
+							return NULL;
+						}
+					}
+				}
+			}
+			else if(FLAGCRYPTO == CRYPTO_ETH) {
+				uint8_t addr_hash[20];
+				generate_binaddress_eth(publickey, addr_hash);
+				r = address_check(addr_hash, MAXLENGTHADDRESS);
+				if(r) {
+					r = searchbinary(addressTable, (char*)addr_hash, N);
+					if(r) {
+						char *hextemp = derivedInt.GetBase16();
+						char eth_address[43];
+						eth_address[0] = '0'; eth_address[1] = 'x';
+						tohex_dst((char*)addr_hash, 20, eth_address + 2);
+						printf("\n[+] ETH ADDRESS FOUND (derived)!\n");
+						printf("[+] Path: %s/%d\n", path_string, idx);
+						printf("[+] Base Key (hex): %s\n", master_hex);
+						printf("[+] Derived Private Key (hex): %s\n", hextemp);
+						printf("[+] ETH Address: %s\n", eth_address);
+#if defined(_WIN64) && !defined(__CYGWIN__)
+						WaitForSingleObject(write_keys, INFINITE);
+#else
+						pthread_mutex_lock(&write_keys);
+#endif
+						FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+						if(f) {
+							fprintf(f, "Mode: address (derived)\nPath: %s/%d\nBase Key: %s\nDerived Private Key: %s\nETH Address: %s\n\n",
+								path_string, idx, master_hex, hextemp, eth_address);
+							fclose(f);
+						}
+#if defined(_WIN64) && !defined(__CYGWIN__)
+						ReleaseMutex(write_keys);
+#else
+						pthread_mutex_unlock(&write_keys);
+#endif
+						free(hextemp);
+						free(master_hex);
+						notify_key_found(&derivedInt);
+						return NULL;
+					}
+				}
+			}
+		}
+		free(master_hex);
+
+		steps[thread_number]++;
+		if(FLAGQUIET == 0 && steps[thread_number] % 100 == 0) {
+			char *hextemp = key_mpz.GetBase16();
+			printf("\r[Thread %d] Base key: %s    \r", thread_number, hextemp);
+			free(hextemp);
+			fflush(stdout);
+		}
+	}
 	return NULL;
 }
 
@@ -7337,6 +7570,7 @@ void menu() {
 	printf("    derives the public key and BTC/ETH address, then checks the address\n");
 	printf("    against a target file loaded into a binary fuse filter.\n");
 	printf("    Supports: -c btc/eth, -l compress/uncompress/both, -r range, -x modes\n");
+	printf("    Supports: -p path -D count (BIP-32 derivation for each key)\n");
 	printf("    Input file: one BTC address (base58) or ETH address (0x...) per line\n\n");
 
 	printf("    How it works:\n");
@@ -7373,6 +7607,7 @@ void menu() {
 	printf("    matches entries in the target file. Useful when you have raw hash\n");
 	printf("    values rather than addresses.\n");
 	printf("    Supports: -l compress/uncompress/both, -r range, -x modes, -e\n");
+	printf("    Supports: -p path -D count (BIP-32 derivation for each key)\n");
 	printf("    Input file: one 40-char hex RIPEMD-160 hash per line\n\n");
 
 	printf("    How it works:\n");
@@ -7578,6 +7813,15 @@ void menu() {
 	printf("  -l look      compress, uncompress, both. Default: both\n");
 	printf("               Applies to: address, rmd160, pubkey2addr modes\n\n");
 
+	printf("DERIVATION PATH (-m address / -m rmd160):\n");
+	printf("  -p path      BIP-32 derivation path (e.g. m/44'/0'/0'/0, m/84'/0'/0'/0)\n");
+	printf("               Each random key is used as a BIP-32 master key.\n");
+	printf("               Child keys are derived along the path for indices 0 to -D-1.\n");
+	printf("  -D count     Child key indices to check per base key (1-100). Default: 1\n");
+	printf("               Example: -p m/84'/0'/0'/0 -D 10 checks indices 0-9\n");
+	printf("               Supports hardened: ' or H or h suffix (e.g. 44')\n");
+	printf("               Applies to: address, rmd160 modes\n\n");
+
 	printf("THREADING & SEARCH PATTERNS:\n");
 	printf("  -t tn        Number of threads. Default: 1\n");
 	printf("  -x mode      Key generation / search pattern:\n");
@@ -7667,8 +7911,37 @@ void menu() {
 	printf("  keyhunt -m address -f targets.txt -T 1609459200 -b 32 -t 8\n");
 	printf("    Timestamp + bit range for tighter search window\n\n");
 
+	printf("  keyhunt -m address -f targets.txt -T 1421345234 -b 72 -t 8\n");
+	printf("    Bitcoin puzzle search using funding timestamp (Jan 15 2015)\n\n");
+
+	printf("  keyhunt -m address -f targets.txt -b 72 -t 8 -x auto\n");
+	printf("    Puzzle 72 search with auto pattern cycling\n\n");
+
 	printf("  keyhunt -m pubkey2addr -f targets.txt -q -s 10 -t 4\n");
 	printf("    Quiet mode, stats every 10 seconds\n\n");
+
+	printf("===============================================================\n");
+	printf("  BITCOIN PUZZLE SEARCH (72-160)\n");
+	printf("===============================================================\n\n");
+
+	printf("  For puzzles 72-160, use timestamp 1421345234 (Jan 15 2015 18:07 UTC)\n");
+	printf("  All puzzles funded in single tx: 08389f34c98c606322740c0be6a7125d9860bb8d5cb182c02f98461e5fa6cd15\n");
+	printf("  Block: 339085, 256 outputs, puzzles 1-256\n\n");
+
+	printf("  Search strategy:\n");
+	printf("    1. Start with lower bit puzzles (72-80) - faster to search\n");
+	printf("    2. Use -T 1421345234 to constrain by funding timestamp\n");
+	printf("    3. Combine with -x auto for best coverage\n");
+	printf("    4. If you find ONE key, derive all others via BIP-32\n\n");
+
+	printf("  Example puzzle searches:\n");
+	printf("    keyhunt -m address -f tests/unsolvedpuzzles.txt -b 72 -T 1421345234 -t 8 -x auto\n");
+	printf("    keyhunt -m address -f tests/unsolvedpuzzles.txt -b 80 -T 1421345234 -t 8\n");
+	printf("    keyhunt -m address -f tests/unsolvedpuzzles.txt -b 100 -T 1421345234 -t 8\n");
+	printf("    keyhunt -m address -f tests/unsolvedpuzzles.txt -b 128 -T 1421345234 -t 8\n\n");
+
+	printf("  Run all puzzles 72-160 batch:\n");
+	printf("    bash run_puzzle_search.sh\n\n");
 
 	printf("===============================================================\n");
 	printf("  TrueCollider Search Modes + Binary Fuse Filters\n");
