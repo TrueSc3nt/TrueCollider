@@ -1579,7 +1579,7 @@ int main(int argc, char **argv)	{
 				if(NTHREADS <= 0)	{
 					NTHREADS = 1;
 				}
-				printf((NTHREADS > 1) ? "[+] Threads : %u\n": "[+] Thread : %u\n",NTHREADS);
+				printf((NTHREADS > 1) ? "[+] Threads : %d\n": "[+] Thread : %d\n",NTHREADS);
 			break;
 			case 'T': {
 				long timestamp = strtol(optarg, NULL, 10);
@@ -3810,7 +3810,7 @@ void *thread_process_derived(void *vargp) {
 		char *master_hex = key_mpz.GetBase16();
 
 		for(int idx = 0; idx < FLAGDP; idx++) {
-			uint32_t full_path[16];
+			uint32_t full_path[17];
 			memcpy(full_path, parsed_path, parsed_path_len * sizeof(uint32_t));
 			full_path[parsed_path_len] = (uint32_t)idx;
 
@@ -6048,17 +6048,16 @@ pn.y.ModAdd(&GSn[i].y);
 									fprintf(filekey,"Key found privkey %s\nPublickey %s\n",hextemp,aux_c);
 									fclose(filekey);
 								}
-								free(hextemp);
-								free(aux_c);
+							free(hextemp);
+							free(aux_c);
 #if defined(_WIN64) && !defined(__CYGWIN__)
-				ReleaseMutex(write_keys);
+			ReleaseMutex(write_keys);
 #else
-				pthread_mutex_unlock(&write_keys);
+			pthread_mutex_unlock(&write_keys);
 #endif
-								bsgs_found[k] = 1;
-								notify_key_found(&keyfound);
-								notify_key_found(&keyfound);
-								salir = 1;
+							bsgs_found[k] = 1;
+							notify_key_found(&keyfound);
+							salir = 1;
 								for(l = 0; l < bsgs_point_number && salir; l++)	{
 									salir &= bsgs_found[l];
 								}
@@ -7925,13 +7924,12 @@ void *thread_process_bsgs_both(void *vargp)	{
 								pthread_mutex_unlock(&write_keys);
 #endif
 
-								bsgs_found[k] = 1;
-								notify_key_found(&keyfound);
-								notify_key_found(&keyfound);
-								salir = 1;
-								for(l = 0; l < bsgs_point_number && salir; l++)	{
-									salir &= bsgs_found[l];
-								}
+							bsgs_found[k] = 1;
+							notify_key_found(&keyfound);
+							salir = 1;
+							for(l = 0; l < bsgs_point_number && salir; l++)	{
+								salir &= bsgs_found[l];
+							}
 								if(salir)	{
 									printf("All points were found\n");
 									exit(EXIT_FAILURE);

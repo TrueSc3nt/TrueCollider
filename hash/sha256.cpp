@@ -158,8 +158,8 @@ inline uint32_t _rotr(uint32_t x, uint8_t r) {
     Round(f, g, h, a, b, c, d, e, 0x8cc70208, w11 += s1(w9) + w4 + s0(w12));
     Round(e, f, g, h, a, b, c, d, 0x90befffa, w12 += s1(w10) + w5 + s0(w13));
     Round(d, e, f, g, h, a, b, c, 0xa4506ceb, w13 += s1(w11) + w6 + s0(w14));
-    Round(c, d, e, f, g, h, a, b, 0xbef9a3f7, w14 + s1(w12) + w7 + s0(w15));
-    Round(b, c, d, e, f, g, h, a, 0xc67178f2, w15 + s1(w13) + w8 + s0(w0));
+    Round(c, d, e, f, g, h, a, b, 0xbef9a3f7, w14 += s1(w12) + w7 + s0(w15));
+    Round(b, c, d, e, f, g, h, a, 0xc67178f2, w15 += s1(w13) + w8 + s0(w0));
 
     s[0] += a;
     s[1] += b;
@@ -253,8 +253,8 @@ inline uint32_t _rotr(uint32_t x, uint8_t r) {
     Round(f, g, h, a, b, c, d, e, 0x8cc70208, w11 += s1(w9) + w4 + s0(w12));
     Round(e, f, g, h, a, b, c, d, 0x90befffa, w12 += s1(w10) + w5 + s0(w13));
     Round(d, e, f, g, h, a, b, c, 0xa4506ceb, w13 += s1(w11) + w6 + s0(w14));
-    Round(c, d, e, f, g, h, a, b, 0xbef9a3f7, w14 + s1(w12) + w7 + s0(w15));
-    Round(b, c, d, e, f, g, h, a, 0xc67178f2, w15 + s1(w13) + w8 + s0(w0));
+    Round(c, d, e, f, g, h, a, b, 0xbef9a3f7, w14 += s1(w12) + w7 + s0(w15));
+    Round(b, c, d, e, f, g, h, a, 0xc67178f2, w15 += s1(w13) + w8 + s0(w0));
 
     w0 = 0x6a09e667ul + a;
     w1 = 0xbb67ae85ul + b;
@@ -347,8 +347,8 @@ inline uint32_t _rotr(uint32_t x, uint8_t r) {
     Round(f, g, h, a, b, c, d, e, 0x8cc70208, w11 += s1(w9) + w4 + s0(w12));
     Round(e, f, g, h, a, b, c, d, 0x90befffa, w12 += s1(w10) + w5 + s0(w13));
     Round(d, e, f, g, h, a, b, c, 0xa4506ceb, w13 += s1(w11) + w6 + s0(w14));
-    Round(c, d, e, f, g, h, a, b, 0xbef9a3f7, w14 + s1(w12) + w7 + s0(w15));
-    Round(b, c, d, e, f, g, h, a, 0xc67178f2, w15 + s1(w13) + w8 + s0(w0));
+    Round(c, d, e, f, g, h, a, b, 0xbef9a3f7, w14 += s1(w12) + w7 + s0(w15));
+    Round(b, c, d, e, f, g, h, a, 0xc67178f2, w15 += s1(w13) + w8 + s0(w0));
 
     s[0] = 0x6a09e667ul + a;
 
