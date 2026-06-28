@@ -6932,6 +6932,63 @@ void rmd160toaddress_xrp(char *rmd,char *dst)	{
 	}
 }
 
+static const char *BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+int bech32_decode(const char *addr, uint8_t *program, int *program_len) {
+	int addr_len = strlen(addr);
+	if(FLAGDEBUG) fprintf(stderr,"[D] bech32: addr='%s' len=%d\n", addr, addr_len);
+	int last_1 = -1;
+	for(int i = 0; i < addr_len; i++) {
+		if(addr[i] == '1') last_1 = i;
+	}
+	if(FLAGDEBUG) fprintf(stderr,"[D] bech32: last_1=%d\n", last_1);
+	if(last_1 < 1 || last_1 + 7 > addr_len || addr_len > 90) {
+		if(FLAGDEBUG) fprintf(stderr,"[D] bech32: FAIL basic checks last_1+7=%d addr_len=%d\n", last_1+7, addr_len);
+		return -1;
+	}
+
+	int data_len = addr_len - last_1 - 1;
+	if(data_len < 6) {
+		if(FLAGDEBUG) fprintf(stderr,"[D] bech32: FAIL data_len=%d\n", data_len);
+		return -1;
+	}
+
+	uint8_t data[90];
+	for(int i = 0; i < data_len; i++) {
+		const char *p = strchr(BECH32_CHARSET, addr[last_1 + 1 + i]);
+		if(!p) {
+			if(FLAGDEBUG) fprintf(stderr,"[D] bech32: FAIL invalid char at %d: '%c'\n", i, addr[last_1+1+i]);
+			return -1;
+		}
+		data[i] = (uint8_t)(p - BECH32_CHARSET);
+	}
+	if(FLAGDEBUG) fprintf(stderr,"[D] bech32: data[0]=%d payload_len=%d\n", data[0], data_len-6);
+
+	int exp_ver = data[0];
+	if(exp_ver > 16) return -1;
+
+	int payload_len = data_len - 6;
+	int dec_len = 0;
+	uint32_t acc = 0;
+	int bits = 0;
+	for(int i = 1; i < payload_len; i++) {
+		acc = (acc << 5) | data[i];
+		bits += 5;
+		while(bits >= 8 && dec_len < 42) {
+			program[dec_len++] = (acc >> (bits - 8)) & 0xff;
+			bits -= 8;
+		}
+	}
+	if(bits > 4) {
+		if(FLAGDEBUG) fprintf(stderr,"[D] bech32: FAIL bits=%d after conversion\n", bits);
+		return -1;
+	}
+
+	*program_len = dec_len;
+	if(FLAGDEBUG) fprintf(stderr,"[D] bech32: SUCCESS program_len=%d bits=%d acc=%u\n", dec_len, bits, acc);
+	return 0;
+}
+
 int autodetect_crypto_from_file(const char *fileName) {
 	FILE *f = fopen(fileName, "r");
 	if(!f) return CRYPTO_BTC;
@@ -9086,7 +9143,7 @@ bool forceReadFileAddress(char *fileName)	{
 		hextemp = fgets(aux,100,fileDescriptor);
 		trim(aux," \t\n\r");			
 		r = strlen(aux);
-		if(r > 0 && r <= 40)	{
+		if(r > 0 && r <= 62)	{
 				if(r<40 && isValidBase58String(aux))	{	//Address
 				raw_value_length = 25;
 				b58tobin(rawvalue,&raw_value_length,aux,r);
@@ -9094,6 +9151,19 @@ bool forceReadFileAddress(char *fileName)	{
 					bloom_add(&bloom, rawvalue+1 ,sizeof(struct address_value));
 					bf_add(&bf_filter, rawvalue+1 ,sizeof(struct address_value));
 					memcpy(addressTable[i].value,rawvalue+1,sizeof(struct address_value));
+					i++;
+					validAddress = true;
+				}
+			}
+			if(r >= 42 && aux[0] == 'b' && aux[1] == 'c' && aux[2] == '1')	{	//bech32 (bc1q... segwit)
+				uint8_t program[40];
+				int program_len = 0;
+				int bech_ret = bech32_decode(aux, program, &program_len);
+				if(FLAGDEBUG) fprintf(stderr,"[D] bech32_decode(%s) = %d, program_len = %d\n", aux, bech_ret, program_len);
+				if(bech_ret == 0 && program_len == 20)	{
+					bloom_add(&bloom, program ,sizeof(struct address_value));
+					bf_add(&bf_filter, program ,sizeof(struct address_value));
+					memcpy(addressTable[i].value,program,sizeof(struct address_value));
 					i++;
 					validAddress = true;
 				}
