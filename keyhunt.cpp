@@ -295,6 +295,7 @@ int FLAGPATH = 0;
 char *path_string = NULL;
 uint32_t parsed_path[16];
 int parsed_path_len = 0;
+int FLAGVERBOSE = 0;
 
 const int NUM_BIP39_LANGUAGES = 10;
 const char *bip39_language_names[] = {
@@ -1267,7 +1268,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSZ:B:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:T:v:G:8:z:x:w:L:W")) != -1) {
+	while ((c = getopt(argc, argv, "deh6MqRSVZ:B:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:T:v:G:8:z:x:w:L:W")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
@@ -1697,6 +1698,10 @@ int main(int argc, char **argv)	{
 			case 'W':
 				FLAGMNEMONIC_ETH = 1;
 				printf("[+] Mnemonic mode: Ethereum (keccak256)\n");
+			break;
+			case 'V':
+				FLAGVERBOSE = 1;
+				printf("[+] Verbose derivation path output\n");
 			break;
 			case 'p':
 				FLAGPATH = 1;
@@ -3776,11 +3781,17 @@ void *thread_process_derived(void *vargp) {
 							char address[64];
 							rmd160toaddress_dst((char*)addr_hash, address);
 							printf("\n[+] ADDRESS FOUND (derived)!\n");
-							printf("[+] Path: %s/%d\n", path_string, idx);
+							printf("[+] Full Derivation Path: %s/%d\n", path_string, idx);
 							printf("[+] Base Key (hex): %s\n", master_hex);
 							printf("[+] Derived Private Key (hex): %s\n", hextemp);
 							printf("[+] Public Key: %s\n", pubkey_hex);
 							printf("[+] Address: %s\n", address);
+							if(FLAGVERBOSE) {
+								char chain_hex[65];
+								for(int b = 0; b < 32; b++) sprintf(chain_hex + b * 2, "%02x", derived_chain[b]);
+								chain_hex[64] = '\0';
+								printf("[+] Derived Chain Code: %s\n", chain_hex);
+							}
 #if defined(_WIN64) && !defined(__CYGWIN__)
 							WaitForSingleObject(write_keys, INFINITE);
 #else
@@ -3788,7 +3799,7 @@ void *thread_process_derived(void *vargp) {
 #endif
 							FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
 							if(f) {
-								fprintf(f, "Mode: address (derived)\nPath: %s/%d\nBase Key: %s\nDerived Private Key: %s\nPublic Key: %s\nAddress: %s\n\n",
+								fprintf(f, "Mode: address (derived)\nFull Path: %s/%d\nBase Key: %s\nDerived Private Key: %s\nPublic Key: %s\nAddress: %s\n\n",
 									path_string, idx, master_hex, hextemp, pubkey_hex, address);
 								fclose(f);
 							}
@@ -3816,11 +3827,17 @@ void *thread_process_derived(void *vargp) {
 							char address[64];
 							rmd160toaddress_dst((char*)addr_hash, address);
 							printf("\n[+] ADDRESS FOUND (derived)!\n");
-							printf("[+] Path: %s/%d\n", path_string, idx);
+							printf("[+] Full Derivation Path: %s/%d\n", path_string, idx);
 							printf("[+] Base Key (hex): %s\n", master_hex);
 							printf("[+] Derived Private Key (hex): %s\n", hextemp);
 							printf("[+] Public Key: %s\n", pubkey_hex);
 							printf("[+] Address: %s\n", address);
+							if(FLAGVERBOSE) {
+								char chain_hex[65];
+								for(int b = 0; b < 32; b++) sprintf(chain_hex + b * 2, "%02x", derived_chain[b]);
+								chain_hex[64] = '\0';
+								printf("[+] Derived Chain Code: %s\n", chain_hex);
+							}
 #if defined(_WIN64) && !defined(__CYGWIN__)
 							WaitForSingleObject(write_keys, INFINITE);
 #else
@@ -3828,7 +3845,7 @@ void *thread_process_derived(void *vargp) {
 #endif
 							FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
 							if(f) {
-								fprintf(f, "Mode: address (derived)\nPath: %s/%d\nBase Key: %s\nDerived Private Key: %s\nPublic Key: %s\nAddress: %s\n\n",
+								fprintf(f, "Mode: address (derived)\nFull Path: %s/%d\nBase Key: %s\nDerived Private Key: %s\nPublic Key: %s\nAddress: %s\n\n",
 									path_string, idx, master_hex, hextemp, pubkey_hex, address);
 								fclose(f);
 							}
@@ -3857,10 +3874,16 @@ void *thread_process_derived(void *vargp) {
 						eth_address[0] = '0'; eth_address[1] = 'x';
 						tohex_dst((char*)addr_hash, 20, eth_address + 2);
 						printf("\n[+] ETH ADDRESS FOUND (derived)!\n");
-						printf("[+] Path: %s/%d\n", path_string, idx);
+						printf("[+] Full Derivation Path: %s/%d\n", path_string, idx);
 						printf("[+] Base Key (hex): %s\n", master_hex);
 						printf("[+] Derived Private Key (hex): %s\n", hextemp);
 						printf("[+] ETH Address: %s\n", eth_address);
+						if(FLAGVERBOSE) {
+							char chain_hex[65];
+							for(int b = 0; b < 32; b++) sprintf(chain_hex + b * 2, "%02x", derived_chain[b]);
+							chain_hex[64] = '\0';
+							printf("[+] Derived Chain Code: %s\n", chain_hex);
+						}
 #if defined(_WIN64) && !defined(__CYGWIN__)
 						WaitForSingleObject(write_keys, INFINITE);
 #else
@@ -3868,7 +3891,7 @@ void *thread_process_derived(void *vargp) {
 #endif
 						FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
 						if(f) {
-							fprintf(f, "Mode: address (derived)\nPath: %s/%d\nBase Key: %s\nDerived Private Key: %s\nETH Address: %s\n\n",
+							fprintf(f, "Mode: address (derived)\nFull Path: %s/%d\nBase Key: %s\nDerived Private Key: %s\nETH Address: %s\n\n",
 								path_string, idx, master_hex, hextemp, eth_address);
 							fclose(f);
 						}
@@ -8057,6 +8080,7 @@ void menu() {
 	printf("OUTPUT:\n");
 	printf("  -s seconds   Stats output interval in seconds. 0=off. Default: 30\n");
 	printf("  -q           Quiet mode - suppress per-thread output\n");
+	printf("  -V           Verbose mode - show full derivation path and chain code\n");
 	printf("  -M           Matrix screen effect (reduces performance)\n");
 	printf("  -6           Skip SHA-256 checksum validation on cached data files\n\n");
 
@@ -8108,6 +8132,18 @@ void menu() {
 
 	printf("  keyhunt -m vanity -v 1Cool -e -t 8\n");
 	printf("    Vanity search for 1Cool... with endomorphism\n\n");
+
+	printf("  keyhunt -m address -c troot -f troot_targets.txt -t 8\n");
+	printf("    Taproot (P2TR) bc1p... address search\n\n");
+
+	printf("  keyhunt -m address -c troot -p \"m/86'/0'/0'/0\" -D 10 -f troot_targets.txt -V -t 8\n");
+	printf("    Taproot search with BIP-86 derivation, verbose output\n\n");
+
+	printf("  keyhunt -m address -p \"m/84'/0'/0'/0\" -D 20 -f targets.txt -V -t 8\n");
+	printf("    BTC address search with BIP-84 derivation, 20 indices, verbose\n\n");
+
+	printf("  keyhunt -m rmd160 -p \"m/44'/0'/0'/0\" -D 10 -f hashes.rmd -t 8\n");
+	printf("    RMD160 search with BIP-44 derivation path\n\n");
 
 	printf("  keyhunt -m brainwallet -w 3 -f targets.txt -t 8\n");
 	printf("    Brainwallet with 3-word passphrases\n\n");

@@ -102,6 +102,7 @@ Search for private keys that produce addresses in the target file.
 - Each random key is used as a BIP-32 master key
 - Child keys are derived along the specified path for indices 0 to `-D-1`
 - Supports hardened: `'` or `H` or `h` suffix (e.g. `44'`)
+- Use `-V` for verbose output showing full derivation path and chain code
 
 **Examples:**
 
@@ -111,6 +112,21 @@ Search for private keys that produce addresses in the target file.
 
 # Search ETH addresses
 ./keyhunt -m address -c eth -f eth_targets.txt -t 8
+
+# Search Taproot (bc1p...) addresses
+./keyhunt -m address -c troot -f troot_targets.txt -t 8
+
+# Search with custom derivation path (BIP-86 taproot)
+./keyhunt -m address -c troot -p "m/86'/0'/0'/0" -D 10 -f troot_targets.txt -V -t 8
+
+# Search with custom derivation path (BIP-84 native segwit)
+./keyhunt -m address -p "m/84'/0'/0'/0" -D 20 -f targets.txt -V -t 8
+
+# Search with custom derivation path (BIP-44 legacy)
+./keyhunt -m address -p "m/44'/0'/0'/0" -D 20 -f targets.txt -V -t 8
+
+# Search with specific range
+./keyhunt -m address -f targets.txt -r 1:FFFFFFFF -t 8
 
 # Search Taproot addresses
 ./keyhunt -m address -c troot -f troot_targets.txt -t 8
@@ -215,7 +231,7 @@ Search for private keys matching target RIPEMD-160 hashes.
 
 **Input file format:** One 40-char hex RIPEMD-160 hash per line.
 
-**Custom derivation paths** (`-p`): Same as address mode — each random key is used as a BIP-32 master key and child keys are derived along the path.
+**Custom derivation paths** (`-p`): Same as address mode — each random key is used as a BIP-32 master key and child keys are derived along the path. Use `-V` for verbose output.
 
 **Examples:**
 
@@ -224,7 +240,7 @@ Search for private keys matching target RIPEMD-160 hashes.
 ./keyhunt -m rmd160 -f tests/1to32.rmd -r 1:FFFFFFFF -l compress -s 5
 
 # Search with custom derivation path
-./keyhunt -m rmd160 -p "m/44'/0'/0'/0" -D 10 -f hashes.rmd -t 8
+./keyhunt -m rmd160 -p "m/44'/0'/0'/0" -D 10 -f hashes.rmd -V -t 8
 
 # Search with chaos pattern
 ./keyhunt -m rmd160 -f tests/1to32.rmd -x chaos -t 8
