@@ -60,6 +60,9 @@ static int rand_r(unsigned int *seed) {
 #define CRYPTO_BTG 6
 #define CRYPTO_ETC 7
 #define CRYPTO_LTC 8
+#define CRYPTO_DOGE 9
+#define CRYPTO_XRP 10
+#define CRYPTO_SOL 11
 
 #define MODE_XPOINT 0
 #define MODE_ADDRESS 1
@@ -269,7 +272,7 @@ char *bit_range_str_max;
 
 const char *bsgs_modes[5] = {"sequential","backward","both","random","dance"};
 const char *modes[11] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr"};
-const char *cryptos[9] = {"btc","eth","all","troot","bch","btg","etc","ltc"};
+const char *cryptos[12] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
 const char *searchmodes[7] = {"sequential","random","chaos","gravity","spiral","reverse","auto"};
 const char *default_fileName = "addresses.txt";
@@ -529,6 +532,7 @@ int FLAGDEBUG = 0;
 int FLAGQUIET = 0;
 int FLAGMATRIX = 0;
 int KFACTOR = 1;
+int FLAGNODECHECK = 0;
 int MAXLENGTHADDRESS = -1;
 int NTHREADS = 1;
 
@@ -1272,7 +1276,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSVZ:B:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:T:v:G:8:z:x:w:L:W")) != -1) {
+	while ((c = getopt(argc, argv, "deh6MqRSVZ:B:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:T:v:G:8:z:x:w:L:WN")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
@@ -1312,7 +1316,7 @@ int main(int argc, char **argv)	{
 				}
 			break;
 			case 'c':
-				index_value = indexOf(optarg,cryptos,8);
+				index_value = indexOf(optarg,cryptos,11);
 				switch(index_value) {
 					case 0: //btc
 						FLAGCRYPTO = CRYPTO_BTC;
@@ -1323,7 +1327,7 @@ int main(int argc, char **argv)	{
 					break;
 					case 2: //all
 						FLAGCRYPTO = CRYPTO_ALL;
-						printf("[+] Setting search for BTC + ETH + LTC + BCH + BTG + ETC simultaneously.\n");
+						printf("[+] Setting search for all currencies simultaneously.\n");
 					break;
 					case 3: //troot
 						FLAGCRYPTO = CRYPTO_TROOT;
@@ -1344,6 +1348,18 @@ int main(int argc, char **argv)	{
 					case 7: //ltc
 						FLAGCRYPTO = CRYPTO_LTC;
 						printf("[+] Setting search for Litecoin (LTC) addresses.\n");
+					break;
+					case 8: //doge
+						FLAGCRYPTO = CRYPTO_DOGE;
+						printf("[+] Setting search for Dogecoin (DOGE) addresses.\n");
+					break;
+					case 9: //xrp
+						FLAGCRYPTO = CRYPTO_XRP;
+						printf("[+] Setting search for XRP (Ripple) addresses.\n");
+					break;
+					case 10: //sol
+						FLAGCRYPTO = CRYPTO_SOL;
+						printf("[+] Setting search for Solana addresses.\n");
 					break;
 					default:
 						FLAGCRYPTO = CRYPTO_NONE;
@@ -1721,6 +1737,10 @@ int main(int argc, char **argv)	{
 			case 'V':
 				FLAGVERBOSE = 1;
 				printf("[+] Verbose derivation path output\n");
+			break;
+			case 'N':
+				FLAGNODECHECK = 1;
+				printf("[+] Node balance checking enabled (requires curl)\n");
 			break;
 			case 'p':
 				FLAGPATH = 1;
@@ -4746,7 +4766,7 @@ void *thread_process(void *vargp)	{
 					switch(FLAGMODE)	{
 						case MODE_RMD160:
 						case MODE_ADDRESS:
-							if(FLAGCRYPTO == CRYPTO_BTC || FLAGCRYPTO == CRYPTO_ALL){
+							if(FLAGCRYPTO == CRYPTO_BTC || FLAGCRYPTO == CRYPTO_LTC || FLAGCRYPTO == CRYPTO_BTG || FLAGCRYPTO == CRYPTO_BCH || FLAGCRYPTO == CRYPTO_DOGE || FLAGCRYPTO == CRYPTO_XRP || FLAGCRYPTO == CRYPTO_ALL){
 
 								if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH ){
 									if(FLAGENDOMORPHISM)	{
@@ -4974,7 +4994,7 @@ void *thread_process(void *vargp)	{
 									}
 								}
 							}
-							else if( FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ALL) {
+							else if( FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC || FLAGCRYPTO == CRYPTO_ALL) {
 								if(FLAGENDOMORPHISM)	{
 									for(k = 0; k < 4;k++)	{
 										for(l = 0;l < 6; l++)	{
@@ -6872,6 +6892,70 @@ void rmd160toaddress_btg(char *rmd,char *dst)	{
 	}
 }
 
+void rmd160toaddress_doge(char *rmd,char *dst)	{
+	char digest[60];
+	size_t pubaddress_size = 40;
+	digest[0] = 0x1e;
+	memcpy(digest+1,rmd,20);
+	sha256((uint8_t*)digest, 21,(uint8_t*) digest+21);
+	sha256((uint8_t*)digest+21, 32,(uint8_t*) digest+21);
+	if(!b58enc(dst,&pubaddress_size,digest,25)){
+		fprintf(stderr,"error b58enc doge\n");
+	}
+}
+
+void rmd160toaddress_xrp(char *rmd,char *dst)	{
+	char digest[60];
+	size_t pubaddress_size = 40;
+	digest[0] = 0x00;
+	memcpy(digest+1,rmd,20);
+	sha256((uint8_t*)digest, 21,(uint8_t*) digest+21);
+	sha256((uint8_t*)digest+21, 32,(uint8_t*) digest+21);
+	if(!b58enc(dst,&pubaddress_size,digest,25)){
+		fprintf(stderr,"error b58enc xrp\n");
+	}
+}
+
+int node_check_balance(const char *address, int crypto_type) {
+	char cmd[1024];
+	char result[4096];
+	FILE *fp;
+
+	switch(crypto_type) {
+		case CRYPTO_BTC:
+			snprintf(cmd, sizeof(cmd), "curl -s \"https://blockstream.info/api/address/%s\" 2>/dev/null", address);
+			break;
+		case CRYPTO_ETH:
+		case CRYPTO_ETC:
+			snprintf(cmd, sizeof(cmd), "curl -s \"https://api.etherscan.io/api?module=account&action=balance&address=%s&tag=latest&apikey=YourApiKeyToken\" 2>/dev/null", address);
+			break;
+		case CRYPTO_LTC:
+			snprintf(cmd, sizeof(cmd), "curl -s \"https://api.blockcypher.com/v1/ltc/main/addrs/%s/balance\" 2>/dev/null", address);
+			break;
+		default:
+			return -1;
+	}
+
+	fp = popen(cmd, "r");
+	if(!fp) return -1;
+
+	int bytes_read = fread(result, 1, sizeof(result) - 1, fp);
+	result[bytes_read] = '\0';
+	pclose(fp);
+
+	if(bytes_read == 0) return -1;
+
+	if(strstr(result, "\"final_balance\":0") || strstr(result, "\"balance\":\"0\"")) {
+		return 0;
+	}
+
+	if(strstr(result, "\"final_balance\"") || strstr(result, "\"balance\"")) {
+		return 1;
+	}
+
+	return -1;
+}
+
 #if defined(_WIN64) && !defined(__CYGWIN__)
 DWORD WINAPI thread_process_bsgs_dance(LPVOID vargp) {
 #else
@@ -8050,14 +8134,23 @@ void menu() {
 	printf("  -f file      Input file with target data\n\n");
 
 	printf("CRYPTO:\n");
-	printf("  -c crypto    btc, eth, ltc, bch, btg, etc, troot, all. Default: btc\n");
+	printf("  -c crypto    btc, eth, ltc, doge, xrp, sol, bch, btg, etc, troot, all. Default: btc\n");
+	printf("               btc   = Bitcoin 1.../3.../bc1q... addresses\n");
+	printf("               eth   = Ethereum 0x... addresses\n");
 	printf("               ltc   = Litecoin L... addresses\n");
-	printf("               bch   = Bitcoin Cash q.../p... addresses\n");
+	printf("               doge  = Dogecoin D... addresses\n");
+	printf("               xrp   = XRP (Ripple) r... addresses\n");
+	printf("               sol   = Solana (base58) addresses\n");
+	printf("               bch   = Bitcoin Cash addresses\n");
 	printf("               btg   = Bitcoin Gold G... addresses\n");
 	printf("               etc   = Ethereum Classic 0x... addresses\n");
 	printf("               troot = Taproot (P2TR) bc1p... addresses\n");
-	printf("               all   = BTC + ETH + LTC + BCH + BTG + ETC simultaneously\n");
+	printf("               all   = All supported currencies simultaneously\n");
 	printf("               Applies to: address, rmd160, vanity modes\n\n");
+
+	printf("  -N           Node balance check via API (requires curl)\n");
+	printf("               When a key is found, checks balance against blockchain\n");
+	printf("               Supports: BTC, ETH, LTC, ETC\n\n");
 
 	printf("RANGE:\n");
 	printf("  -r SR:EN     Hex range StartRange:EndRange\n");
@@ -8796,7 +8889,7 @@ bool readFileAddress(char *fileName)	{
 		*/
 		switch(FLAGMODE)	{
 			case MODE_ADDRESS:
-				if(FLAGCRYPTO == CRYPTO_BTC || FLAGCRYPTO == CRYPTO_LTC || FLAGCRYPTO == CRYPTO_BTG || FLAGCRYPTO == CRYPTO_BCH || FLAGCRYPTO == CRYPTO_ALL)	{
+				if(FLAGCRYPTO == CRYPTO_BTC || FLAGCRYPTO == CRYPTO_LTC || FLAGCRYPTO == CRYPTO_BTG || FLAGCRYPTO == CRYPTO_BCH || FLAGCRYPTO == CRYPTO_DOGE || FLAGCRYPTO == CRYPTO_XRP || FLAGCRYPTO == CRYPTO_ALL)	{
 					return forceReadFileAddress(fileName);
 				}
 				if(FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC || FLAGCRYPTO == CRYPTO_ALL)	{
