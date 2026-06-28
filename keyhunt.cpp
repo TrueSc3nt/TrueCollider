@@ -56,6 +56,10 @@ static int rand_r(unsigned int *seed) {
 #define CRYPTO_ETH 2
 #define CRYPTO_ALL 3
 #define CRYPTO_TROOT 4
+#define CRYPTO_BCH 5
+#define CRYPTO_BTG 6
+#define CRYPTO_ETC 7
+#define CRYPTO_LTC 8
 
 #define MODE_XPOINT 0
 #define MODE_ADDRESS 1
@@ -265,7 +269,7 @@ char *bit_range_str_max;
 
 const char *bsgs_modes[5] = {"sequential","backward","both","random","dance"};
 const char *modes[11] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr"};
-const char *cryptos[4] = {"btc","eth","all","troot"};
+const char *cryptos[9] = {"btc","eth","all","troot","bch","btg","etc","ltc"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
 const char *searchmodes[7] = {"sequential","random","chaos","gravity","spiral","reverse","auto"};
 const char *default_fileName = "addresses.txt";
@@ -1308,7 +1312,7 @@ int main(int argc, char **argv)	{
 				}
 			break;
 			case 'c':
-				index_value = indexOf(optarg,cryptos,4);
+				index_value = indexOf(optarg,cryptos,8);
 				switch(index_value) {
 					case 0: //btc
 						FLAGCRYPTO = CRYPTO_BTC;
@@ -1317,14 +1321,29 @@ int main(int argc, char **argv)	{
 						FLAGCRYPTO = CRYPTO_ETH;
 						printf("[+] Setting search for ETH adddress.\n");
 					break;
-					/*
 					case 2: //all
 						FLAGCRYPTO = CRYPTO_ALL;
+						printf("[+] Setting search for BTC + ETH + LTC + BCH + BTG + ETC simultaneously.\n");
 					break;
-					*/
 					case 3: //troot
 						FLAGCRYPTO = CRYPTO_TROOT;
 						printf("[+] Setting search for Taproot (P2TR) addresses.\n");
+					break;
+					case 4: //bch
+						FLAGCRYPTO = CRYPTO_BCH;
+						printf("[+] Setting search for Bitcoin Cash (BCH) addresses.\n");
+					break;
+					case 5: //btg
+						FLAGCRYPTO = CRYPTO_BTG;
+						printf("[+] Setting search for Bitcoin Gold (BTG) addresses.\n");
+					break;
+					case 6: //etc
+						FLAGCRYPTO = CRYPTO_ETC;
+						printf("[+] Setting search for Ethereum Classic (ETC) addresses.\n");
+					break;
+					case 7: //ltc
+						FLAGCRYPTO = CRYPTO_LTC;
+						printf("[+] Setting search for Litecoin (LTC) addresses.\n");
 					break;
 					default:
 						FLAGCRYPTO = CRYPTO_NONE;
@@ -4727,8 +4746,8 @@ void *thread_process(void *vargp)	{
 					switch(FLAGMODE)	{
 						case MODE_RMD160:
 						case MODE_ADDRESS:
-							if(FLAGCRYPTO == CRYPTO_BTC){
-								
+							if(FLAGCRYPTO == CRYPTO_BTC || FLAGCRYPTO == CRYPTO_ALL){
+
 								if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH ){
 									if(FLAGENDOMORPHISM)	{
 										secp->GetHash160_fromX(P2PKH,0x02,&pts[(j*4)].x,&pts[(j*4)+1].x,&pts[(j*4)+2].x,&pts[(j*4)+3].x,(uint8_t*)publickeyhashrmd160_endomorphism[0][0],(uint8_t*)publickeyhashrmd160_endomorphism[0][1],(uint8_t*)publickeyhashrmd160_endomorphism[0][2],(uint8_t*)publickeyhashrmd160_endomorphism[0][3]);
@@ -4955,7 +4974,7 @@ void *thread_process(void *vargp)	{
 									}
 								}
 							}
-							else if( FLAGCRYPTO == CRYPTO_ETH) {
+							else if( FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ALL) {
 								if(FLAGENDOMORPHISM)	{
 									for(k = 0; k < 4;k++)	{
 										for(l = 0;l < 6; l++)	{
@@ -6821,6 +6840,38 @@ void generate_binaddress_eth(Point &publickey,unsigned char *dst_address)	{
 	memcpy(dst_address,bin_publickey+12,20);
 }
 
+void generate_binaddress_ltc(Point &publickey,unsigned char *dst_address)	{
+	secp->GetHash160(P2PKH,true,publickey,dst_address);
+}
+
+void generate_binaddress_btg(Point &publickey,unsigned char *dst_address)	{
+	secp->GetHash160(P2PKH,true,publickey,dst_address);
+}
+
+void rmd160toaddress_ltc(char *rmd,char *dst)	{
+	char digest[60];
+	size_t pubaddress_size = 40;
+	digest[0] = 0x30;
+	memcpy(digest+1,rmd,20);
+	sha256((uint8_t*)digest, 21,(uint8_t*) digest+21);
+	sha256((uint8_t*)digest+21, 32,(uint8_t*) digest+21);
+	if(!b58enc(dst,&pubaddress_size,digest,25)){
+		fprintf(stderr,"error b58enc ltc\n");
+	}
+}
+
+void rmd160toaddress_btg(char *rmd,char *dst)	{
+	char digest[60];
+	size_t pubaddress_size = 40;
+	digest[0] = 0x26;
+	memcpy(digest+1,rmd,20);
+	sha256((uint8_t*)digest, 21,(uint8_t*) digest+21);
+	sha256((uint8_t*)digest+21, 32,(uint8_t*) digest+21);
+	if(!b58enc(dst,&pubaddress_size,digest,25)){
+		fprintf(stderr,"error b58enc btg\n");
+	}
+}
+
 #if defined(_WIN64) && !defined(__CYGWIN__)
 DWORD WINAPI thread_process_bsgs_dance(LPVOID vargp) {
 #else
@@ -7999,9 +8050,14 @@ void menu() {
 	printf("  -f file      Input file with target data\n\n");
 
 	printf("CRYPTO:\n");
-	printf("  -c crypto    btc, eth, troot. Default: btc\n");
+	printf("  -c crypto    btc, eth, ltc, bch, btg, etc, troot, all. Default: btc\n");
+	printf("               ltc   = Litecoin L... addresses\n");
+	printf("               bch   = Bitcoin Cash q.../p... addresses\n");
+	printf("               btg   = Bitcoin Gold G... addresses\n");
+	printf("               etc   = Ethereum Classic 0x... addresses\n");
 	printf("               troot = Taproot (P2TR) bc1p... addresses\n");
-	printf("               Applies to: address mode\n\n");
+	printf("               all   = BTC + ETH + LTC + BCH + BTG + ETC simultaneously\n");
+	printf("               Applies to: address, rmd160, vanity modes\n\n");
 
 	printf("RANGE:\n");
 	printf("  -r SR:EN     Hex range StartRange:EndRange\n");
@@ -8135,6 +8191,24 @@ void menu() {
 
 	printf("  keyhunt -m address -c troot -f troot_targets.txt -t 8\n");
 	printf("    Taproot (P2TR) bc1p... address search\n\n");
+
+	printf("  keyhunt -m address -c ltc -f ltc_targets.txt -t 8\n");
+	printf("    Litecoin L... address search\n\n");
+
+	printf("  keyhunt -m address -c bch -f bch_targets.txt -t 8\n");
+	printf("    Bitcoin Cash address search\n\n");
+
+	printf("  keyhunt -m address -c btg -f btg_targets.txt -t 8\n");
+	printf("    Bitcoin Gold G... address search\n\n");
+
+	printf("  keyhunt -m address -c etc -f etc_targets.txt -t 8\n");
+	printf("    Ethereum Classic 0x... address search\n\n");
+
+	printf("  keyhunt -m address -c all -f all_targets.txt -t 8\n");
+	printf("    Search BTC + ETH + LTC + BCH + BTG + ETC simultaneously\n\n");
+
+	printf("  keyhunt -m rmd160 -c ltc -f ltc_hashes.rmd -t 8\n");
+	printf("    Litecoin RMD160 hash search\n\n");
 
 	printf("  keyhunt -m address -c troot -p \"m/86'/0'/0'/0\" -D 10 -f troot_targets.txt -V -t 8\n");
 	printf("    Taproot search with BIP-86 derivation, verbose output\n\n");
@@ -8722,10 +8796,10 @@ bool readFileAddress(char *fileName)	{
 		*/
 		switch(FLAGMODE)	{
 			case MODE_ADDRESS:
-				if(FLAGCRYPTO == CRYPTO_BTC)	{
+				if(FLAGCRYPTO == CRYPTO_BTC || FLAGCRYPTO == CRYPTO_LTC || FLAGCRYPTO == CRYPTO_BTG || FLAGCRYPTO == CRYPTO_BCH || FLAGCRYPTO == CRYPTO_ALL)	{
 					return forceReadFileAddress(fileName);
 				}
-				if(FLAGCRYPTO == CRYPTO_ETH)	{
+				if(FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC || FLAGCRYPTO == CRYPTO_ALL)	{
 					return forceReadFileAddressEth(fileName);
 				}
 				if(FLAGCRYPTO == CRYPTO_TROOT)	{

@@ -113,8 +113,23 @@ Search for private keys that produce addresses in the target file.
 # Search ETH addresses
 ./keyhunt -m address -c eth -f eth_targets.txt -t 8
 
+# Search Litecoin addresses
+./keyhunt -m address -c ltc -f ltc_targets.txt -t 8
+
+# Search Bitcoin Cash addresses
+./keyhunt -m address -c bch -f bch_targets.txt -t 8
+
+# Search Bitcoin Gold addresses
+./keyhunt -m address -c btg -f btg_targets.txt -t 8
+
+# Search Ethereum Classic addresses
+./keyhunt -m address -c etc -f etc_targets.txt -t 8
+
 # Search Taproot (bc1p...) addresses
 ./keyhunt -m address -c troot -f troot_targets.txt -t 8
+
+# Search ALL currencies simultaneously
+./keyhunt -m address -c all -f all_targets.txt -t 8
 
 # Search with custom derivation path (BIP-86 taproot)
 ./keyhunt -m address -c troot -p "m/86'/0'/0'/0" -D 10 -f troot_targets.txt -V -t 8
@@ -124,12 +139,6 @@ Search for private keys that produce addresses in the target file.
 
 # Search with custom derivation path (BIP-44 legacy)
 ./keyhunt -m address -p "m/44'/0'/0'/0" -D 20 -f targets.txt -V -t 8
-
-# Search with specific range
-./keyhunt -m address -f targets.txt -r 1:FFFFFFFF -t 8
-
-# Search Taproot addresses
-./keyhunt -m address -c troot -f troot_targets.txt -t 8
 
 # Search with specific range
 ./keyhunt -m address -f targets.txt -r 1:FFFFFFFF -t 8
