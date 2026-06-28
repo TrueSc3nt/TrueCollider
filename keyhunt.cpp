@@ -8416,9 +8416,16 @@ void menu() {
 	printf("  FILE FORMATS\n");
 	printf("===============================================================\n\n");
 
-	printf("  Address targets:    One BTC address (base58) or ETH (0x...) per line\n");
+	printf("  Address targets:    One address per line (auto-detected format):\n");
+	printf("                      BTC:   1..., 3..., bc1q..., bc1p...\n");
+	printf("                      ETH:   0x...\n");
+	printf("                      LTC:   L...\n");
+	printf("                      DOGE:  D...\n");
+	printf("                      XRP:   r...\n");
+	printf("                      BTG:   G...\n");
 	printf("  RMD160 targets:     One 40-char hex RIPEMD-160 hash per line\n");
 	printf("  Public key targets: One hex public key per line (64/66/130 chars)\n");
+	printf("  Taproot targets:    One 64-char hex x-only output key per line\n");
 	printf("  Vanity targets:     Via -v flag, not file\n\n");
 
 	printf("===============================================================\n");
@@ -8514,6 +8521,24 @@ void menu() {
 
 	printf("  keyhunt -m address -f targets.txt -b 72 -t 8 -x auto\n");
 	printf("    Puzzle 72 search with auto pattern cycling\n\n");
+
+	printf("  keyhunt -m address -c all -f mixed_targets.txt -t 8\n");
+	printf("    Search all currencies simultaneously\n\n");
+
+	printf("  keyhunt -m address -c auto -f mixed_targets.txt -t 8\n");
+	printf("    Auto-detect currencies from file content\n\n");
+
+	printf("  keyhunt -m address -c btc -f targets.txt -N -t 8\n");
+	printf("    Search with public API balance check\n\n");
+
+	printf("  keyhunt -m address -c btc -f targets.txt -N http://user:pass@127.0.0.1:8332 -t 8\n");
+	printf("    Search with own Bitcoin Core node balance check\n\n");
+
+	printf("  keyhunt -m address -p \"m/84'/0'/0'/0\" -D 20 -f targets.txt -V -t 8\n");
+	printf("    BIP-84 derivation with verbose output\n\n");
+
+	printf("  keyhunt -m address -p \"m/86'/0'/0'/0\" -c troot -D 10 -f troot.txt -V -t 8\n");
+	printf("    BIP-86 Taproot derivation with verbose output\n\n");
 
 	printf("  keyhunt -m pubkey2addr -f targets.txt -q -s 10 -t 4\n");
 	printf("    Quiet mode, stats every 10 seconds\n\n");
