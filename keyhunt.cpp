@@ -9168,6 +9168,17 @@ bool forceReadFileAddress(char *fileName)	{
 					validAddress = true;
 				}
 			}
+			if(r >= 42 && aux[0] == '0' && aux[1] == 'x')	{	//ETH/ETC address
+				if(isValidHex(aux + 2) && strlen(aux + 2) == 40)	{
+					uint8_t eth_addr[20];
+					hexs2bin(aux + 2, eth_addr);
+					bloom_add(&bloom, eth_addr ,sizeof(struct address_value));
+					bf_add(&bf_filter, eth_addr ,sizeof(struct address_value));
+					memcpy(addressTable[i].value,eth_addr,sizeof(struct address_value));
+					i++;
+					validAddress = true;
+				}
+			}
 			if(r == 40 && isValidHex(aux))	{	//RMD
 				hexs2bin(aux,rawvalue);
 				bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
