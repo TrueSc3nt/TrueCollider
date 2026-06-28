@@ -14,6 +14,8 @@ Developed & Modified by **TrueScent**
 - **Multi-threaded** — full multi-thread support across all modes
 - **BSGS Algorithm** — Baby-Step Giant-Step for solving crypto puzzles
 - **BIP-39 Mnemonics** — 10 languages, BIP-44/49/84 derivation paths
+- **Taproot (P2TR)** — search for Taproot bc1p... addresses with `-c troot`
+- **Custom Derivation Paths** — use `-p` for BIP-32 derivation in address/rmd160 modes
 - **Endomorphism** — GLV endomorphism for 3x speedup in address/rmd160/vanity modes
 - **Timestamp Search** — narrow search ranges by creation time
 
@@ -83,14 +85,23 @@ make
 
 Search for private keys that produce addresses in the target file.
 
-**Input file format:** One BTC address (base58) or ETH address (0x...) per line.
+**Input file format:** One BTC address (base58), ETH address (0x...), or Taproot x-only key (64-char hex) per line.
 
 **How it works:**
 1. Load target addresses into binary fuse filter + sorted array
 2. Each thread generates candidate private keys
-3. Derives public key → address (SHA256 + RIPEMD160 for BTC)
+3. Derives public key → address (SHA256 + RIPEMD160 for BTC, keccak256 for ETH, tagged hash for Taproot)
 4. Checks address against filter (fast rejection) then binary search
 5. Found key is written to `KEYFOUNDKEYFOUND.txt`
+
+**Taproot (P2TR) mode** (`-c troot`):
+- Target file: one 64-char hex x-only taproot output key per line
+- Computes BIP-341 taproot tweak and compares output key
+
+**Custom derivation paths** (`-p`):
+- Each random key is used as a BIP-32 master key
+- Child keys are derived along the specified path for indices 0 to `-D-1`
+- Supports hardened: `'` or `H` or `h` suffix (e.g. `44'`)
 
 **Examples:**
 
@@ -101,11 +112,20 @@ Search for private keys that produce addresses in the target file.
 # Search ETH addresses
 ./keyhunt -m address -c eth -f eth_targets.txt -t 8
 
+# Search Taproot addresses
+./keyhunt -m address -c troot -f troot_targets.txt -t 8
+
 # Search with specific range
 ./keyhunt -m address -f targets.txt -r 1:FFFFFFFF -t 8
 
 # Search with bit range (puzzle 66)
 ./keyhunt -m address -f tests/66.rmd -b 66 -l compress -t 8
+
+# Search with custom derivation path (BIP-86 taproot)
+./keyhunt -m address -c troot -p "m/86'/0'/0'/0" -D 10 -f troot_targets.txt -t 8
+
+# Search with custom derivation path (BIP-44)
+./keyhunt -m address -p "m/44'/0'/0'/0" -D 20 -f targets.txt -t 8
 
 # Search with chaos pattern
 ./keyhunt -m address -f targets.txt -x chaos -t 8
@@ -195,17 +215,16 @@ Search for private keys matching target RIPEMD-160 hashes.
 
 **Input file format:** One 40-char hex RIPEMD-160 hash per line.
 
-**How it works:**
-1. Load target RIPEMD-160 hashes into binary fuse filter
-2. Generates candidate keys and computes hash160 directly
-3. Checks against filter without base58 encoding (faster)
-4. On match, prints the full private key and address
+**Custom derivation paths** (`-p`): Same as address mode — each random key is used as a BIP-32 master key and child keys are derived along the path.
 
 **Examples:**
 
 ```bash
 # Search RMD160 hashes
 ./keyhunt -m rmd160 -f tests/1to32.rmd -r 1:FFFFFFFF -l compress -s 5
+
+# Search with custom derivation path
+./keyhunt -m rmd160 -p "m/44'/0'/0'/0" -D 10 -f hashes.rmd -t 8
 
 # Search with chaos pattern
 ./keyhunt -m rmd160 -f tests/1to32.rmd -x chaos -t 8
