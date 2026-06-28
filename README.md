@@ -1,6 +1,6 @@
 # TrueCollider
 
-**Search Modes + Binary Fuse Filters** — A high-performance Bitcoin/ETH key search tool.
+**Multi-Currency Search + Binary Fuse Filters** — A high-performance cryptocurrency key search tool.
 
 Developed & Modified by **TrueScent**
 
@@ -9,6 +9,8 @@ Developed & Modified by **TrueScent**
 ## Features
 
 - **11 Search Modes** — address, pubkey2addr, rmd160, xpoint, bsgs, vanity, minikeys, mnemonic, poetry, brainwallet
+- **10+ Cryptocurrencies** — BTC, ETH, LTC, DOGE, XRP, SOL, BCH, BTG, ETC, Taproot
+- **Multi-Currency Simultaneous** — search all currencies at once with `-c all`
 - **Binary Fuse Filters** — 30-40% faster lookups, 30-40% less memory than traditional bloom filters
 - **7 Search Patterns** — sequential, random, chaos, gravity, spiral, reverse, auto
 - **Multi-threaded** — full multi-thread support across all modes
@@ -16,6 +18,7 @@ Developed & Modified by **TrueScent**
 - **BIP-39 Mnemonics** — 10 languages, BIP-44/49/84 derivation paths
 - **Taproot (P2TR)** — search for Taproot bc1p... addresses with `-c troot`
 - **Custom Derivation Paths** — use `-p` for BIP-32 derivation in address/rmd160 modes
+- **Node Balance Check** — check balances via API when keys are found with `-N`
 - **Endomorphism** — GLV endomorphism for 3x speedup in address/rmd160/vanity modes
 - **Timestamp Search** — narrow search ranges by creation time
 
@@ -85,24 +88,37 @@ make
 
 Search for private keys that produce addresses in the target file.
 
-**Input file format:** One BTC address (base58), ETH address (0x...), or Taproot x-only key (64-char hex) per line.
+**Supported Cryptocurrencies:**
+- BTC (Bitcoin) — 1.../3... addresses
+- ETH (Ethereum) — 0x... addresses
+- LTC (Litecoin) — L... addresses
+- DOGE (Dogecoin) — D... addresses
+- XRP (Ripple) — r... addresses
+- BCH (Bitcoin Cash) — q.../p... addresses
+- BTG (Bitcoin Gold) — G... addresses
+- ETC (Ethereum Classic) — 0x... addresses
+- TROOT (Taproot) — bc1p... addresses
+- ALL — Search all currencies simultaneously
+
+**Input file format:** One address per line (format depends on currency).
 
 **How it works:**
 1. Load target addresses into binary fuse filter + sorted array
 2. Each thread generates candidate private keys
-3. Derives public key → address (SHA256 + RIPEMD160 for BTC, keccak256 for ETH, tagged hash for Taproot)
+3. Derives public key → address (SHA256 + RIPEMD160 for BTC/LTC/DOGE/XRP, keccak256 for ETH/ETC)
 4. Checks address against filter (fast rejection) then binary search
 5. Found key is written to `KEYFOUNDKEYFOUND.txt`
-
-**Taproot (P2TR) mode** (`-c troot`):
-- Target file: one 64-char hex x-only taproot output key per line
-- Computes BIP-341 taproot tweak and compares output key
 
 **Custom derivation paths** (`-p`):
 - Each random key is used as a BIP-32 master key
 - Child keys are derived along the specified path for indices 0 to `-D-1`
 - Supports hardened: `'` or `H` or `h` suffix (e.g. `44'`)
 - Use `-V` for verbose output showing full derivation path and chain code
+
+**Node balance checking** (`-N`):
+- When a key is found, checks balance against blockchain API
+- Requires curl to be installed
+- Supports BTC, ETH, LTC, ETC
 
 **Examples:**
 
@@ -115,6 +131,12 @@ Search for private keys that produce addresses in the target file.
 
 # Search Litecoin addresses
 ./keyhunt -m address -c ltc -f ltc_targets.txt -t 8
+
+# Search Dogecoin addresses
+./keyhunt -m address -c doge -f doge_targets.txt -t 8
+
+# Search XRP addresses
+./keyhunt -m address -c xrp -f xrp_targets.txt -t 8
 
 # Search Bitcoin Cash addresses
 ./keyhunt -m address -c bch -f bch_targets.txt -t 8
@@ -130,6 +152,15 @@ Search for private keys that produce addresses in the target file.
 
 # Search ALL currencies simultaneously
 ./keyhunt -m address -c all -f all_targets.txt -t 8
+
+# Search with custom derivation path (BIP-86 taproot)
+./keyhunt -m address -c troot -p "m/86'/0'/0'/0" -D 10 -f troot_targets.txt -V -t 8
+
+# Search with node balance checking
+./keyhunt -m address -c btc -f targets.txt -N -t 8
+
+# Search with specific range
+./keyhunt -m address -f targets.txt -r 1:FFFFFFFF -t 8
 
 # Search with custom derivation path (BIP-86 taproot)
 ./keyhunt -m address -c troot -p "m/86'/0'/0'/0" -D 10 -f troot_targets.txt -V -t 8
@@ -195,12 +226,14 @@ Search for private keys that produce addresses in the target file.
 
 Random key generation with address matching. Defaults to `-x random`.
 
-**Input file format:** One BTC address (base58) or ETH address (0x...) per line.
+**Supported Cryptocurrencies:** BTC, ETH, LTC, DOGE, XRP, BCH, BTG, ETC, ALL
+
+**Input file format:** One address per line (format depends on currency).
 
 **How it works:**
 1. Load target addresses into binary fuse filter
 2. Each thread picks random private keys across full key space
-3. Derives public key → BTC or ETH address
+3. Derives public key → address
 4. Checks address against filter + binary search on match
 5. Found key is written to `KEYFOUNDKEYFOUND.txt`
 
@@ -237,6 +270,8 @@ Random key generation with address matching. Defaults to `-x random`.
 ### rmd160
 
 Search for private keys matching target RIPEMD-160 hashes.
+
+**Supported Cryptocurrencies:** BTC, ETH, LTC, DOGE, XRP, BCH, BTG, ETC, ALL
 
 **Input file format:** One 40-char hex RIPEMD-160 hash per line.
 
@@ -370,6 +405,8 @@ Baby-Step Giant-Step mode for solving crypto puzzles.
 ### vanity
 
 Search for a specific vanity address prefix.
+
+**Supported Cryptocurrencies:** BTC, ETH, LTC, DOGE, XRP, BCH, BTG, ETC, ALL
 
 **Input file format:** Not applicable (use `-v` flag).
 
