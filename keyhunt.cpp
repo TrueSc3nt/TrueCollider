@@ -7965,11 +7965,12 @@ void menu() {
 
 	printf("  address\n");
 	printf("    The default mode. Generates random private keys (or walks a range),\n");
-	printf("    derives the public key and BTC/ETH address, then checks the address\n");
-	printf("    against a target file loaded into a binary fuse filter.\n");
-	printf("    Supports: -c btc/eth/troot, -l compress/uncompress/both, -r range, -x modes\n");
+	printf("    derives the public key and address, then checks against target file.\n");
+	printf("    Supports: -c btc/eth/ltc/doge/xrp/bch/btg/etc/troot/all\n");
+	printf("    Supports: -l compress/uncompress/both, -r range, -x modes\n");
 	printf("    Supports: -p path -D count (BIP-32 derivation for each key)\n");
-	printf("    Input file: one BTC/ETH/Taproot address per line\n\n");
+	printf("    Supports: -N[url] node balance check (own node or public API)\n");
+	printf("    Input file: one address per line (format depends on currency)\n\n");
 
 	printf("    How it works:\n");
 	printf("      1. Load target addresses into binary fuse filter + sorted array\n");
@@ -7986,8 +7987,9 @@ void menu() {
 	printf("    but specifically designed for random-only key generation (no sequential\n");
 	printf("    walking). Defaults to -x random. Always generates random keys regardless\n");
 	printf("    of range flags.\n");
-	printf("    Supports: -c btc/eth, -l compress/uncompress/both, -x modes\n");
-	printf("    Input file: one BTC address (base58) or ETH address (0x...) per line\n\n");
+	printf("    Supports: -c btc/eth/ltc/doge/xrp/bch/btg/etc/troot/all\n");
+	printf("    Supports: -l compress/uncompress/both, -x modes\n");
+	printf("    Input file: one address per line (format depends on currency)\n\n");
 
 	printf("    How it works:\n");
 	printf("      1. Load target addresses into binary fuse filter\n");
@@ -8004,6 +8006,7 @@ void menu() {
 	printf("    Searches for private keys whose RIPEMD-160 hash of the public key\n");
 	printf("    matches entries in the target file. Useful when you have raw hash\n");
 	printf("    values rather than addresses.\n");
+	printf("    Supports: -c btc/eth/ltc/doge/xrp/bch/btg/etc/all\n");
 	printf("    Supports: -l compress/uncompress/both, -r range, -x modes, -e\n");
 	printf("    Supports: -p path -D count (BIP-32 derivation for each key)\n");
 	printf("    Input file: one 40-char hex RIPEMD-160 hash per line\n\n");
