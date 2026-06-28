@@ -63,6 +63,7 @@ static int rand_r(unsigned int *seed) {
 #define CRYPTO_DOGE 9
 #define CRYPTO_XRP 10
 #define CRYPTO_SOL 11
+#define CRYPTO_AUTO 12
 
 #define MODE_XPOINT 0
 #define MODE_ADDRESS 1
@@ -212,6 +213,7 @@ bool forceReadFileAddress(char *fileName);
 bool forceReadFileAddressEth(char *fileName);
 bool forceReadFileXPoint(char *fileName);
 bool processOneVanity();
+int autodetect_crypto_from_file(const char *fileName);
 
 bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom);
 
@@ -272,7 +274,7 @@ char *bit_range_str_max;
 
 const char *bsgs_modes[5] = {"sequential","backward","both","random","dance"};
 const char *modes[11] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr"};
-const char *cryptos[12] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol"};
+const char *cryptos[13] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol","auto"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
 const char *searchmodes[7] = {"sequential","random","chaos","gravity","spiral","reverse","auto"};
 const char *default_fileName = "addresses.txt";
@@ -1318,7 +1320,7 @@ int main(int argc, char **argv)	{
 				}
 			break;
 			case 'c':
-				index_value = indexOf(optarg,cryptos,11);
+				index_value = indexOf(optarg,cryptos,12);
 				switch(index_value) {
 					case 0: //btc
 						FLAGCRYPTO = CRYPTO_BTC;
@@ -1362,6 +1364,10 @@ int main(int argc, char **argv)	{
 					case 10: //sol
 						FLAGCRYPTO = CRYPTO_SOL;
 						printf("[+] Setting search for Solana addresses.\n");
+					break;
+					case 11: //auto
+						FLAGCRYPTO = CRYPTO_AUTO;
+						printf("[+] Auto-detecting currency from file...\n");
 					break;
 					default:
 						FLAGCRYPTO = CRYPTO_NONE;
@@ -1934,6 +1940,9 @@ int main(int argc, char **argv)	{
 			case MODE_POETRY:
 			case MODE_BRAINWALLET:
 			case MODE_PUB2ADDR:
+				if(FLAGCRYPTO == CRYPTO_AUTO) {
+					FLAGCRYPTO = autodetect_crypto_from_file(fileName);
+				}
 				if(!readFileAddress(fileName))	{
 					fprintf(stderr,"[E] Unenexpected error\n");
 					exit(EXIT_FAILURE);
@@ -6923,6 +6932,88 @@ void rmd160toaddress_xrp(char *rmd,char *dst)	{
 	}
 }
 
+int autodetect_crypto_from_file(const char *fileName) {
+	FILE *f = fopen(fileName, "r");
+	if(!f) return CRYPTO_BTC;
+
+	char line[256];
+	int btc_count = 0, eth_count = 0, ltc_count = 0, doge_count = 0;
+	int xrp_count = 0, btg_count = 0, troot_count = 0;
+
+	while(fgets(line, sizeof(line), f)) {
+		int len = strlen(line);
+		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+		if(len == 0) continue;
+
+		if(len >= 2 && line[0] == '0' && line[1] == 'x') {
+			eth_count++;
+		}
+		else if(len >= 4 && line[0] == 'b' && line[1] == 'c' && line[2] == '1' && line[3] == 'p') {
+			troot_count++;
+		}
+		else if(len >= 3 && line[0] == 'b' && line[1] == 'c' && line[2] == '1') {
+			btc_count++;
+		}
+		else if(line[0] == 'L') {
+			ltc_count++;
+		}
+		else if(line[0] == 'D') {
+			doge_count++;
+		}
+		else if(line[0] == 'G') {
+			btg_count++;
+		}
+		else if(line[0] == 'r' && len >= 25 && len <= 35) {
+			xrp_count++;
+		}
+		else if(line[0] == '1' || line[0] == '3') {
+			btc_count++;
+		}
+		else if(len == 40) {
+			troot_count++;
+		}
+	}
+	fclose(f);
+
+	int total = btc_count + eth_count + ltc_count + doge_count + xrp_count + btg_count + troot_count;
+	if(total == 0) {
+		printf("[!] Could not detect address type from file, defaulting to BTC\n");
+		return CRYPTO_BTC;
+	}
+
+	printf("[+] Auto-detected from file: ");
+	if(btc_count > 0) printf("BTC(%d) ", btc_count);
+	if(eth_count > 0) printf("ETH(%d) ", eth_count);
+	if(ltc_count > 0) printf("LTC(%d) ", ltc_count);
+	if(doge_count > 0) printf("DOGE(%d) ", doge_count);
+	if(xrp_count > 0) printf("XRP(%d) ", xrp_count);
+	if(btg_count > 0) printf("BTG(%d) ", btg_count);
+	if(troot_count > 0) printf("TROOT(%d) ", troot_count);
+	printf("\n");
+
+	int types_found = 0;
+	if(btc_count > 0) types_found++;
+	if(eth_count > 0) types_found++;
+	if(ltc_count > 0) types_found++;
+	if(doge_count > 0) types_found++;
+	if(xrp_count > 0) types_found++;
+	if(btg_count > 0) types_found++;
+	if(troot_count > 0) types_found++;
+
+	if(types_found > 1) {
+		printf("[+] Multiple currency types detected, using ALL mode\n");
+		return CRYPTO_ALL;
+	}
+
+	if(eth_count > 0) return CRYPTO_ETH;
+	if(ltc_count > 0) return CRYPTO_LTC;
+	if(doge_count > 0) return CRYPTO_DOGE;
+	if(xrp_count > 0) return CRYPTO_XRP;
+	if(btg_count > 0) return CRYPTO_BTG;
+	if(troot_count > 0) return CRYPTO_TROOT;
+	return CRYPTO_BTC;
+}
+
 int node_check_balance(const char *address, int crypto_type) {
 	char cmd[2048];
 	char result[4096];
@@ -8162,7 +8253,8 @@ void menu() {
 	printf("  -f file      Input file with target data\n\n");
 
 	printf("CRYPTO:\n");
-	printf("  -c crypto    btc, eth, ltc, doge, xrp, sol, bch, btg, etc, troot, all. Default: btc\n");
+	printf("  -c crypto    btc, eth, ltc, doge, xrp, sol, bch, btg, etc, troot, all, auto. Default: btc\n");
+	printf("               auto  = Auto-detect currency from address file content\n");
 	printf("               btc   = Bitcoin 1.../3.../bc1q... addresses\n");
 	printf("               eth   = Ethereum 0x... addresses\n");
 	printf("               ltc   = Litecoin L... addresses\n");
