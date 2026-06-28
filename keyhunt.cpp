@@ -538,6 +538,8 @@ int NTHREADS = 1;
 
 int FLAGSAVEREADFILE = 0;
 int FLAGREADEDFILE1 = 0;
+
+char *NODE_RPC_URL = NULL;
 int FLAGREADEDFILE2 = 0;
 int FLAGREADEDFILE3 = 0;
 int FLAGREADEDFILE4 = 0;
@@ -1276,7 +1278,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSVZ:B:b:c:C:D:E:f:I:k:l:m:N:n:p:r:s:t:T:v:G:8:z:x:w:L:WN")) != -1) {
+	while ((c = getopt(argc, argv, "deh6MqRSVZ:B:b:c:C:D:E:f:I:k:l:m:N::n:p:r:s:t:T:v:G:8:z:x:w:L:W")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
@@ -1740,7 +1742,12 @@ int main(int argc, char **argv)	{
 			break;
 			case 'N':
 				FLAGNODECHECK = 1;
-				printf("[+] Node balance checking enabled (requires curl)\n");
+				if(optarg) {
+					NODE_RPC_URL = optarg;
+					printf("[+] Node balance checking enabled via: %s\n", NODE_RPC_URL);
+				} else {
+					printf("[+] Node balance checking enabled (using public APIs)\n");
+				}
 			break;
 			case 'p':
 				FLAGPATH = 1;
@@ -6917,23 +6924,41 @@ void rmd160toaddress_xrp(char *rmd,char *dst)	{
 }
 
 int node_check_balance(const char *address, int crypto_type) {
-	char cmd[1024];
+	char cmd[2048];
 	char result[4096];
 	FILE *fp;
 
-	switch(crypto_type) {
-		case CRYPTO_BTC:
-			snprintf(cmd, sizeof(cmd), "curl -s \"https://blockstream.info/api/address/%s\" 2>/dev/null", address);
-			break;
-		case CRYPTO_ETH:
-		case CRYPTO_ETC:
-			snprintf(cmd, sizeof(cmd), "curl -s \"https://api.etherscan.io/api?module=account&action=balance&address=%s&tag=latest&apikey=YourApiKeyToken\" 2>/dev/null", address);
-			break;
-		case CRYPTO_LTC:
-			snprintf(cmd, sizeof(cmd), "curl -s \"https://api.blockcypher.com/v1/ltc/main/addrs/%s/balance\" 2>/dev/null", address);
-			break;
-		default:
-			return -1;
+	if(NODE_RPC_URL && crypto_type == CRYPTO_BTC) {
+		char rpc_user[256] = "";
+		char rpc_pass[256] = "";
+		char rpc_host[256] = "127.0.0.1";
+		int rpc_port = 8332;
+
+		sscanf(NODE_RPC_URL, "http://%[^:]:%[^@]@%[^:]:%d", rpc_user, rpc_pass, rpc_host, &rpc_port);
+
+		char json_payload[512];
+		snprintf(json_payload, sizeof(json_payload),
+			"{\"jsonrpc\":\"1.0\",\"id\":\"keyhunt\",\"method\":\"scantxoutset\",\"params\":[[\"raw(%s)\"]]}", address);
+
+		snprintf(cmd, sizeof(cmd),
+			"curl -s -u %s:%s -H \"Content-Type: application/json\" -d '%s' http://%s:%d/ 2>/dev/null",
+			rpc_user, rpc_pass, json_payload, rpc_host, rpc_port);
+	}
+	else {
+		switch(crypto_type) {
+			case CRYPTO_BTC:
+				snprintf(cmd, sizeof(cmd), "curl -s \"https://blockstream.info/api/address/%s\" 2>/dev/null", address);
+				break;
+			case CRYPTO_ETH:
+			case CRYPTO_ETC:
+				snprintf(cmd, sizeof(cmd), "curl -s \"https://api.etherscan.io/api?module=account&action=balance&address=%s&tag=latest\" 2>/dev/null", address);
+				break;
+			case CRYPTO_LTC:
+				snprintf(cmd, sizeof(cmd), "curl -s \"https://api.blockcypher.com/v1/ltc/main/addrs/%s/balance\" 2>/dev/null", address);
+				break;
+			default:
+				return -1;
+		}
 	}
 
 	fp = popen(cmd, "r");
@@ -6945,11 +6970,11 @@ int node_check_balance(const char *address, int crypto_type) {
 
 	if(bytes_read == 0) return -1;
 
-	if(strstr(result, "\"final_balance\":0") || strstr(result, "\"balance\":\"0\"")) {
+	if(strstr(result, "\"final_balance\":0") || strstr(result, "\"balance\":\"0\"") || strstr(result, "\"amount\":\"0\"")) {
 		return 0;
 	}
 
-	if(strstr(result, "\"final_balance\"") || strstr(result, "\"balance\"")) {
+	if(strstr(result, "\"final_balance\"") || strstr(result, "\"balance\"") || strstr(result, "\"amount\"")) {
 		return 1;
 	}
 
@@ -8148,9 +8173,11 @@ void menu() {
 	printf("               all   = All supported currencies simultaneously\n");
 	printf("               Applies to: address, rmd160, vanity modes\n\n");
 
-	printf("  -N           Node balance check via API (requires curl)\n");
-	printf("               When a key is found, checks balance against blockchain\n");
-	printf("               Supports: BTC, ETH, LTC, ETC\n\n");
+	printf("  -N[url]      Node balance check when key is found (requires curl)\n");
+	printf("               Without URL: uses public APIs (blockstream.info, etherscan)\n");
+	printf("               With URL: connects to your own Bitcoin Core node via RPC\n");
+	printf("               Format: http://user:pass@host:port (default: http://127.0.0.1:8332)\n");
+	printf("               Supports: BTC (own node or public API), ETH, LTC, ETC (public APIs)\n\n");
 
 	printf("RANGE:\n");
 	printf("  -r SR:EN     Hex range StartRange:EndRange\n");

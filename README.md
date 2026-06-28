@@ -116,9 +116,12 @@ Search for private keys that produce addresses in the target file.
 - Use `-V` for verbose output showing full derivation path and chain code
 
 **Node balance checking** (`-N`):
-- When a key is found, checks balance against blockchain API
+- When a key is found, checks balance against blockchain
+- Without URL: uses public APIs (blockstream.info, etherscan, blockcypher)
+- With URL: connects to your own Bitcoin Core node via RPC
+- Format: `-N http://user:pass@host:port` (default: `http://127.0.0.1:8332`)
 - Requires curl to be installed
-- Supports BTC, ETH, LTC, ETC
+- Supports: BTC (own node or public API), ETH, LTC, ETC (public APIs)
 
 **Examples:**
 
@@ -156,14 +159,14 @@ Search for private keys that produce addresses in the target file.
 # Search with custom derivation path (BIP-86 taproot)
 ./keyhunt -m address -c troot -p "m/86'/0'/0'/0" -D 10 -f troot_targets.txt -V -t 8
 
-# Search with node balance checking
+# Search with node balance checking (public API)
 ./keyhunt -m address -c btc -f targets.txt -N -t 8
+
+# Search with own Bitcoin Core node
+./keyhunt -m address -c btc -f targets.txt -N http://myuser:mypass@127.0.0.1:8332 -t 8
 
 # Search with specific range
 ./keyhunt -m address -f targets.txt -r 1:FFFFFFFF -t 8
-
-# Search with custom derivation path (BIP-86 taproot)
-./keyhunt -m address -c troot -p "m/86'/0'/0'/0" -D 10 -f troot_targets.txt -V -t 8
 
 # Search with custom derivation path (BIP-84 native segwit)
 ./keyhunt -m address -p "m/84'/0'/0'/0" -D 20 -f targets.txt -V -t 8
