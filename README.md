@@ -1,4 +1,4 @@
-# TrueCollider
+# TrueCollider based of Keyhunt By Alberto
 
 **Multi-Currency Cryptocurrency Key Search Tool** — High-performance key search with Binary Fuse Filters, supporting 10+ cryptocurrencies, custom derivation paths, node balance checking, and multi-currency simultaneous search.
 
@@ -841,8 +841,5 @@ See [LICENSE](LICENSE) for details.
 ## Donations
 
 - BTC: 1HmztBLDnwwaKAGbtALsYvCNBuoJYEic3h
-- Tips to Iceland: bc1q39meky2mn5qjq704zz0nnkl0v7kj4uz6r529at
-
----
-
-**TrueCollider** — Developed & Modified by TrueScent
+- 
+**TrueCollider** — Modified by TrueScent
