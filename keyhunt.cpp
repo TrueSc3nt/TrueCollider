@@ -35,7 +35,7 @@ static int rand_r(unsigned int *seed) {
 }
 #endif
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 #include <getopt.h>
 #include <windows.h>
 #else
@@ -129,7 +129,7 @@ struct bPload	{
 	uint32_t finished;
 };
 
-#if defined(_WIN64) && !defined(__CYGWIN__) && !defined(__MINGW64__)
+#if defined(_MSC_VER) && !defined(__MINGW64__)
 #define PACK( __Declaration__ ) __pragma( pack(push, 1) ) __Declaration__ __pragma( pack(pop))
 PACK(struct publickey
 {
@@ -228,7 +228,7 @@ int address_check(const void *buffer, int len);
 void writeFileIfNeeded(const char *fileName);
 
 void calcualteindex(int i,Int *key);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_vanity(LPVOID vargp);
 DWORD WINAPI thread_process_minikeys(LPVOID vargp);
 DWORD WINAPI thread_process(LPVOID vargp);
@@ -479,7 +479,7 @@ bool parse_derivation_path(const char *path) {
     return parsed_path_len > 0;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 HANDLE* tid = NULL;
 HANDLE write_keys;
 HANDLE write_random;
@@ -600,7 +600,7 @@ struct checksumsha256 *bloom_bP_checksums;
 struct checksumsha256 *bloom_bPx2nd_checksums;
 struct checksumsha256 *bloom_bPx3rd_checksums;
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 HANDLE *bloom_bP_mutex;
 HANDLE *bloom_bPx2nd_mutex;
 HANDLE *bloom_bPx3rd_mutex;
@@ -846,13 +846,13 @@ void notify_key_found(Int *found_key) {
 // ============================================================
 
 static void secure_random_bytes(uint8_t *buf, int len, unsigned int *seed) {
-#if defined(_WIN64) && !defined(__CYGWIN__)
-    for(int i = 0; i < len; i++) buf[i] = (uint8_t)(rand_r(seed) ^ (rand_r(seed) >> 8));
-#else
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(TERMUX)
     int r = getrandom(buf, len, 0);
     if(r < len) {
         for(int i = r; i < len; i++) buf[i] = (uint8_t)rand_r(seed);
     }
+#else
+    for(int i = 0; i < len; i++) buf[i] = (uint8_t)(rand_r(seed) ^ (rand_r(seed) >> 8));
 #endif
 }
 
@@ -1237,7 +1237,7 @@ int main(int argc, char **argv)	{
 	struct bPload *bPload_temp_ptr;
 	size_t rsize;
 	
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	DWORD s;
 	write_keys = CreateMutex(NULL, FALSE, NULL);
 	write_random = CreateMutex(NULL, FALSE, NULL);
@@ -1258,10 +1258,7 @@ int main(int argc, char **argv)	{
 	ONE.SetInt32(1);
 	BSGS_GROUP_SIZE.SetInt32(CPU_GRP_SIZE);
 	
-#if defined(_WIN64) && !defined(__CYGWIN__)
-	//Any windows secure random source goes here
-	rseed(clock() + time(NULL) + rand());
-#else
+#if defined(__linux__) && !defined(__ANDROID__) && !defined(TERMUX)
 	unsigned long rseedvalue;
 	int bytes_read = getrandom(&rseedvalue, sizeof(unsigned long), GRND_NONBLOCK);
 	if(bytes_read > 0)	{
@@ -1280,6 +1277,8 @@ int main(int argc, char **argv)	{
 		exit(EXIT_FAILURE);
 		rseed(clock() + time(NULL) + rand()*rand());
 	}
+#else
+	rseed(clock() + time(NULL) + rand());
 #endif
 	
 	
@@ -2240,7 +2239,7 @@ int main(int argc, char **argv)	{
 		bloom_bP_checksums = (struct checksumsha256*)calloc(256,sizeof(struct checksumsha256));
 		checkpointer((void *)bloom_bP_checksums,__FILE__,"calloc","bloom_bP_checksums" ,__LINE__ -1 );
 		
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		bloom_bP_mutex = (HANDLE*) calloc(256,sizeof(HANDLE));
 		
 #else
@@ -2252,7 +2251,7 @@ int main(int argc, char **argv)	{
 		fflush(stdout);
 		bloom_bP_totalbytes = 0;
 		for(i=0; i< 256; i++)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 			bloom_bP_mutex[i] = CreateMutex(NULL, FALSE, NULL);
 #else
 			pthread_mutex_init(&bloom_bP_mutex[i],NULL);
@@ -2269,7 +2268,7 @@ int main(int argc, char **argv)	{
 
 		printf("[+] Bloom filter for %" PRIu64 " elements ",bsgs_m2);
 		
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		bloom_bPx2nd_mutex = (HANDLE*) calloc(256,sizeof(HANDLE));
 #else
 		bloom_bPx2nd_mutex = (pthread_mutex_t*) calloc(256,sizeof(pthread_mutex_t));
@@ -2281,7 +2280,7 @@ int main(int argc, char **argv)	{
 		checkpointer((void *)bloom_bPx2nd_checksums,__FILE__,"calloc","bloom_bPx2nd_checksums" ,__LINE__ -1 );
 		bloom_bP2_totalbytes = 0;
 		for(i=0; i< 256; i++)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 			bloom_bPx2nd_mutex[i] = CreateMutex(NULL, FALSE, NULL);
 #else
 			pthread_mutex_init(&bloom_bPx2nd_mutex[i],NULL);
@@ -2296,7 +2295,7 @@ int main(int argc, char **argv)	{
 		printf(": %.2f MB\n",(float)((float)(uint64_t)bloom_bP2_totalbytes/(float)(uint64_t)1048576));
 		
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		bloom_bPx3rd_mutex = (HANDLE*) calloc(256,sizeof(HANDLE));
 #else
 		bloom_bPx3rd_mutex = (pthread_mutex_t*) calloc(256,sizeof(pthread_mutex_t));
@@ -2310,7 +2309,7 @@ int main(int argc, char **argv)	{
 		printf("[+] Bloom filter for %" PRIu64 " elements ",bsgs_m3);
 		bloom_bP3_totalbytes = 0;
 		for(i=0; i< 256; i++)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 			bloom_bPx3rd_mutex[i] = CreateMutex(NULL, FALSE, NULL);
 #else
 			pthread_mutex_init(&bloom_bPx3rd_mutex[i],NULL);
@@ -2661,7 +2660,7 @@ int main(int argc, char **argv)	{
 				printf("\r[+] processing %lu/%lu bP points : %i%%\r",FINISHED_ITEMS,bsgs_m,(int) (((double)FINISHED_ITEMS/(double)bsgs_m)*100));
 				fflush(stdout);
 				
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				tid = (HANDLE*)calloc(NTHREADS, sizeof(HANDLE));
 				checkpointer((void *)tid,__FILE__,"calloc","tid" ,__LINE__ -1 );
 				bPload_mutex = (HANDLE*) calloc(NTHREADS,sizeof(HANDLE));
@@ -2678,7 +2677,7 @@ int main(int argc, char **argv)	{
 				memset(bPload_threads_available,1,NTHREADS);
 				
 				for(j = 0; j < NTHREADS; j++)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 					bPload_mutex[j] = CreateMutex(NULL, FALSE, NULL);
 #else
 					pthread_mutex_init(&bPload_mutex[j],NULL);
@@ -2702,7 +2701,7 @@ int main(int argc, char **argv)	{
 								bPload_temp_ptr[j].workload = THREADBPWORKLOAD + PERTHREAD_R;
 								salir = 1;
 							}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 							tid[j] = CreateThread(NULL, 0, thread_bPload_2blooms, (void*) &bPload_temp_ptr[j], 0, &s);
 #else
 							s = pthread_create(&tid[j],NULL,thread_bPload_2blooms,(void*) &bPload_temp_ptr[j]);
@@ -2721,7 +2720,7 @@ int main(int argc, char **argv)	{
 					
 					for(j = 0 ; j < NTHREADS ; j++)	{
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 						WaitForSingleObject(bPload_mutex[j], INFINITE);
 						finished = bPload_temp_ptr[j].finished;
 						ReleaseMutex(bPload_mutex[j]);
@@ -2772,7 +2771,7 @@ int main(int argc, char **argv)	{
 				printf("\r[+] processing %lu/%lu bP points : %i%%\r",FINISHED_ITEMS,bsgs_m,(int) (((double)FINISHED_ITEMS/(double)bsgs_m)*100));
 				fflush(stdout);
 				
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				tid = (HANDLE*)calloc(NTHREADS, sizeof(HANDLE));
 				bPload_mutex = (HANDLE*) calloc(NTHREADS,sizeof(HANDLE));
 #else
@@ -2791,7 +2790,7 @@ int main(int argc, char **argv)	{
 				memset(bPload_threads_available,1,NTHREADS);
 				
 				for(j = 0; j < NTHREADS; j++)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 					bPload_mutex[j] = CreateMutex(NULL, FALSE, NULL);
 #else
 					pthread_mutex_init(&bPload_mutex[j],NULL);
@@ -2817,7 +2816,7 @@ int main(int argc, char **argv)	{
 								//if(FLAGDEBUG) printf("[D] Salir OK\n");
 							}
 							//if(FLAGDEBUG) printf("[I] %lu to %lu\n",bPload_temp_ptr[i].from,bPload_temp_ptr[i].to);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 							tid[j] = CreateThread(NULL, 0, thread_bPload, (void*) &bPload_temp_ptr[j], 0, &s);
 #else
 							s = pthread_create(&tid[j],NULL,thread_bPload,(void*) &bPload_temp_ptr[j]);
@@ -2835,7 +2834,7 @@ int main(int argc, char **argv)	{
 					
 					for(j = 0 ; j < NTHREADS ; j++)	{
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 						WaitForSingleObject(bPload_mutex[j], INFINITE);
 						finished = bPload_temp_ptr[j].finished;
 						ReleaseMutex(bPload_mutex[j]);
@@ -3053,7 +3052,7 @@ int main(int argc, char **argv)	{
 		checkpointer((void *)steps,__FILE__,"calloc","steps" ,__LINE__ -1 );
 		ends = (unsigned int *) calloc(NTHREADS,sizeof(int));
 		checkpointer((void *)ends,__FILE__,"calloc","ends" ,__LINE__ -1 );
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		tid = (HANDLE*)calloc(NTHREADS, sizeof(HANDLE));
 #else
 		tid = (pthread_t *) calloc(NTHREADS,sizeof(pthread_t));
@@ -3068,7 +3067,7 @@ int main(int argc, char **argv)	{
 			steps[j] = 0;
 			s = 0;
 			switch(FLAGBSGSMODE)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				case 0:
 					tid[j] = CreateThread(NULL, 0, thread_process_bsgs, (void*)tt, 0, &s);
 					break;
@@ -3102,7 +3101,7 @@ int main(int argc, char **argv)	{
 				break;
 #endif
 			}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 			if (tid[j] == NULL) {
 #else
 			if(s != 0)	{
@@ -3155,7 +3154,7 @@ int main(int argc, char **argv)	{
 		checkpointer((void *)steps,__FILE__,"calloc","steps" ,__LINE__ -1 );
 		ends = (unsigned int *) calloc(NTHREADS,sizeof(int));
 		checkpointer((void *)ends,__FILE__,"calloc","ends" ,__LINE__ -1 );
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		tid = (HANDLE*)calloc(NTHREADS, sizeof(HANDLE));
 #else
 		tid = (pthread_t *) calloc(NTHREADS,sizeof(pthread_t));
@@ -3169,7 +3168,7 @@ int main(int argc, char **argv)	{
 			steps[j] = 0;
 			s = 0;
 			switch(FLAGMODE)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				case MODE_ADDRESS:
 				case MODE_RMD160:
 					if(FLAGPATH) {
@@ -3286,7 +3285,7 @@ int main(int argc, char **argv)	{
 					}
 				}
 				
-#ifdef _WIN64
+#ifdef _MSC_VER
 				WaitForSingleObject(bsgs_thread, INFINITE);
 #else
 				pthread_mutex_lock(&bsgs_thread);
@@ -3349,7 +3348,7 @@ int main(int argc, char **argv)	{
 				printf("%s",buffer);
 				fflush(stdout);
 				THREADOUTPUT = 0;			
-#ifdef _WIN64
+#ifdef _MSC_VER
 				ReleaseMutex(bsgs_thread);
 #else
 				pthread_mutex_unlock(&bsgs_thread);
@@ -3362,7 +3361,7 @@ int main(int argc, char **argv)	{
 		}
 	}while(continue_flag);
 	printf("\nEnd\n");
-#ifdef _WIN64
+#ifdef _MSC_VER
 	CloseHandle(write_keys);
 	CloseHandle(write_random);
 	CloseHandle(bsgs_thread);
@@ -3445,7 +3444,7 @@ int searchbinary(struct address_value *buffer,char *data,int64_t array_length) {
 	return r;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_minikeys(LPVOID vargp) {
 #else
 void *thread_process_minikeys(void *vargp)	{
@@ -3484,7 +3483,7 @@ void *thread_process_minikeys(void *vargp)	{
 		}
 		else	{
 			if(FLAGBASEMINIKEY)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				WaitForSingleObject(write_random, INFINITE);
 				memcpy(buffer_b58,raw_baseminikey,21);
 				increment_minikey_N(raw_baseminikey);
@@ -3497,7 +3496,7 @@ void *thread_process_minikeys(void *vargp)	{
 #endif
 			}
 			else	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				WaitForSingleObject(write_random, INFINITE);
 #else
 				pthread_mutex_lock(&write_random);
@@ -3517,7 +3516,7 @@ void *thread_process_minikeys(void *vargp)	{
 					memcpy(buffer_b58,raw_baseminikey,21);
 					increment_minikey_N(raw_baseminikey);
 				}
-#if defined(_WIN64) && !defined(__CYGWIN__)				
+#if defined(_MSC_VER)				
 				ReleaseMutex(write_random);
 #else
 				pthread_mutex_unlock(&write_random);
@@ -3590,7 +3589,7 @@ void *thread_process_minikeys(void *vargp)	{
 								/* hit */
 								hextemp = key_mpz[k].GetBase16();
 								secp->GetPublicKeyHex(false,publickey[k],public_key_uncompressed_hex);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								WaitForSingleObject(write_keys, INFINITE);
 #else
 								pthread_mutex_lock(&write_keys);
@@ -3604,7 +3603,7 @@ void *thread_process_minikeys(void *vargp)	{
 									fclose(keys);
 								}
 								printf("\nHIT!! Private Key: %s\npubkey: %s\nminikey: %s\naddress: %s\n",hextemp,public_key_uncompressed_hex,minikeys[k],address[k]);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								ReleaseMutex(write_keys);
 #else
 								pthread_mutex_unlock(&write_keys);
@@ -3624,7 +3623,7 @@ void *thread_process_minikeys(void *vargp)	{
 }
 
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_mnemonic(LPVOID vargp) {
 #else
 void *thread_process_mnemonic(void *vargp) {
@@ -3745,7 +3744,7 @@ void *thread_process_mnemonic(void *vargp) {
 							printf("[+] Public Key: %s\n", pubkey_hex);
 						}
 						
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 						WaitForSingleObject(write_keys, INFINITE);
 #else
 						pthread_mutex_lock(&write_keys);
@@ -3767,7 +3766,7 @@ void *thread_process_mnemonic(void *vargp) {
 							}
 							fclose(f);
 						}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 						ReleaseMutex(write_keys);
 #else
 						pthread_mutex_unlock(&write_keys);
@@ -3795,7 +3794,7 @@ void *thread_process_mnemonic(void *vargp) {
 }
 
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_derived(LPVOID vargp) {
 #else
 void *thread_process_derived(void *vargp) {
@@ -3861,7 +3860,7 @@ void *thread_process_derived(void *vargp) {
 								chain_hex[64] = '\0';
 								printf("[+] Derived Chain Code: %s\n", chain_hex);
 							}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 							WaitForSingleObject(write_keys, INFINITE);
 #else
 							pthread_mutex_lock(&write_keys);
@@ -3872,7 +3871,7 @@ void *thread_process_derived(void *vargp) {
 									path_string, idx, master_hex, hextemp, pubkey_hex, address);
 								fclose(f);
 							}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 							ReleaseMutex(write_keys);
 #else
 							pthread_mutex_unlock(&write_keys);
@@ -3907,7 +3906,7 @@ void *thread_process_derived(void *vargp) {
 								chain_hex[64] = '\0';
 								printf("[+] Derived Chain Code: %s\n", chain_hex);
 							}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 							WaitForSingleObject(write_keys, INFINITE);
 #else
 							pthread_mutex_lock(&write_keys);
@@ -3918,7 +3917,7 @@ void *thread_process_derived(void *vargp) {
 									path_string, idx, master_hex, hextemp, pubkey_hex, address);
 								fclose(f);
 							}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 							ReleaseMutex(write_keys);
 #else
 							pthread_mutex_unlock(&write_keys);
@@ -3953,7 +3952,7 @@ void *thread_process_derived(void *vargp) {
 							chain_hex[64] = '\0';
 							printf("[+] Derived Chain Code: %s\n", chain_hex);
 						}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 						WaitForSingleObject(write_keys, INFINITE);
 #else
 						pthread_mutex_lock(&write_keys);
@@ -3964,7 +3963,7 @@ void *thread_process_derived(void *vargp) {
 								path_string, idx, master_hex, hextemp, eth_address);
 							fclose(f);
 						}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 						ReleaseMutex(write_keys);
 #else
 						pthread_mutex_unlock(&write_keys);
@@ -4094,7 +4093,7 @@ bool forceReadFileTroot(char *fileName) {
 	return true;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_troot(LPVOID vargp) {
 #else
 void *thread_process_troot(void *vargp) {
@@ -4146,7 +4145,7 @@ void *thread_process_troot(void *vargp) {
 					printf("[+] Private Key (hex): %s\n", hextemp);
 					printf("[+] Public Key: %s\n", pubkey_hex);
 					printf("[+] Taproot Output Key (x-only): %s\n", x_hex);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 					WaitForSingleObject(write_keys, INFINITE);
 #else
 					pthread_mutex_lock(&write_keys);
@@ -4157,7 +4156,7 @@ void *thread_process_troot(void *vargp) {
 							hextemp, pubkey_hex, x_hex);
 						fclose(f);
 					}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 					ReleaseMutex(write_keys);
 #else
 					pthread_mutex_unlock(&write_keys);
@@ -4186,7 +4185,7 @@ void *thread_process_troot(void *vargp) {
 }
 
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_poetry(LPVOID vargp) {
 #else
 void *thread_process_poetry(void *vargp) {
@@ -4265,7 +4264,7 @@ void *thread_process_poetry(void *vargp) {
 						printf("[+] Private Key (hex): %s\n", hextemp);
 						printf("[+] Public Key: %s\n", public_key_hex);
 						
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 						WaitForSingleObject(write_keys, INFINITE);
 #else
 						pthread_mutex_lock(&write_keys);
@@ -4275,7 +4274,7 @@ void *thread_process_poetry(void *vargp) {
 							fprintf(f, "Poetry: %s\nPrivate Key: %s\nPublic Key: %s\n\n", poetry, hextemp, public_key_hex);
 							fclose(f);
 						}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 						ReleaseMutex(write_keys);
 #else
 						pthread_mutex_unlock(&write_keys);
@@ -4386,7 +4385,7 @@ static int brainwallet_check(const char *passphrase, uint8_t *privkey_data, int 
 				printf("[+] BTC Address: %s\n", address);
 				printf("[+] Public Key: %s\n", public_key_hex);
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				WaitForSingleObject(write_keys, INFINITE);
 #else
 				pthread_mutex_lock(&write_keys);
@@ -4397,7 +4396,7 @@ static int brainwallet_check(const char *passphrase, uint8_t *privkey_data, int 
 						passphrase, hash_mode == 0 ? "SHA256" : "SHA256(SHA256())", hextemp, address, public_key_hex);
 					fclose(f);
 				}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				ReleaseMutex(write_keys);
 #else
 				pthread_mutex_unlock(&write_keys);
@@ -4411,7 +4410,7 @@ static int brainwallet_check(const char *passphrase, uint8_t *privkey_data, int 
 	return 0;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_brainwallet(LPVOID vargp) {
 #else
 void *thread_process_brainwallet(void *vargp) {
@@ -4497,7 +4496,7 @@ void *thread_process_brainwallet(void *vargp) {
 }
 
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_pub2addr(LPVOID vargp) {
 #else
 void *thread_process_pub2addr(void *vargp) {
@@ -4546,7 +4545,7 @@ void *thread_process_pub2addr(void *vargp) {
 					printf("[+] Public Key: %s\n", pubkey_hex);
 					printf("[+] BTC Address: %s\n", found_address);
 				}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				WaitForSingleObject(write_keys, INFINITE);
 #else
 				pthread_mutex_lock(&write_keys);
@@ -4556,7 +4555,7 @@ void *thread_process_pub2addr(void *vargp) {
 					fprintf(f, "Private Key: %s\nAddress: %s\n", hextemp, found_address);
 					fclose(f);
 				}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				ReleaseMutex(write_keys);
 #else
 				pthread_mutex_unlock(&write_keys);
@@ -4579,7 +4578,7 @@ void *thread_process_pub2addr(void *vargp) {
 }
 
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process(LPVOID vargp) {
 #else
 void *thread_process(void *vargp)	{
@@ -4621,7 +4620,7 @@ void *thread_process(void *vargp)	{
 	do {
 		if(FLAGSEARCHMODE == SEARCHMODE_SEQUENTIAL) {
 			if(n_range_start.IsLower(&n_range_end))	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				WaitForSingleObject(write_random, INFINITE);
 				key_mpz.Set(&n_range_start);
 				n_range_start.Add(N_SEQUENTIAL_MAX);
@@ -4638,7 +4637,7 @@ void *thread_process(void *vargp)	{
 			}
 		}
 		else	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 			WaitForSingleObject(write_random, INFINITE);
 			get_next_search_key(&key_mpz, &n_range_start, &n_range_end);
 			ReleaseMutex(write_random);
@@ -5189,7 +5188,7 @@ void *thread_process(void *vargp)	{
 }
 
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_vanity(LPVOID vargp) {
 #else
 void *thread_process_vanity(void *vargp)	{
@@ -5247,7 +5246,7 @@ void *thread_process_vanity(void *vargp)	{
 	do {
 		if(FLAGSEARCHMODE == SEARCHMODE_SEQUENTIAL) {
 			if(n_range_start.IsLower(&n_range_end))	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				WaitForSingleObject(write_random, INFINITE);
 				key_mpz.Set(&n_range_start);
 				n_range_start.Add(N_SEQUENTIAL_MAX);
@@ -5264,7 +5263,7 @@ void *thread_process_vanity(void *vargp)	{
 			}
 		}
 		else	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 			WaitForSingleObject(write_random, INFINITE);
 			get_next_search_key(&key_mpz, &n_range_start, &n_range_end);
 			ReleaseMutex(write_random);
@@ -5870,7 +5869,7 @@ int bsgs_searchbinary(struct bsgs_xvalue *buffer,char *data,int64_t array_length
 	return r;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_bsgs(LPVOID vargp) {
 #else
 void *thread_process_bsgs(void *vargp)	{
@@ -5919,7 +5918,7 @@ void *thread_process_bsgs(void *vargp)	{
 		We do this in an atomic pthread_mutex operation to not affect others threads
 		so BSGS_CURRENT is never the same between threads
 	*/
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		WaitForSingleObject(bsgs_thread, INFINITE);
 #else
 		pthread_mutex_lock(&bsgs_thread);
@@ -5933,7 +5932,7 @@ void *thread_process_bsgs(void *vargp)	{
 			BSGS_CURRENT.Add(&BSGS_N_double);
 		}
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		ReleaseMutex(bsgs_thread);
 #else
 		pthread_mutex_unlock(&bsgs_thread);
@@ -6051,7 +6050,7 @@ pn.y.ModAdd(&GSn[i].y);
 								point_found = secp->ComputePublicKey(&keyfound);
 								aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 								printf("[+] Publickey %s\n",aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								WaitForSingleObject(write_keys, INFINITE);
 #else
 								pthread_mutex_lock(&write_keys);
@@ -6064,7 +6063,7 @@ pn.y.ModAdd(&GSn[i].y);
 								}
 							free(hextemp);
 							free(aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 			ReleaseMutex(write_keys);
 #else
 			pthread_mutex_unlock(&write_keys);
@@ -6108,7 +6107,7 @@ pn.y.ModAdd(&GSn[i].y);
 	return NULL;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_bsgs_random(LPVOID vargp) {
 #else
 void *thread_process_bsgs_random(void *vargp)	{
@@ -6160,14 +6159,14 @@ void *thread_process_bsgs_random(void *vargp)	{
 		-b	bit | Min bit value | Max bit value |
 		-r	A:B | A             | B             |
 	*/
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		WaitForSingleObject(bsgs_thread, INFINITE);
 #else
 		pthread_mutex_lock(&bsgs_thread);
 #endif
 
 		get_next_search_key(&base_key, &n_range_start, &n_range_end);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		ReleaseMutex(bsgs_thread);
 #else
 		pthread_mutex_unlock(&bsgs_thread);
@@ -6301,7 +6300,7 @@ pn.y.ModAdd(&GSn[i].y);
 								point_found = secp->ComputePublicKey(&keyfound);
 								aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 								printf("[+] Publickey %s\n",aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								WaitForSingleObject(write_keys, INFINITE);
 #else
 								pthread_mutex_lock(&write_keys);
@@ -6314,7 +6313,7 @@ pn.y.ModAdd(&GSn[i].y);
 								}
 								free(hextemp);
 								free(aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								ReleaseMutex(write_keys);
 #else
 								pthread_mutex_unlock(&write_keys);
@@ -6469,7 +6468,7 @@ int bsgs_thirdcheck(Int *start_range,uint32_t a,uint32_t k_index,Int *privatekey
 }
 
 void sleep_ms(int milliseconds)	{ // cross-platform sleep function
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
     Sleep(milliseconds);
 #elif _POSIX_C_SOURCE >= 199309L
     struct timespec ts;
@@ -6499,7 +6498,7 @@ void init_generator()	{
 	_2Gn = secp->DoubleDirect(Gn[CPU_GRP_SIZE / 2 - 1]);
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_bPload(LPVOID vargp) {
 #else
 void *thread_bPload(void *vargp)	{
@@ -6627,7 +6626,7 @@ void *thread_bPload(void *vargp)	{
 					bPtable[i_counter].index = i_counter;
 				}
 				if(!FLAGREADEDFILE4)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 					WaitForSingleObject(bloom_bPx3rd_mutex[bloom_bP_index], INFINITE);
 					bloom_add(&bloom_bPx3rd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
 					ReleaseMutex(bloom_bPx3rd_mutex[bloom_bP_index]);
@@ -6639,7 +6638,7 @@ void *thread_bPload(void *vargp)	{
 				}
 			}
 			if(i_counter < bsgs_m2 && !FLAGREADEDFILE2)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				WaitForSingleObject(bloom_bPx2nd_mutex[bloom_bP_index], INFINITE);
 				bloom_add(&bloom_bPx2nd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
 				ReleaseMutex(bloom_bPx2nd_mutex[bloom_bP_index]);
@@ -6650,7 +6649,7 @@ void *thread_bPload(void *vargp)	{
 #endif	
 			}
 			if(i_counter < to && !FLAGREADEDFILE1 )	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 				WaitForSingleObject(bloom_bP_mutex[bloom_bP_index], INFINITE);
 				bloom_add(&bloom_bP[bloom_bP_index], rawvalue ,BSGS_BUFFERXPOINTLENGTH);
 				ReleaseMutex(bloom_bP_mutex[bloom_bP_index]);
@@ -6679,7 +6678,7 @@ void *thread_bPload(void *vargp)	{
 		startP = pp;
 	}
 	delete grp;
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	WaitForSingleObject(bPload_mutex[threadid], INFINITE);
 	tt->finished = 1;
 	ReleaseMutex(bPload_mutex[threadid]);
@@ -6692,7 +6691,7 @@ void *thread_bPload(void *vargp)	{
 	return NULL;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_bPload_2blooms(LPVOID vargp) {
 #else
 void *thread_bPload_2blooms(void *vargp)	{
@@ -6810,7 +6809,7 @@ void *thread_bPload_2blooms(void *vargp)	{
 					bPtable[i_counter].index = i_counter;
 				}
 				if(!FLAGREADEDFILE4)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 					WaitForSingleObject(bloom_bPx3rd_mutex[bloom_bP_index], INFINITE);
 					bloom_add(&bloom_bPx3rd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
 					ReleaseMutex(bloom_bPx3rd_mutex[bloom_bP_index]);
@@ -6822,7 +6821,7 @@ void *thread_bPload_2blooms(void *vargp)	{
 				}
 			}
 			if(i_counter < bsgs_m2 && !FLAGREADEDFILE2)	{
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 					WaitForSingleObject(bloom_bPx2nd_mutex[bloom_bP_index], INFINITE);
 					bloom_add(&bloom_bPx2nd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
 					ReleaseMutex(bloom_bPx2nd_mutex[bloom_bP_index]);
@@ -6851,7 +6850,7 @@ void *thread_bPload_2blooms(void *vargp)	{
 		startP = pp;
 	}
 	delete grp;
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	WaitForSingleObject(bPload_mutex[threadid], INFINITE);
 	tt->finished = 1;
 	ReleaseMutex(bPload_mutex[threadid]);
@@ -7142,7 +7141,7 @@ int node_check_balance(const char *address, int crypto_type) {
 	return -1;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_bsgs_dance(LPVOID vargp) {
 #else
 void *thread_process_bsgs_dance(void *vargp)	{
@@ -7182,7 +7181,7 @@ void *thread_process_bsgs_dance(void *vargp)	{
 	*/
 	do	{
 		r = rand() % 3;
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	WaitForSingleObject(bsgs_thread, INFINITE);
 #else
 	pthread_mutex_lock(&bsgs_thread);
@@ -7229,7 +7228,7 @@ void *thread_process_bsgs_dance(void *vargp)	{
 		break;
 	} // end switch
 	} // end else (sequential/random dance mode)
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	ReleaseMutex(bsgs_thread);
 #else
 	pthread_mutex_unlock(&bsgs_thread);
@@ -7365,7 +7364,7 @@ pn.y.ModAdd(&GSn[i].y);
 								point_found = secp->ComputePublicKey(&keyfound);
 								aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 								printf("[+] Publickey %s\n",aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								WaitForSingleObject(write_keys, INFINITE);
 #else
 								pthread_mutex_lock(&write_keys);
@@ -7378,7 +7377,7 @@ pn.y.ModAdd(&GSn[i].y);
 								}
 								free(hextemp);
 								free(aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								ReleaseMutex(write_keys);
 #else
 								pthread_mutex_unlock(&write_keys);
@@ -7426,7 +7425,7 @@ pn.y.ModAdd(&GSn[i].y);
 	return NULL;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_bsgs_backward(LPVOID vargp) {
 #else
 void *thread_process_bsgs_backward(void *vargp)	{
@@ -7474,7 +7473,7 @@ void *thread_process_bsgs_backward(void *vargp)	{
 	*/
 	do	{
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		WaitForSingleObject(bsgs_thread, INFINITE);
 #else
 		pthread_mutex_lock(&bsgs_thread);
@@ -7496,7 +7495,7 @@ void *thread_process_bsgs_backward(void *vargp)	{
 				entrar = 0;
 			}
 		}
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		ReleaseMutex(bsgs_thread);
 #else
 		pthread_mutex_unlock(&bsgs_thread);
@@ -7629,7 +7628,7 @@ pn.y.ModAdd(&GSn[i].y);
 								point_found = secp->ComputePublicKey(&keyfound);
 								aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 								printf("[+] Publickey %s\n",aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								WaitForSingleObject(write_keys, INFINITE);
 #else
 								pthread_mutex_lock(&write_keys);
@@ -7642,7 +7641,7 @@ pn.y.ModAdd(&GSn[i].y);
 								}
 								free(hextemp);
 								free(aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								ReleaseMutex(write_keys);
 #else
 								pthread_mutex_unlock(&write_keys);
@@ -7689,7 +7688,7 @@ pn.y.ModAdd(&GSn[i].y);
 	return NULL;
 }
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 DWORD WINAPI thread_process_bsgs_both(LPVOID vargp) {
 #else
 void *thread_process_bsgs_both(void *vargp)	{
@@ -7740,7 +7739,7 @@ void *thread_process_bsgs_both(void *vargp)	{
 	do	{
 
 		r = rand() % 2;
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		WaitForSingleObject(bsgs_thread, INFINITE);
 #else
 		pthread_mutex_lock(&bsgs_thread);
@@ -7784,7 +7783,7 @@ void *thread_process_bsgs_both(void *vargp)	{
 			break;
 		}
 		} // end else (sequential/random both mode)
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 		ReleaseMutex(bsgs_thread);
 #else
 		pthread_mutex_unlock(&bsgs_thread);
@@ -7919,7 +7918,7 @@ void *thread_process_bsgs_both(void *vargp)	{
 									point_found = secp->ComputePublicKey(&keyfound);
 									aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k],point_found);
 									printf("[+] Publickey %s\n",aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 									WaitForSingleObject(write_keys, INFINITE);
 #else
 									pthread_mutex_lock(&write_keys);
@@ -7932,7 +7931,7 @@ void *thread_process_bsgs_both(void *vargp)	{
 									}
 									free(hextemp);
 								free(aux_c);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 								ReleaseMutex(write_keys);
 #else
 								pthread_mutex_unlock(&write_keys);
@@ -8632,7 +8631,7 @@ void writevanitykey(bool compressed,Int *key)	{
 	hexrmd = tohex(rmdhash,20);
 	rmd160toaddress_dst(rmdhash,address);
 	
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	WaitForSingleObject(write_keys, INFINITE);
 #else
 	pthread_mutex_lock(&write_keys);
@@ -8644,7 +8643,7 @@ void writevanitykey(bool compressed,Int *key)	{
 	}
 	printf("\nVanity Private Key: %s\npubkey: %s\nAddress %s\nrmd160 %s\n",hextemp,public_key_hex,address,hexrmd);
 	
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
 	pthread_mutex_unlock(&write_keys);
@@ -8819,7 +8818,7 @@ void writekey(bool compressed,Int *key)	{
 	hexrmd = tohex(rmdhash,20);
 	rmd160toaddress_dst(rmdhash,address);
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	WaitForSingleObject(write_keys, INFINITE);
 #else
 	pthread_mutex_lock(&write_keys);
@@ -8831,7 +8830,7 @@ void writekey(bool compressed,Int *key)	{
 	}
 	printf("\nHit! Private Key: %s\npubkey: %s\nAddress %s\nrmd160 %s\n",hextemp,public_key_hex,address,hexrmd);
 	
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
 	pthread_mutex_unlock(&write_keys);
@@ -8851,7 +8850,7 @@ void writekeyeth(Int *key)	{
 	address[1] = 'x';
 	tohex_dst(hash,20,address+2);
 
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	WaitForSingleObject(write_keys, INFINITE);
 #else
 	pthread_mutex_lock(&write_keys);
@@ -8862,7 +8861,7 @@ void writekeyeth(Int *key)	{
 		fclose(keys);
 	}
 	printf("\n Hit!!!! Private Key: %s\naddress: %s\n",hextemp,address);
-#if defined(_WIN64) && !defined(__CYGWIN__)
+#if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
 	pthread_mutex_unlock(&write_keys);
