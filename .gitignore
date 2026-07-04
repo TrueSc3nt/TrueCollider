@@ -1,0 +1,9 @@
+# Build artifacts
+*.o
+*.obj
+keyhunt.exe
+keyhunt
+
+# OS files
+.DS_Store
+Thumbs.db

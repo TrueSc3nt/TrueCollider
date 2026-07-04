@@ -1,0 +1,147 @@
+# TrueCollider cross-platform Makefile
+# Auto-detects architecture and compiler flags
+# Works on: Linux x86_64, Linux ARM64, Termux, macOS, MinGW, WSL
+
+# Detect OS
+OS := $(shell uname -s 2>/dev/null || echo Windows)
+# Detect architecture
+ARCH := $(shell uname -m 2>/dev/null || echo x86_64)
+
+CXX := g++
+CC  := gcc
+CXXFLAGS_BASE := -Wall -Wextra -Wno-deprecated-copy -O2
+CFLAGS_BASE   := -Wall -Wextra -Wno-unused-parameter -O2
+
+# Detect x86 vs ARM vs other
+IS_X86 := $(filter x86_64 i386 i686 amd64,$(ARCH))
+IS_ARM := $(filter aarch64 arm64 armv7l armv8l,$(ARCH))
+
+# Base flags (no arch-specific stuff)
+CXXFLAGS := $(CXXFLAGS_BASE)
+CFLAGS   := $(CFLAGS_BASE)
+
+ifeq ($(IS_X86),)
+  # Not x86 — ARM or other arch (Termux, Raspberry Pi, Apple Silicon, etc.)
+  # Do NOT use -m64, -mssse3, -march=native on non-x86
+  CXXFLAGS += -DNO_SSE
+  CFLAGS   += -DNO_SSE
+else
+  # x86 detected — safe to use SSE/native flags
+  CXXFLAGS += -m64 -march=native -mtune=native -mssse3 -ftree-vectorize
+  CFLAGS   += -m64 -march=native -mtune=native -mssse3 -ftree-vectorize
+endif
+
+# Platform-specific flags
+ifeq ($(OS),Darwin)
+  CXXFLAGS += -DOS_MACOS
+  CFLAGS   += -DOS_MACOS
+else ifneq (,$(findstring MINGW,$(OS)))
+  CXXFLAGS += -DOS_WINDOWS
+  CFLAGS   += -DOS_WINDOWS
+else ifneq (,$(findstring MSYS,$(OS)))
+  CXXFLAGS += -DOS_WINDOWS
+  CFLAGS   += -DOS_WINDOWS
+else ifneq (,$(findstring CYGWIN,$(OS)))
+  CXXFLAGS += -DOS_CYGWIN
+  CFLAGS   += -DOS_CYGWIN
+endif
+
+# Detect Termux
+ifeq ($(shell test -d /data/data/com.termux && echo yes),yes)
+  CXXFLAGS += -DTERMUX
+  CFLAGS   += -DTERMUX
+  # Termux has limited SSE support — disable SSE intrinsics
+  CXXFLAGS := $(filter-out -mssse3,$(CXXFLAGS))
+  CFLAGS   := $(filter-out -mssse3,$(CFLAGS))
+endif
+
+LIBS := -lm -lpthread
+
+OBJECTS := oldbloom.o bloom.o base58.o rmd160.o sha3.o keccak.o xxhash.o \
+           util.o Int.o Point.o SECP256K1.o IntMod.o Random.o IntGroup.o \
+           hash/ripemd160.o hash/sha256.o hash/sha512.o
+
+# On x86, also compile SSE hash files
+ifneq ($(IS_X86),)
+  OBJECTS += hash/ripemd160_sse.o hash/sha256_sse.o
+  SSE_DEFINE := -DHAVE_SSE
+else
+  SSE_DEFINE := -DNO_SSE
+endif
+
+TARGET := keyhunt
+
+default: $(TARGET)
+
+$(TARGET): keyhunt_nolto.o $(OBJECTS)
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
+
+keyhunt_nolto.o: keyhunt.cpp
+	$(CXX) $(CXXFLAGS) $(SSE_DEFINE) -c $< -o $@
+
+# secp256k1
+Int.o: secp256k1/Int.cpp secp256k1/Int.h secp256k1/Random.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+Point.o: secp256k1/Point.cpp secp256k1/Point.h secp256k1/Int.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+SECP256K1.o: secp256k1/SECP256K1.cpp secp256k1/SECP256K1.h secp256k1/Point.h secp256k1/Int.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+IntMod.o: secp256k1/IntMod.cpp secp256k1/IntMod.h secp256k1/Int.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+Random.o: secp256k1/Random.cpp secp256k1/Random.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+IntGroup.o: secp256k1/IntGroup.cpp secp256k1/IntGroup.h secp256k1/Int.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# bloom filters
+oldbloom.o: oldbloom/bloom.cpp oldbloom/oldbloom.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+bloom.o: bloom/bloom.cpp bloom/bloom.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# C files
+base58.o: base58/base58.c base58/libbase58.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+rmd160.o: rmd160/rmd160.c rmd160/rmd160.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+sha3.o: sha3/sha3.c sha3/sha3.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+keccak.o: sha3/keccak.c sha3/sha3.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+xxhash.o: xxhash/xxhash.c xxhash/xxhash.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+util.o: util.c util.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Hash files (non-SSE)
+hash/ripemd160.o: hash/ripemd160.cpp hash/ripemd160.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+hash/sha256.o: hash/sha256.cpp hash/sha256.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+hash/sha512.o: hash/sha512.cpp hash/sha512.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+# SSE hash files (x86 only)
+ifneq ($(IS_X86),)
+hash/ripemd160_sse.o: hash/ripemd160_sse.cpp hash/ripemd160.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+hash/sha256_sse.o: hash/sha256_sse.cpp hash/sha256.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+endif
+
+clean:
+	rm -f $(TARGET) keyhunt_nolto.o *.o hash/*.o
