@@ -221,8 +221,26 @@ static uint64_t inline __shiftleft128(uint64_t a, uint64_t b,unsigned char n) {
   return  c;
 }
 
-#define _subborrow_u64(a,b,c,d) __builtin_ia32_sbb_u64(a,b,c,(long long unsigned int*)d);
-#define _addcarry_u64(a,b,c,d) __builtin_ia32_addcarryx_u64(a,b,c,(long long unsigned int*)d);
+// Portable carry intrinsics (works on GCC, Clang, all architectures)
+static unsigned char inline _subborrow_u64(unsigned char c, uint64_t a, uint64_t b, uint64_t *d) {
+#if defined(__GNUC__) || defined(__clang__)
+  return __builtin_sub_overflow(a, b + c, d);
+#else
+  uint64_t diff = a - b - c;
+  *d = diff;
+  return (diff > a || (diff == a && c)) ? 1 : 0;
+#endif
+}
+
+static unsigned char inline _addcarry_u64(unsigned char c, uint64_t a, uint64_t b, uint64_t *d) {
+#if defined(__GNUC__) || defined(__clang__)
+  return __builtin_add_overflow(a, b + c, d);
+#else
+  uint64_t sum = a + b + c;
+  *d = sum;
+  return (sum < a || (sum == a && c)) ? 1 : 0;
+#endif
+}
 
 #else
 

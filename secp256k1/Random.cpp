@@ -23,11 +23,8 @@
 #include <sys/random.h>
 #endif
 
-#ifdef __unix__
-#ifdef __CYGWIN__
-#else
+#if defined(__unix__) && !defined(__CYGWIN__) && !defined(__ANDROID__) && !defined(TERMUX)
 #include <linux/random.h>
-#endif
 #endif
 
 #define  RK_STATE_LEN 624
