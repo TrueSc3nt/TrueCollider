@@ -15,8 +15,12 @@ echo   run_keyhunt.bat -h
 echo.
 echo Search modes (-x): sequential, random, chaos, gravity, spiral, reverse, auto
 echo.
+set "SCRIPT_DIR=%~dp0"
+set "WSL_DIR=%SCRIPT_DIR:\=/%"
+set "WSL_DIR=/mnt/c/%WSL_DIR:~3%"
+
 if "%~1"=="" (
-    wsl -d Ubuntu -- bash -c "cd '/mnt/c/Users/adam/OneDrive/Desktop/New folder/New folder/keyhunt-main' && ./keyhunt -h"
+    wsl -d Ubuntu -- bash -c "cd '%WSL_DIR%' && ./keyhunt -h"
 ) else (
-    wsl -d Ubuntu -- bash -c "cd '/mnt/c/Users/adam/OneDrive/Desktop/New folder/New folder/keyhunt-main' && ./keyhunt %*"
+    wsl -d Ubuntu -- bash -c "cd '%WSL_DIR%' && ./keyhunt %*"
 )
