@@ -197,54 +197,9 @@ private:
 
 #ifndef _WIN64
 
-// Portable implementations for non-Windows x64 and ARM64
-#if defined(__x86_64__) || defined(_M_X64)
+// Fully portable implementations — no inline asm, no SSE intrinsics
+// Works on all platforms: x86_64, ARM64, ARM32, Termux, etc.
 
-// x86_64 — use inline assembly
-static uint64_t inline _umul128(uint64_t a, uint64_t b, uint64_t *h) {
-  uint64_t rhi;
-  uint64_t rlo;
-  __asm__( "mulq  %[b];" :"=d"(rhi),"=a"(rlo) :"1"(a),[b]"rm"(b));
-    *h = rhi;
-    return rlo;
-}
-
-static uint64_t inline __shiftright128(uint64_t a, uint64_t b,unsigned char n) {
-  uint64_t c;
-  __asm__ ("movq %1,%0;shrdq %3,%2,%0;" : "=D"(c) : "r"(a),"r"(b),"c"(n));
-  return  c;
-}
-
-static uint64_t inline __shiftleft128(uint64_t a, uint64_t b,unsigned char n) {
-  uint64_t c;
-  __asm__ ("movq %1,%0;shldq %3,%2,%0;" : "=D"(c) : "r"(b),"r"(a),"c"(n));
-  return  c;
-}
-
-// Portable carry intrinsics (works on GCC, Clang, all architectures)
-static unsigned char inline _subborrow_u64(unsigned char c, uint64_t a, uint64_t b, uint64_t *d) {
-#if defined(__GNUC__) || defined(__clang__)
-  return __builtin_sub_overflow(a, b + c, d);
-#else
-  uint64_t diff = a - b - c;
-  *d = diff;
-  return (diff > a || (diff == a && c)) ? 1 : 0;
-#endif
-}
-
-static unsigned char inline _addcarry_u64(unsigned char c, uint64_t a, uint64_t b, uint64_t *d) {
-#if defined(__GNUC__) || defined(__clang__)
-  return __builtin_add_overflow(a, b + c, d);
-#else
-  uint64_t sum = a + b + c;
-  *d = sum;
-  return (sum < a || (sum == a && c)) ? 1 : 0;
-#endif
-}
-
-#else
-
-// ARM64 / other architectures — use portable C
 static uint64_t inline _umul128(uint64_t a, uint64_t b, uint64_t *h) {
 #if defined(__GNUC__) || defined(__clang__)
   __uint128_t r = (__uint128_t)a * b;
@@ -280,8 +235,7 @@ static uint64_t inline __shiftleft128(uint64_t hi, uint64_t lo, unsigned char n)
 
 static unsigned char inline _subborrow_u64(unsigned char c, uint64_t a, uint64_t b, uint64_t *d) {
 #if defined(__GNUC__) || defined(__clang__)
-  unsigned char carry = __builtin_sub_overflow(a, b + c, d);
-  return carry;
+  return __builtin_sub_overflow(a, b + c, d);
 #else
   uint64_t diff = a - b - c;
   *d = diff;
@@ -291,16 +245,13 @@ static unsigned char inline _subborrow_u64(unsigned char c, uint64_t a, uint64_t
 
 static unsigned char inline _addcarry_u64(unsigned char c, uint64_t a, uint64_t b, uint64_t *d) {
 #if defined(__GNUC__) || defined(__clang__)
-  unsigned char carry = __builtin_add_overflow(a, b + c, d);
-  return carry;
+  return __builtin_add_overflow(a, b + c, d);
 #else
   uint64_t sum = a + b + c;
   *d = sum;
   return (sum < a || (sum == a && c)) ? 1 : 0;
 #endif
 }
-
-#endif // __x86_64__
 
 #define _byteswap_uint64 __builtin_bswap64
 #else

@@ -48,11 +48,13 @@ endif
 
 # Detect Termux
 ifeq ($(shell test -d /data/data/com.termux && echo yes),yes)
-  CXXFLAGS += -DTERMUX
-  CFLAGS   += -DTERMUX
-  # Termux has limited SSE support — disable SSE intrinsics
-  CXXFLAGS := $(filter-out -mssse3,$(CXXFLAGS))
-  CFLAGS   := $(filter-out -mssse3,$(CFLAGS))
+  CXXFLAGS += -DTERMUX -DNO_SSE
+  CFLAGS   += -DTERMUX -DNO_SSE
+  # Termux has broken SSE — disable all SSE/native flags
+  CXXFLAGS := $(filter-out -mssse3 -march=native -mtune=native -m64,$(CXXFLAGS))
+  CFLAGS   := $(filter-out -mssse3 -march=native -mtune=native -m64,$(CFLAGS))
+  CXXFLAGS += -mno-sse -mno-ssse3 -mno-sse2
+  CFLAGS   += -mno-sse -mno-ssse3 -mno-sse2
 endif
 
 LIBS := -lm -lpthread
@@ -61,10 +63,15 @@ OBJECTS := oldbloom.o bloom.o base58.o rmd160.o sha3.o keccak.o xxhash.o \
            util.o Int.o Point.o SECP256K1.o IntMod.o Random.o IntGroup.o \
            hash/ripemd160.o hash/sha256.o hash/sha512.o
 
-# On x86, also compile SSE hash files
+# On x86 (non-Termux), also compile SSE hash files
+IS_TERMUX := $(shell test -d /data/data/com.termux && echo yes)
 ifneq ($(IS_X86),)
-  OBJECTS += hash/ripemd160_sse.o hash/sha256_sse.o
-  SSE_DEFINE := -DHAVE_SSE
+  ifneq ($(IS_TERMUX),yes)
+    OBJECTS += hash/ripemd160_sse.o hash/sha256_sse.o
+    SSE_DEFINE := -DHAVE_SSE
+  else
+    SSE_DEFINE := -DNO_SSE
+  endif
 else
   SSE_DEFINE := -DNO_SSE
 endif
@@ -134,13 +141,15 @@ hash/sha256.o: hash/sha256.cpp hash/sha256.h
 hash/sha512.o: hash/sha512.cpp hash/sha512.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-# SSE hash files (x86 only)
+# SSE hash files (x86 non-Termux only)
 ifneq ($(IS_X86),)
+  ifneq ($(IS_TERMUX),yes)
 hash/ripemd160_sse.o: hash/ripemd160_sse.cpp hash/ripemd160.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 hash/sha256_sse.o: hash/sha256_sse.cpp hash/sha256.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+  endif
 endif
 
 clean:

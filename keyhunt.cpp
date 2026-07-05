@@ -195,7 +195,7 @@ int bsgs_searchbinary(struct bsgs_xvalue *arr,char *data,int64_t array_length,ui
 int bsgs_secondcheck(Int *start_range,uint32_t a,uint32_t k_index,Int *privatekey);
 int bsgs_thirdcheck(Int *start_range,uint32_t a,uint32_t k_index,Int *privatekey);
 
-#if defined(__x86_64__) || defined(_M_X64) || defined(__SSSE3__) || defined(__SSE2__)
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
 void sha256sse_22(uint8_t *src0, uint8_t *src1, uint8_t *src2, uint8_t *src3, uint8_t *dst0, uint8_t *dst1, uint8_t *dst2, uint8_t *dst3);
 void sha256sse_23(uint8_t *src0, uint8_t *src1, uint8_t *src2, uint8_t *src3, uint8_t *dst0, uint8_t *dst1, uint8_t *dst2, uint8_t *dst3);
 #endif
@@ -3555,7 +3555,7 @@ void *thread_process_minikeys(void *vargp)	{
 						increment_minikey_index(minikey2check+1,buffer_b58,20);
 						memcpy(minikey[3]+1,minikey2check+1,21);
 						
-#if defined(__x86_64__) || defined(_M_X64) || defined(__SSSE3__) || defined(__SSE2__)
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
 						sha256sse_23((uint8_t*)minikey[0],(uint8_t*)minikey[1],(uint8_t*)minikey[2],(uint8_t*)minikey[3],(uint8_t*)rawvalue[0],(uint8_t*)rawvalue[1],(uint8_t*)rawvalue[2],(uint8_t*)rawvalue[3]);
 #else
 						for(k = 0; k < 4; k++) sha256_33((uint8_t*)minikey[k],(uint8_t*)rawvalue[k]);
@@ -3568,7 +3568,7 @@ void *thread_process_minikeys(void *vargp)	{
 						}
 					}while(count_valid < 4);
 					count_valid-=4;				
-#if defined(__x86_64__) || defined(_M_X64) || defined(__SSSE3__) || defined(__SSE2__)
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
 					sha256sse_22((uint8_t*)minikeys[0],(uint8_t*)minikeys[1],(uint8_t*)minikeys[2],(uint8_t*)minikeys[3],(uint8_t*)rawvalue[0],(uint8_t*)rawvalue[1],(uint8_t*)rawvalue[2],(uint8_t*)rawvalue[3]);
 #else
 					for(k = 0; k < 4; k++) sha256_33((uint8_t*)minikeys[k],(uint8_t*)rawvalue[k]);
@@ -8066,7 +8066,7 @@ void increment_minikey_N(char *rawbuffer)	{
 (buff)[15] = 0xB0;	//176 bits => 22 BYTES
 
 
-#if defined(__x86_64__) || defined(_M_X64) || defined(__SSSE3__) || defined(__SSE2__)
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
 
 void sha256sse_22(uint8_t *src0, uint8_t *src1, uint8_t *src2, uint8_t *src3, uint8_t *dst0, uint8_t *dst1, uint8_t *dst2, uint8_t *dst3)	{
   uint32_t b0[16];

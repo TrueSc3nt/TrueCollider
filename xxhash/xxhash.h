@@ -2701,9 +2701,9 @@ XXH_PUBLIC_API XXH64_hash_t XXH64_hashFromCanonical(const XXH64_canonical_t* src
 #endif
 
 #if defined(__GNUC__)
-#  if defined(__AVX2__)
+#  if !defined(NO_SSE) && defined(__AVX2__) && !defined(TERMUX)
 #    include <immintrin.h>
-#  elif defined(__SSE2__)
+#  elif !defined(NO_SSE) && defined(__SSE2__) && !defined(TERMUX)
 #    include <emmintrin.h>
 #  elif defined(__ARM_NEON__) || defined(__ARM_NEON)
 #    define inline __inline__  /* circumvent a clang bug */
@@ -2852,7 +2852,7 @@ enum XXH_VECTOR_TYPE /* fake enum */ {
 #    define XXH_VECTOR XXH_AVX512
 #  elif defined(__AVX2__)
 #    define XXH_VECTOR XXH_AVX2
-#  elif defined(__SSE2__) || defined(_M_AMD64) || defined(_M_X64) || (defined(_M_IX86_FP) && (_M_IX86_FP == 2))
+#  elif !defined(NO_SSE) && !defined(TERMUX) && (defined(__SSE2__) || defined(_M_AMD64) || defined(_M_X64) || (defined(_M_IX86_FP) && (_M_IX86_FP == 2)))
 #    define XXH_VECTOR XXH_SSE2
 #  elif defined(__GNUC__) /* msvc support maybe later */ \
   && (defined(__ARM_NEON__) || defined(__ARM_NEON)) \

@@ -615,8 +615,19 @@ void Secp256K1::GetHash160(int type,bool compressed,
       KEYBUFFUNCOMP(b2, k2);
       KEYBUFFUNCOMP(b3, k3);
 
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
       sha256sse_2B(b0, b1, b2, b3, sh0, sh1, sh2, sh3);
       ripemd160sse_32(sh0, sh1, sh2, sh3, h0, h1, h2, h3);
+#else
+      sha256_65((unsigned char*)b0, sh0);
+      sha256_65((unsigned char*)b1, sh1);
+      sha256_65((unsigned char*)b2, sh2);
+      sha256_65((unsigned char*)b3, sh3);
+      ripemd160_32(sh0, h0);
+      ripemd160_32(sh1, h1);
+      ripemd160_32(sh2, h2);
+      ripemd160_32(sh3, h3);
+#endif
 
     } else {
 
@@ -630,8 +641,19 @@ void Secp256K1::GetHash160(int type,bool compressed,
       KEYBUFFCOMP(b2, k2);
       KEYBUFFCOMP(b3, k3);
 
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
       sha256sse_1B(b0, b1, b2, b3, sh0, sh1, sh2, sh3);
       ripemd160sse_32(sh0, sh1, sh2, sh3, h0, h1, h2, h3);
+#else
+      sha256_33((unsigned char*)b0, sh0);
+      sha256_33((unsigned char*)b1, sh1);
+      sha256_33((unsigned char*)b2, sh2);
+      sha256_33((unsigned char*)b3, sh3);
+      ripemd160_32(sh0, h0);
+      ripemd160_32(sh1, h1);
+      ripemd160_32(sh2, h2);
+      ripemd160_32(sh3, h3);
+#endif
 
     }
 
@@ -659,8 +681,19 @@ void Secp256K1::GetHash160(int type,bool compressed,
     KEYBUFFSCRIPT(b2, kh2);
     KEYBUFFSCRIPT(b3, kh3);
 
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
     sha256sse_1B(b0, b1, b2, b3, sh0, sh1, sh2, sh3);
     ripemd160sse_32(sh0, sh1, sh2, sh3, h0, h1, h2, h3);
+#else
+    sha256_33((unsigned char*)b0, sh0);
+    sha256_33((unsigned char*)b1, sh1);
+    sha256_33((unsigned char*)b2, sh2);
+    sha256_33((unsigned char*)b3, sh3);
+    ripemd160_32(sh0, h0);
+    ripemd160_32(sh1, h1);
+    ripemd160_32(sh2, h2);
+    ripemd160_32(sh3, h3);
+#endif
 
   }
   break;
@@ -773,8 +806,19 @@ void Secp256K1::GetHash160_fromX(int type,unsigned char prefix,
       KEYBUFFPREFIX(b2, k2, prefix);
       KEYBUFFPREFIX(b3, k3, prefix);
 
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
       sha256sse_1B(b0, b1, b2, b3, sh0, sh1, sh2, sh3);
       ripemd160sse_32(sh0, sh1, sh2, sh3, h0, h1, h2, h3);
+#else
+      sha256_33((unsigned char*)b0, sh0);
+      sha256_33((unsigned char*)b1, sh1);
+      sha256_33((unsigned char*)b2, sh2);
+      sha256_33((unsigned char*)b3, sh3);
+      ripemd160_32(sh0, h0);
+      ripemd160_32(sh1, h1);
+      ripemd160_32(sh2, h2);
+      ripemd160_32(sh3, h3);
+#endif
   }
   break;
 

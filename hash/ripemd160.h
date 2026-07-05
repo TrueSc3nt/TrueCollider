@@ -42,7 +42,7 @@ public:
 void ripemd160(unsigned char *input,int length,unsigned char *digest);
 void ripemd160_32(unsigned char *input, unsigned char *digest);
 
-#if defined(__x86_64__) || defined(_M_X64) || defined(__SSSE3__) || defined(__SSE2__)
+#if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
 void ripemd160sse_32(uint8_t *i0, uint8_t *i1, uint8_t *i2, uint8_t *i3,
   uint8_t *d0, uint8_t *d1, uint8_t *d2, uint8_t *d3);
 void ripemd160sse_test();
