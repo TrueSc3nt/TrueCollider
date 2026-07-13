@@ -53,6 +53,65 @@ It is **not** a magic “find any wallet” product. Full 256-bit space search i
 
 ---
 
+## Measured speeds (real hardware bench)
+
+Benchmarks run on this developer machine and pasted from live `keyhunt` / `keyhunt_cuda` stats (`-s 5`, 15 s window unless noted). **Your numbers will differ** with CPU generation, AVX level, GPU, threads, and target-file size.
+
+**Hardware used for these numbers**
+
+| | |
+|--|--|
+| CPU | Intel Core i7-920 @ 2.67 GHz (8 threads, **SSSE3 / SSE hash160** — no AVX2/512 on this chip) |
+| GPU | NVIDIA GeForce **RTX 3060 Ti** 8 GB |
+| OS / builds | Windows · `keyhunt.exe` (MinGW) · `keyhunt_cuda.exe` (VS2022 + CUDA 12.8) |
+
+Re-run locally: `powershell -ExecutionPolicy Bypass -File .\run_benchmarks.ps1` · details: [docs/SPEEDS.md](docs/SPEEDS.md)
+
+### CPU — every search mode
+
+| Mode | Flags (summary) | Sustained rate (15 s) | Unit |
+|------|-----------------|----------------------:|------|
+| `address` BTC | `-t 8 -l compress -A sse` | **6.56 M** | keys/s |
+| `address` BTC + `-e` | `-t 8 -e -l compress` | **8.16 M** | keys/s |
+| `address` ETH | `-c eth -t 8` | **3.24 M** | keys/s |
+| `address` SOL | `-c sol -t 8` | **70.7 K** | keys/s |
+| `rmd160` | `-t 8 -l compress` | **7.33 M** | keys/s |
+| `rmd160` + `-e` | `-t 8 -e` | **8.10 M** | keys/s |
+| `xpoint` | `-t 8` | **11.3 M** | keys/s |
+| `vanity` | `-v 1Love -t 8 -e` | **8.07 M** | keys/s |
+| `pubkey2addr` | `-t 8` | **~489 M*** | keys/s* |
+| `minikeys` | `-t 8` | **48.5 K** | keys/s |
+| `mnemonic` (BIP39) | `-t 8` | **247 K** | mnemonics/s |
+| `poetry` | `-t 4` | **57.9 M** | mnemonics/s |
+| `brainwallet` | `-t 4` | **94.6 M** | mnemonics/s |
+| `bsgs` | `-b 40 -n 1048576 -t 8` | **~26.4 G** | keys/s† |
+
+\* `pubkey2addr` rate is what the binary prints; treat as relative, not apples-to-apples with `address`.  
+† BSGS “keys/s” is the usual effective giant-step coverage rate (table-assisted), not raw EC ops.
+
+### CUDA (RTX 3060 Ti) — modes that actually use the GPU
+
+| Mode | Flags | Peak (5 s) | Sustained (15 s) | Notes |
+|------|-------|----------:|-----------------:|-------|
+| `address` BTC | `-U cuda -G 128 -t 1` | **154 K** keys/s | **110 K** keys/s | GPU EC + **host** hash160/bloom |
+| `rmd160` | `-U cuda -G 128 -t 1` | **165 K** keys/s | **118 K** keys/s | Same path |
+| `address` ETH | `-U cuda -G 128 -t 1` | **67 K** keys/s | **50 K** keys/s | GPU EC + host keccak |
+
+### CUDA — not implemented (stay on CPU)
+
+| Mode | GPU status | Use instead |
+|------|------------|-------------|
+| `mnemonic` / BIP39 | **No GPU path** | CPU: ~**247 K** mnemonics/s (`-t 8`) |
+| `poetry` / `brainwallet` | **No GPU path** | CPU rates in table above |
+| `vanity` | **No GPU path** | CPU: ~**8.1 M** keys/s with `-e` |
+| `bsgs` | **No GPU path** | CPU: ~**26 G** keys/s (table size dependent) |
+| `address -c sol` | **No GPU path** | CPU: ~**71 K** keys/s |
+| `xpoint` / `minikeys` / `pubkey2addr` | **No GPU path** | CPU table above |
+
+On this **SSE-only** CPU, AVX2/512 machines will often be much faster on CPU hash-heavy modes. CUDA here is still valuable for offloading EC; host hash is the bottleneck until device hash160 is production-ready. Prefer **CPU `-e -A auto`** when you have AVX2+.
+
+---
+
 ## Quick start
 
 ### Build — Linux / macOS
@@ -258,6 +317,7 @@ Deep dive: **[gpu/README.md](gpu/README.md)**.
 | [docs/COMMANDS.md](docs/COMMANDS.md) | Copy-paste command cookbook |
 | [docs/BUILD.md](docs/BUILD.md) | Compilers, CMake, CUDA, OpenCL |
 | [docs/BENCHMARK.md](docs/BENCHMARK.md) | Measuring keys/s |
+| [docs/SPEEDS.md](docs/SPEEDS.md) | **Real measured rates** (CPU + CUDA tables) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Kangaroo, GPU BSGS, SOL GPU, … |
 | [gpu/README.md](gpu/README.md) | CUDA / OpenCL internals & status |
 

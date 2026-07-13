@@ -30,6 +30,7 @@ _upstream_check/
 *.cache
 *.log
 KEYFOUNDKEYFOUND.txt
+VANITYKEYFOUND.txt
 *.bloom
 *.bsgs
 targets.txt
@@ -37,12 +38,27 @@ _cuda_*
 _cpu_*
 _e.txt
 _o.txt
+_t_*
+_bench_out/
+_mode_test_out/
 _build_*
 _patch_*
 _soften*
 _gpu_*
 _stest*
 _cpu_detect*
+err.txt
+out.txt
+output.txt
+stderr.txt
+stdout.txt
+tests/_btc*.txt
+tests/_eth*.txt
+tests/_rmd*.txt
+tests/_pubkey*.txt
+tests/_xpoint*.txt
+tests/_btc_pad.txt
+
 
 # OS
 .DS_Store
