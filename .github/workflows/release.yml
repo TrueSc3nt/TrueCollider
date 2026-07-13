@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y build-essential cmake
+      - run: |
+          cmake -B build
+          cmake --build build -j$(nproc)
+          cp build/keyhunt keyhunt-linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyhunt-linux-x64
+          path: keyhunt-linux-x64
+
+  build-windows-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y mingw-w64 cmake
+      - run: |
+          cmake -B build-win \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
+            -DSTATIC_BUILD=ON
+          cmake --build build-win -j$(nproc)
+          cp build-win/keyhunt.exe keyhunt-windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyhunt-windows-x64
+          path: keyhunt-windows-x64.exe
+
+  build-linux-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake
+      - run: |
+          cmake -B build-arm \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DENABLE_SSE=OFF
+          cmake --build build-arm -j$(nproc)
+          cp build-arm/keyhunt keyhunt-linux-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: keyhunt-linux-aarch64
+          path: keyhunt-linux-aarch64
+
+  release:
+    needs: [build-linux-x64, build-windows-x64, build-linux-aarch64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/keyhunt-linux-x64/keyhunt-linux-x64
+            artifacts/keyhunt-windows-x64/keyhunt-windows-x64.exe
+            artifacts/keyhunt-linux-aarch64/keyhunt-linux-aarch64
+          draft: true
+          prerelease: true
+          generate_release_notes: true

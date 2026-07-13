@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake
+
+      - name: Build with Makefile (Linux x64)
+        run: |
+          make clean
+          make -j$(nproc)
+          file keyhunt
+          ./keyhunt -h
+
+      - name: Build with CMake (Linux x64)
+        run: |
+          rm -rf build-cmake
+          cmake -B build-cmake
+          cmake --build build-cmake -j$(nproc)
+          file build-cmake/keyhunt
+
+  build-windows-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 cmake
+
+      - name: Build Windows .exe with CMake
+        run: |
+          rm -rf build-win
+          cmake -B build-win \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
+            -DSTATIC_BUILD=ON
+          cmake --build build-win -j$(nproc)
+          file build-win/keyhunt.exe
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyhunt-windows-x64
+          path: build-win/keyhunt.exe
+
+  build-linux-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install aarch64 cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake
+
+      - name: Build ARM64 Linux binary
+        run: |
+          rm -rf build-arm
+          cmake -B build-arm \
+            -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+            -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DENABLE_SSE=OFF
+          cmake --build build-arm -j$(nproc)
+          file build-arm/keyhunt
+
+      - name: Upload ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: keyhunt-linux-aarch64
+          path: build-arm/keyhunt
