@@ -39,7 +39,50 @@ Sources of practice in the wild: [albertobsd/keyhunt](https://github.com/alberto
 
 ---
 
-## Suggested features (priority order)
+## GPU for *every* currency + GPU BSGS (user goal)
+
+### Important architecture fact
+
+Most TrueCollider coins share **one** curve:
+
+| Group | Coins | GPU work |
+|-------|--------|----------|
+| **A — secp256k1** | BTC, LTC, DOGE, XRP, BCH, BTG, ETH, ETC, troot, `all` | One GPU EC engine + coin-specific address encode (hash160 / keccak / x-only) |
+| **B — ed25519** | SOL | Separate GPU ed25519 scalar mult + base58 |
+| **C — wordlist modes** | mnemonic / poetry / brainwallet / minikeys | GPU helps little until after entropy→key; usually stay CPU or hybrid |
+
+So “all cryptocurrencies on GPU” does **not** mean 11 separate GPU apps — it means **finish Group A completely**, then **add Group B**, then hybrid C.
+
+### Phased build (recommended)
+
+| Phase | Deliverable | Why forums/tools do this |
+|-------|-------------|---------------------------|
+| **G0** | Fix CUDA hash160 OR keep host hash but raise batch safely (streams, pinned mem, TDR-aware) | Current batch=1 wastes GPU |
+| **G1** | GPU address path for **all Group A coins** (ETH keccak + troot on device or host after GPU EC) | VanitySearch / BitcoinAddressFinder / KeyHunt-Cuda pattern |
+| **G2** | GPU **vanity** for Group A | Highest user demand after puzzles |
+| **G3** | GPU **BSGS** (giant-step on GPU, baby table in VRAM/RAM) | iceland2k14 KeyHunt-Cuda, Etayson BSGS-cuda; Bitcointalk puzzles thread |
+| **G4** | GPU **Kangaroo** (SOTA) | RCKangaroo / PSCKangaroo — better than BSGS for large puzzle ranges |
+| **G5** | GPU **Solana** ed25519 grind (+ mod-58^K prefilter) | Modern SOL vanity CUDA tools |
+| **G6** | OpenCL twin of CUDA EC/BSGS for AMD | BitcoinAddressFinder multi-GPU OpenCL lesson |
+
+### BSGS vs Kangaroo (Bitcointalk consensus)
+
+- **BSGS**: insane “keys/s” with huge RAM (`-k`); great for **mid** ranges / when you can afford tables.
+- **Kangaroo**: ~O(√n) ops, less RAM; **wins for large puzzles** (community: pure BSGS is hopeless at puzzle-135 scale vs kangaroo).
+- TrueCollider should ship **both**: GPU BSGS for “I have RAM”, GPU Kangaroo for “I have GPUs + pubkey + big range”.
+
+### AVX stack (status)
+
+| Level | Hash160 | Status |
+|-------|---------|--------|
+| SSE 4-wide | Yes | Done |
+| AVX2 8-wide | Yes | Done |
+| AVX-512 16-wide | Yes | Done |
+| AVX1-only | Falls to SSE | Correct (no integer YMM) |
+| Future | AVX-512 IFMA / Cyclone-style EC | Optional CPU EC speedups (Keyhunt-Cyclone class) |
+
+---
+
 
 ### P0 — users who “don’t have a clue”
 
