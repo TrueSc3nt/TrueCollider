@@ -157,7 +157,6 @@ char *Ccoinbuffer = (char*) Ccoinbuffer_default;
 char *str_baseminikey = NULL;
 char *raw_baseminikey = NULL;
 char *minikeyN = NULL;
-int minikey_n_limit;
 	
 const char *version = "TrueCollider Search Modes + Binary Fuse Filters";
 
@@ -1389,6 +1388,7 @@ int main(int argc, char **argv)	{
 					raw_baseminikey = (char*) malloc(23);
 					checkpointer((void *)raw_baseminikey,__FILE__,"malloc","raw_baseminikey" ,__LINE__ - 1);
 					strncpy(str_baseminikey,optarg,22);
+					str_baseminikey[22] = '\0';  // Ensure null termination after strncpy
 					for(i = 0; i< 21; i++)	{
 						if(strchr(Ccoinbuffer,str_baseminikey[i+1]) != NULL)	{
 							raw_baseminikey[i] = (int)(strchr(Ccoinbuffer,str_baseminikey[i+1]) - Ccoinbuffer) % 58;
@@ -1401,7 +1401,7 @@ int main(int argc, char **argv)	{
 					}
 				}
 				else	{
-					fprintf(stderr,"[E] Invalid Minikey length %li : %s\n",strlen(optarg),optarg);
+					fprintf(stderr,"[E] Invalid Minikey length %zu : %s\n",strlen(optarg),optarg);
 					exit(EXIT_FAILURE);
 				}
 				
@@ -1895,6 +1895,7 @@ int main(int argc, char **argv)	{
 			}
 			minikeyN = (char*) malloc(22);
 			checkpointer((void *)minikeyN,__FILE__,"malloc","minikeyN" ,__LINE__ -1);
+			memset(minikeyN,0,22);  // Initialize all digits to zero before setting non-zero ones
 			i =0;
 			int58.SetInt32(58);
 			int_aux.SetInt64(N_SEQUENTIAL_MAX);
@@ -1917,7 +1918,6 @@ int main(int argc, char **argv)	{
 					salir =1;
 				}
 			}while(!salir && i > 0);
-			minikey_n_limit = 21 -i;
 		}
 		else	{
 			if(FLAGBITRANGE)	{	// Bit Range
@@ -2657,7 +2657,7 @@ int main(int argc, char **argv)	{
 					THREADCYCLES++;
 				}
 				
-				printf("\r[+] processing %lu/%lu bP points : %i%%\r",FINISHED_ITEMS,bsgs_m,(int) (((double)FINISHED_ITEMS/(double)bsgs_m)*100));
+				printf("\r[+] processing %" PRIu64 "/%" PRIu64 " bP points : %i%%\r",FINISHED_ITEMS,bsgs_m,(int) (((double)FINISHED_ITEMS/(double)bsgs_m)*100));
 				fflush(stdout);
 				
 #if defined(_MSC_VER)
@@ -2713,7 +2713,7 @@ int main(int argc, char **argv)	{
 					}
 
 					if(OLDFINISHED_ITEMS != FINISHED_ITEMS)	{
-						printf("\r[+] processing %lu/%lu bP points : %i%%\r",FINISHED_ITEMS,bsgs_m2,(int) (((double)FINISHED_ITEMS/(double)bsgs_m2)*100));
+						printf("\r[+] processing %" PRIu64 "/%" PRIu64 " bP points : %i%%\r",FINISHED_ITEMS,bsgs_m2,(int) (((double)FINISHED_ITEMS/(double)bsgs_m2)*100));
 						fflush(stdout);
 						OLDFINISHED_ITEMS = FINISHED_ITEMS;
 					}
@@ -2737,7 +2737,7 @@ int main(int argc, char **argv)	{
 						}
 					}
 				}while(FINISHED_THREADS_COUNTER < THREADCYCLES);
-				printf("\r[+] processing %lu/%lu bP points : 100%%     \n",bsgs_m2,bsgs_m2);
+				printf("\r[+] processing %" PRIu64 "/%" PRIu64 " bP points : 100%%     \n",bsgs_m2,bsgs_m2);
 				
 				free(tid);
 				free(bPload_mutex);
@@ -2762,13 +2762,13 @@ int main(int argc, char **argv)	{
 				}
 				THREADCYCLES = bsgs_m / THREADBPWORKLOAD;
 				PERTHREAD_R = bsgs_m % THREADBPWORKLOAD;
-				//if(FLAGDEBUG) printf("[D] THREADCYCLES: %lu\n",THREADCYCLES);
+				//if(FLAGDEBUG) printf("[D] THREADCYCLES: %" PRIu64 "\n",THREADCYCLES);
 				if(PERTHREAD_R != 0)	{
 					THREADCYCLES++;
-					//if(FLAGDEBUG) printf("[D] PERTHREAD_R: %lu\n",PERTHREAD_R);
+					//if(FLAGDEBUG) printf("[D] PERTHREAD_R: %" PRIu64 "\n",PERTHREAD_R);
 				}
 				
-				printf("\r[+] processing %lu/%lu bP points : %i%%\r",FINISHED_ITEMS,bsgs_m,(int) (((double)FINISHED_ITEMS/(double)bsgs_m)*100));
+				printf("\r[+] processing %" PRIu64 "/%" PRIu64 " bP points : %i%%\r",FINISHED_ITEMS,bsgs_m,(int) (((double)FINISHED_ITEMS/(double)bsgs_m)*100));
 				fflush(stdout);
 				
 #if defined(_MSC_VER)
@@ -2815,7 +2815,7 @@ int main(int argc, char **argv)	{
 								salir = 1;
 								//if(FLAGDEBUG) printf("[D] Salir OK\n");
 							}
-							//if(FLAGDEBUG) printf("[I] %lu to %lu\n",bPload_temp_ptr[i].from,bPload_temp_ptr[i].to);
+							//if(FLAGDEBUG) printf("[I] %" PRIu64 " to %" PRIu64 "\n",bPload_temp_ptr[i].from,bPload_temp_ptr[i].to);
 #if defined(_MSC_VER)
 							tid[j] = CreateThread(NULL, 0, thread_bPload, (void*) &bPload_temp_ptr[j], 0, &s);
 #else
@@ -2827,7 +2827,7 @@ int main(int argc, char **argv)	{
 						}
 					}
 					if(OLDFINISHED_ITEMS != FINISHED_ITEMS)	{
-						printf("\r[+] processing %lu/%lu bP points : %i%%\r",FINISHED_ITEMS,bsgs_m,(int) (((double)FINISHED_ITEMS/(double)bsgs_m)*100));
+						printf("\r[+] processing %" PRIu64 "/%" PRIu64 " bP points : %i%%\r",FINISHED_ITEMS,bsgs_m,(int) (((double)FINISHED_ITEMS/(double)bsgs_m)*100));
 						fflush(stdout);
 						OLDFINISHED_ITEMS = FINISHED_ITEMS;
 					}
@@ -2852,7 +2852,7 @@ int main(int argc, char **argv)	{
 					}
 					
 				}while(FINISHED_THREADS_COUNTER < THREADCYCLES);
-				printf("\r[+] processing %lu/%lu bP points : 100%%     \n",bsgs_m,bsgs_m);
+				printf("\r[+] processing %" PRIu64 "/%" PRIu64 " bP points : 100%%     \n",bsgs_m,bsgs_m);
 				
 				free(tid);
 				free(bPload_mutex);
@@ -2891,7 +2891,7 @@ int main(int argc, char **argv)	{
 			fflush(stdout);
 		}	
 		if(!FLAGREADEDFILE3)	{
-			printf("[+] Sorting %lu elements... ",bsgs_m3);
+			printf("[+] Sorting %" PRIu64 " elements... ",bsgs_m3);
 			fflush(stdout);
 			bsgs_sort(bPtable,bsgs_m3);
 			sha256((uint8_t*)bPtable, bytes,(uint8_t*) checksum);
@@ -5235,7 +5235,7 @@ void *thread_process_vanity(void *vargp)	{
 		printf("[D] vanity_rmd_targets = %i          fillllll\n",vanity_rmd_targets);
 		printf("[D] vanity_rmd_total = %i\n",vanity_rmd_total);
 		for(i =0; i < vanity_rmd_targets;i++)	{
-			printf("[D] vanity_rmd_limits[%li] = %i\n",i,vanity_rmd_limits[i]);
+			printf("[D] vanity_rmd_limits[%i] = %i\n",i,vanity_rmd_limits[i]);
 			
 		}
 		printf("[D] vanity_rmd_minimun_bytes_check_length = %i\n",vanity_rmd_minimun_bytes_check_length);
@@ -8026,24 +8026,29 @@ bool increment_minikey_index(char *buffer,char *rawbuffer,int index)	{
 /* This function takes in a single parameter:
 
 rawbuffer: a pointer to a char array that contains the raw data.
-The function is designed to increment the values in the raw data array
-using a lookup table (minikeyN), while also handling carry-over to the
-previous element in the array if necessary. The maximum number of iterations
-is limited by minikey_n_limit. 
-
+The function adds the base-58 value stored in minikeyN to the raw data array,
+propagating carry all the way to the most significant digit. This ensures
+each thread advances by exactly N_SEQUENTIAL_MAX * 253 candidate minikeys.
 
 */
 void increment_minikey_N(char *rawbuffer)	{
-	int i = 20,j = 0;
-	while( i > 0 && j < minikey_n_limit)	{
-		rawbuffer[i] = rawbuffer[i] + minikeyN[i];
-		if(rawbuffer[i] > 57)	{	 // Handling carry-over if value exceeds 57
-			rawbuffer[i] = rawbuffer[i] % 58;
-			rawbuffer[i-1]++;
+	// Add minikeyN (base-58) to rawbuffer with proper carry propagation.
+	int i = 20;
+	unsigned char carry = 0;
+	while(i >= 0)	{
+		int sum = (unsigned char)rawbuffer[i] + (unsigned char)minikeyN[i] + carry;
+		if(sum > 57)	{
+			rawbuffer[i] = (char)(sum - 58);
+			carry = 1;
+		}
+		else	{
+			rawbuffer[i] = (char)sum;
+			carry = 0;
 		}
 		i--;
-		j++;
 	}
+	// Any carry beyond the most significant digit is discarded; the search
+	// wraps around, which is acceptable for brute-force keyspace traversal.
 }
 
 
@@ -9422,7 +9427,7 @@ bool forceReadFileXPoint(char *fileName)	{
 						}
 					break;
 					default:
-						fprintf(stderr,"[E] Omiting line unknow length size %li: %s\n",lenaux,aux);
+						fprintf(stderr,"[E] Omiting line unknow length size %zu: %s\n",lenaux,aux);
 					break;
 				}
 			}
@@ -9508,7 +9513,7 @@ void writeFileIfNeeded(const char *fileName)	{
 		snprintf(fileBloomName,30,"data_%s.dat",hexPrefix);
 		fileDescriptor = fopen(fileBloomName,"wb");
 		dataSize = N * (sizeof(struct address_value));
-		printf("[D] size data %li\n",dataSize);
+		printf("[D] size data %" PRIu64 "\n",dataSize);
 		if(fileDescriptor != NULL)	{
 			printf("[+] Writing file %s ",fileBloomName);
 			

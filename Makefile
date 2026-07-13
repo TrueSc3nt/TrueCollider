@@ -78,6 +78,15 @@ endif
 
 TARGET := keyhunt
 
+# Windows cross-compile target (Linux/WSL -> MinGW x86_64 .exe)
+# Builds a static, SSE-free binary that runs on Windows without extra DLLs.
+windows:
+	@echo "[+] Cross-compiling Windows x86_64 .exe with MinGW..."
+	$(MAKE) clean
+	$(MAKE) OS=MINGW64 ARCH=win64 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc \
+		TARGET=keyhunt.exe "LIBS=-lm -lwinpthread -lws2_32 -static" \
+		"CXXFLAGS_BASE=-Wall -Wextra -O2" "CFLAGS_BASE=-Wall -Wextra -O2"
+
 default: $(TARGET)
 
 $(TARGET): keyhunt_nolto.o $(OBJECTS)
@@ -152,5 +161,7 @@ hash/sha256_sse.o: hash/sha256_sse.cpp hash/sha256.h
   endif
 endif
 
+.PHONY: default clean windows
+
 clean:
-	rm -f $(TARGET) keyhunt_nolto.o *.o hash/*.o
+	rm -f $(TARGET) keyhunt.exe keyhunt_nolto.o *.o hash/*.o

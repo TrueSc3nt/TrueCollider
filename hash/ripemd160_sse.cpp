@@ -24,7 +24,7 @@
 // Internal SSE RIPEMD-160 implementation.
 namespace ripemd160sse {
 
-#ifdef WIN64
+#ifdef _WIN64
   static const __declspec(align(16)) uint32_t _init[] = {
 #else
   static const uint32_t _init[] __attribute__ ((aligned (16))) = {
@@ -353,7 +353,7 @@ void ripemd160sse_32(
 
   ripemd160sse::Transform(s, bs);
 
-#ifndef WIN64
+#ifndef _WIN64
   uint32_t *s0 = (uint32_t *)&s[0];
   uint32_t *s1 = (uint32_t *)&s[1];
   uint32_t *s2 = (uint32_t *)&s[2];

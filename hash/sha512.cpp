@@ -58,7 +58,7 @@ namespace _sha512 {
   0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL
   };
 
-#ifndef WIN64
+#ifndef _WIN64
 #define _byteswap_ulong __builtin_bswap32
 #define _byteswap_uint64 __builtin_bswap64
 inline uint64_t _rotr64(uint64_t x, uint8_t r) {

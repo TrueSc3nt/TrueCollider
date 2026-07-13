@@ -84,6 +84,8 @@ Use WSL with Ubuntu:
 ```bash
 wsl --install -d Ubuntu
 # Then open Ubuntu terminal and run the build commands above
+# Or, to build a standalone Windows .exe directly:
+bash build_windows.sh
 ```
 
 ---
