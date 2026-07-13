@@ -691,7 +691,9 @@ TrueCollider detects and selects the best SIMD instruction set available on your
 Supported levels: 
 one, sse, vx, vx2, vx512. The tool validates CPU/OS support and falls back gracefully if the requested level is unavailable.
 
-**AVX-512 hash160 kernel:** 16-way batch hashing for compressed/uncompressed keys and P2SH scripts (`-A avx512` or auto). Runs a self-test on startup and falls back to SSE on any CPU/OS without AVX-512F+BW. Works on Windows x64 (MinGW `.exe` or MSVC) and Linux.
+**AVX-512 hash160 kernel:** 16-way batch hashing for compressed/uncompressed keys, P2SH scripts, and compress-only endomorphism (`-A avx512` or auto, with `-e`). Self-test on startup; falls back to SSE on any CPU without AVX-512F+BW. Windows x64 (MinGW or MSVC) and Linux.
+
+**GPU hash offload (experimental):** `-U cuda` / `-U opencl` runs batch hash160 on the GPU (host still does EC). Self-test on init; search uses GPU hashing when AVX-512 is not active.
 
 ### GPU Backend (-U)
 

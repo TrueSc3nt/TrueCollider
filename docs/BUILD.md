@@ -120,7 +120,16 @@ The CMake project is IDE-friendly. For CLion or Visual Studio with CMake:
 2. Select the `keyhunt` target.
 3. Build.
 
-For Windows/Visual Studio native x64 builds, CMake sets `/arch:AVX512` only on the AVX-512 hash source file; the rest of the binary stays compatible with any x64 CPU. MinGW cross-builds from WSL/Linux produce the same runtime behavior.
+For Windows/Visual Studio native x64 builds, CMake vendors `compat/getopt`, links only `ws2_32`, and sets `/arch:AVX512` only on the AVX-512 hash source file. MinGW cross-builds from WSL/Linux produce the same runtime behavior.
+
+### Native MSVC (Visual Studio)
+
+```powershell
+cmake -B build-msvc -G "Visual Studio 17 2022" -A x64
+cmake --build build-msvc --config Release
+```
+
+Or open the folder in Visual Studio (CMake integration) and build the `keyhunt` target.
 
 ### Windows — any CPU
 
@@ -135,12 +144,15 @@ The Windows `.exe` (MinGW or MSVC x64) is safe to run on **any** 64-bit x86 PC:
 
 Startup never requires AVX-512. If `-A avx512` is requested on unsupported hardware, or the self-test fails, the tool prints a warning and continues on SSE.
 
+With `-e` (endomorphism) and compress-only search, AVX-512 also accelerates the λ/λ² variants. Uncompressed+endo stays on the 4-wide SSE path.
+
 ---
 
 ## Troubleshooting
 
 ### `pthread.h` not found on Windows
-Make sure you are using MinGW-w64, not MSVC. Install `mingw-w64` in WSL or MSYS2.
+- **MSVC:** use the CMake project above (Win32 threads + vendored getopt; no pthread needed).
+- **MinGW:** install `mingw-w64` in WSL or MSYS2.
 
 ### `-static` fails with missing libwinpthread.a
 On some distributions the static winpthread library is in a separate package:

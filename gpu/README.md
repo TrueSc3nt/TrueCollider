@@ -10,8 +10,8 @@ Bitcoin private key search is embarrassingly parallel: each candidate key is ind
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| CUDA    | Phase 1 | Batch hash160 on GPU (33-byte keys); self-test on init; EC on GPU TODO |
-| OpenCL  | Scaffolding | Device enumeration + dispatcher; kernels TODO |
+| CUDA    | Phase 2 | Batch hash160 + self-test; search loop uses host EC + GPU hash when `-U cuda` |
+| OpenCL  | Phase 1 | Batch hash160 + self-test; same host-EC / GPU-hash path with `-U opencl` |
 
 ## Selecting the backend at runtime
 
@@ -19,14 +19,14 @@ Bitcoin private key search is embarrassingly parallel: each candidate key is ind
 # CPU only (default)
 ./keyhunt -m address -f targets.txt -U none -t 8
 
-# CUDA
+# CUDA (host builds pubkeys, GPU hashes)
 ./keyhunt -m address -f targets.txt -U cuda -t 8
 
 # OpenCL
 ./keyhunt -m address -f targets.txt -U opencl -t 8
 ```
 
-GPU dispatch is currently wired for `address`, `rmd160`, and `vanity` modes. Other modes (BSGS, mnemonic, minikeys, poetry, brainwallet) fall back to CPU automatically.
+GPU hash offload is used for compress address/rmd160 batches when AVX-512 is not active and endomorphism is off. Full secp256k1 on-device remains future work.
 
 ## Building with GPU support
 

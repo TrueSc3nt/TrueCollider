@@ -10,17 +10,22 @@
  */
 
 #include <assert.h>
-#include <fcntl.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <inttypes.h>
+#include <sys/stat.h>
 #include <sys/types.h>
+#if defined(_MSC_VER)
+#include <io.h>
+#include <fcntl.h>
+#else
+#include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
+#endif
 
 #include "bloom.h"
 #include "../xxhash/xxhash.h"

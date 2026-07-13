@@ -2,6 +2,7 @@
 #define GPU_DISPATCHER_H
 
 #include "backend_config.h"
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,17 +20,28 @@ int gpu_dispatcher_available(const struct GpuDispatcher* disp);
 int gpu_dispatcher_supports_mode(const struct GpuDispatcher* disp, int mode);
 
 /*
- * Submit a batch of private keys for address-mode search.
- * Returns the number of candidate matches found (indices written to matches).
- * A return value of 0 means no candidates in this batch.
+ * Batch hash160 for compressed public keys (33 bytes each).
+ * Host supplies keys; writes 20-byte hashes to out.
+ * Returns 1 on success.
+ */
+int gpu_dispatcher_hash160_33(struct GpuDispatcher* disp,
+                              const uint8_t* keys33,
+                              uint32_t count,
+                              uint8_t* out20);
+
+/*
+ * Submit a batch of compressed pubkeys for address-mode hash+filter.
+ * keys33: count * 33 bytes. matches: optional index list (may be NULL).
+ * Returns number of filter hits written to matches (0 if matches is NULL —
+ * caller should filter host-side using out hashes via hash160_33).
  */
 uint32_t gpu_dispatcher_search_address(struct GpuDispatcher* disp,
-                                       const uint8_t* private_keys,
+                                       const uint8_t* keys33,
                                        uint32_t count,
                                        uint32_t* matches);
 
 uint32_t gpu_dispatcher_search_rmd160(struct GpuDispatcher* disp,
-                                      const uint8_t* private_keys,
+                                      const uint8_t* keys33,
                                       uint32_t count,
                                       uint32_t* matches);
 

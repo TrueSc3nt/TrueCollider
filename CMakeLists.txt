@@ -145,6 +145,14 @@ if(IS_X86 AND ENABLE_AVX512 AND NOT IS_TERMUX)
     )
 endif()
 
+if(MSVC)
+    list(APPEND CORE_SOURCES
+        ${CMAKE_SOURCE_DIR}/compat/getopt.c
+    )
+    include_directories(${CMAKE_SOURCE_DIR}/compat)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+endif()
+
 if(IS_X86 AND ENABLE_AVX512 AND NOT IS_TERMUX)
     if(MSVC)
         set_source_files_properties(${CMAKE_SOURCE_DIR}/hash/hash160_avx512.cpp
@@ -163,11 +171,12 @@ add_executable(keyhunt ${CORE_SOURCES})
 # ---------------------------------------------------------------------------
 # Link libraries
 # ---------------------------------------------------------------------------
-if(WIN32)
+if(MSVC)
+    set(PLATFORM_LIBS ws2_32)
+elseif(WIN32)
     # ws2_32 needed for base58/ntohl; winpthread for pthread on MinGW.
     set(PLATFORM_LIBS ws2_32 winpthread)
     if(MINGW AND NOT STATIC_BUILD)
-        # Dynamic MinGW builds also need libgcc/libstdc++ runtimes.
         target_link_options(keyhunt PRIVATE -static-libgcc -static-libstdc++)
     endif()
 else()

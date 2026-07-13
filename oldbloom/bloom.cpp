@@ -10,7 +10,6 @@
  */
 
 #include <assert.h>
-#include <fcntl.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,8 +18,14 @@
 #include <sys/stat.h>
 #include <inttypes.h>
 #include <sys/types.h>
+#if defined(_MSC_VER)
+#include <io.h>
+#include <fcntl.h>
+#else
+#include <fcntl.h>
 #include <unistd.h>
 #include <pthread.h>
+#endif
 
 #include "oldbloom.h"
 #include "../xxhash/xxhash.h"

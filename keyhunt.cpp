@@ -41,11 +41,15 @@ static int rand_r(unsigned int *seed) {
 #endif
 
 #if defined(_MSC_VER)
-#include <getopt.h>
+#include "compat/getopt.h"
 #include <windows.h>
+#ifndef strdup
+#define strdup _strdup
+#endif
 #else
 #include <unistd.h>
 #include <pthread.h>
+#include <getopt.h>
 #endif
 
 #if defined(__linux__) && !defined(__ANDROID__) && !defined(TERMUX)
@@ -4692,10 +4696,65 @@ void *thread_process_pub2addr(void *vargp) {
 }
 
 #if HASH160_AVX512_AVAILABLE
+/*
+ * AVX-512 batch path:
+ * - Always available for non-endo compress/uncompress.
+ * - With endomorphism, only compress-only searches use 16-wide batches
+ *   (uncompressed endo still uses the 4-wide path).
+ */
 static int hash160_avx512_batch_enabled(void) {
-	return !FLAGENDOMORPHISM &&
-		g_backend_config.cpu_vector == CPU_VECTOR_AVX512 &&
-		(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160);
+	if(g_backend_config.cpu_vector != CPU_VECTOR_AVX512)
+		return 0;
+	if(FLAGENDOMORPHISM && FLAGSEARCH != SEARCH_COMPRESS)
+		return 0;
+	return 1;
+}
+
+/* Recover private key for compressed endomorphism slot l in {0..5}. */
+static void recover_endo_compress_hit(int l, int bk, Int *key_mpz, Int *stride,
+	Int *keyfound, uint8_t *hash, char *confirm_buf, int vanity)
+{
+	Point publickey;
+	keyfound->SetInt32(bk);
+	keyfound->Mult(stride);
+	keyfound->Add(key_mpz);
+	publickey = secp->ComputePublicKey(keyfound);
+	switch(l) {
+		case 0:
+			if(publickey.y.IsOdd()) { keyfound->Neg(); keyfound->Add(&secp->order); }
+			break;
+		case 1:
+			if(publickey.y.IsEven()) { keyfound->Neg(); keyfound->Add(&secp->order); }
+			break;
+		case 2:
+			keyfound->ModMulK1order(&lambda);
+			if(publickey.y.IsOdd()) { keyfound->Neg(); keyfound->Add(&secp->order); }
+			break;
+		case 3:
+			keyfound->ModMulK1order(&lambda);
+			if(publickey.y.IsEven()) { keyfound->Neg(); keyfound->Add(&secp->order); }
+			break;
+		case 4:
+			keyfound->ModMulK1order(&lambda2);
+			if(publickey.y.IsOdd()) { keyfound->Neg(); keyfound->Add(&secp->order); }
+			break;
+		case 5:
+			keyfound->ModMulK1order(&lambda2);
+			if(publickey.y.IsEven()) { keyfound->Neg(); keyfound->Add(&secp->order); }
+			break;
+		default:
+			secp->GetHash160(P2PKH, true, publickey, (uint8_t*)confirm_buf);
+			if(memcmp(hash, confirm_buf, 20) != 0) {
+				keyfound->Neg();
+				keyfound->Add(&secp->order);
+			}
+			break;
+	}
+	if(vanity) writevanitykey(true, keyfound);
+	else {
+		writekey(true, keyfound);
+		notify_key_found(keyfound);
+	}
 }
 
 static int hash160_coin_uses_batch(void) {
@@ -4733,42 +4792,55 @@ static void try_p2sh_hit(int k, uint8_t *hash, bool compressed,
 }
 
 /*
- * 16-way AVX-512 hash160 + address check for one batch (no endomorphism).
- * Returns 1 if the batch was handled, 0 to fall through to the 4-way path.
+ * 16-way AVX-512 hash160 + address check for one batch.
+ * When endomorphism is enabled, beta_pts / beta2_pts must be non-NULL and
+ * FLAGSEARCH must be SEARCH_COMPRESS (enforced by hash160_avx512_batch_enabled).
  */
 static int process_hash160_avx512_batch_16(
-	Point *pts, int j, bool calculate_y,
+	Point *pts, Point *beta_pts, Point *beta2_pts, int j, bool calculate_y,
 	Int *key_mpz, Int *stride, Int *keyfound,
 	char *publickeyhashrmd160, Point *publickey_out
 ) {
 	if(!hash160_avx512_batch_enabled() || !hash160_coin_uses_batch())
 		return 0;
 
-	uint8_t h02[16][20], h03[16][20], hunc[16][20];
-	uint8_t *out02[16], *out03[16], *outunc[16];
-	Int *kx[16];
+	uint8_t h[6][16][20];
+	uint8_t hunc[16][20];
+	uint8_t *out[6][16];
+	uint8_t *outunc[16];
+	Int *kx[16], *kx_beta[16], *kx_beta2[16];
 	int base = j * 16;
-	int bk, l, r;
+	int bk, l, r, slot;
 	Point publickey;
+	int use_endo = FLAGENDOMORPHISM && beta_pts && beta2_pts;
 
 	for(bk = 0; bk < 16; bk++) {
-		out02[bk] = h02[bk];
-		out03[bk] = h03[bk];
+		for(slot = 0; slot < 6; slot++) out[slot][bk] = h[slot][bk];
 		outunc[bk] = hunc[bk];
 		kx[bk] = &pts[base + bk].x;
+		if(use_endo) {
+			kx_beta[bk] = &beta_pts[base + bk].x;
+			kx_beta2[bk] = &beta2_pts[base + bk].x;
+		}
 	}
 
 	if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
-		secp->GetHash160_fromX_16(P2PKH, 0x02, kx, out02);
-		secp->GetHash160_fromX_16(P2PKH, 0x03, kx, out03);
+		secp->GetHash160_fromX_16(P2PKH, 0x02, kx, out[0]);
+		secp->GetHash160_fromX_16(P2PKH, 0x03, kx, out[1]);
+		if(use_endo) {
+			secp->GetHash160_fromX_16(P2PKH, 0x02, kx_beta, out[2]);
+			secp->GetHash160_fromX_16(P2PKH, 0x03, kx_beta, out[3]);
+			secp->GetHash160_fromX_16(P2PKH, 0x02, kx_beta2, out[4]);
+			secp->GetHash160_fromX_16(P2PKH, 0x03, kx_beta2, out[5]);
+		}
 	}
-	if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+	if(!use_endo && (FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
 		secp->GetHash160_16(P2PKH, false, &pts[base], outunc);
 	}
 
 	uint8_t hp2sh_c[16][20], hp2sh_u[16][20];
 	uint8_t *out_p2sh_c[16], *out_p2sh_u[16];
-	if(FLAGHAS_P2SH_TARGETS) {
+	if(FLAGHAS_P2SH_TARGETS && !use_endo) {
 		for(bk = 0; bk < 16; bk++) {
 			out_p2sh_c[bk] = hp2sh_c[bk];
 			out_p2sh_u[bk] = hp2sh_u[bk];
@@ -4781,39 +4853,46 @@ static int process_hash160_avx512_batch_16(
 		}
 	}
 
+	int nslots = use_endo ? 6 : 2;
 	for(bk = 0; bk < 16; bk++) {
 		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
-			for(l = 0; l < 2; l++) {
-				uint8_t *hash = l ? h03[bk] : h02[bk];
+			for(l = 0; l < nslots; l++) {
+				uint8_t *hash = h[l][bk];
 				r = address_check((char*)hash, MAXLENGTHADDRESS);
 				if(!r) continue;
 				r = searchbinary(addressTable, (char*)hash, N);
 				if(!r) continue;
-				keyfound->SetInt32(bk);
-				keyfound->Mult(stride);
-				keyfound->Add(key_mpz);
-				publickey = secp->ComputePublicKey(keyfound);
-				secp->GetHash160(P2PKH, true, publickey, (uint8_t*)publickeyhashrmd160);
-				if(memcmp(hash, publickeyhashrmd160, 20) != 0) {
-					keyfound->Neg();
-					keyfound->Add(&secp->order);
+				if(use_endo) {
+					recover_endo_compress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 0);
+				} else {
+					keyfound->SetInt32(bk);
+					keyfound->Mult(stride);
+					keyfound->Add(key_mpz);
+					publickey = secp->ComputePublicKey(keyfound);
+					secp->GetHash160(P2PKH, true, publickey, (uint8_t*)publickeyhashrmd160);
+					if(memcmp(hash, publickeyhashrmd160, 20) != 0) {
+						keyfound->Neg();
+						keyfound->Add(&secp->order);
+					}
+					writekey(true, keyfound);
+					notify_key_found(keyfound);
 				}
-				writekey(true, keyfound);
-				notify_key_found(keyfound);
 			}
 		}
-		if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+		if(!use_endo && (FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
 			r = address_check((char*)hunc[bk], MAXLENGTHADDRESS);
-			if(!r) continue;
-			r = searchbinary(addressTable, (char*)hunc[bk], N);
-			if(!r) continue;
-			keyfound->SetInt32(bk);
-			keyfound->Mult(stride);
-			keyfound->Add(key_mpz);
-			writekey(false, keyfound);
-			notify_key_found(keyfound);
+			if(r) {
+				r = searchbinary(addressTable, (char*)hunc[bk], N);
+				if(r) {
+					keyfound->SetInt32(bk);
+					keyfound->Mult(stride);
+					keyfound->Add(key_mpz);
+					writekey(false, keyfound);
+					notify_key_found(keyfound);
+				}
+			}
 		}
-		if(FLAGHAS_P2SH_TARGETS) {
+		if(FLAGHAS_P2SH_TARGETS && !use_endo) {
 			if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
 				try_p2sh_hit(bk, hp2sh_c[bk], true, key_mpz, stride, keyfound, publickeyhashrmd160);
 			}
@@ -4827,58 +4906,121 @@ static int process_hash160_avx512_batch_16(
 }
 
 static int process_vanity_hash160_avx512_batch_16(
-	Point *pts, int j, bool calculate_y,
+	Point *pts, Point *beta_pts, Point *beta2_pts, int j, bool calculate_y,
 	Int *key_mpz, Int *stride, Int *keyfound,
 	char *publickeyhashrmd160
 ) {
 	if(!hash160_avx512_batch_enabled())
 		return 0;
 
-	uint8_t h02[16][20], h03[16][20], hunc[16][20];
-	uint8_t *out02[16], *out03[16], *outunc[16];
-	Int *kx[16];
+	uint8_t h[6][16][20];
+	uint8_t hunc[16][20];
+	uint8_t *out[6][16];
+	uint8_t *outunc[16];
+	Int *kx[16], *kx_beta[16], *kx_beta2[16];
 	int base = j * 16;
-	int bk, l;
+	int bk, l, slot;
 	Point publickey;
+	int use_endo = FLAGENDOMORPHISM && beta_pts && beta2_pts;
 
 	for(bk = 0; bk < 16; bk++) {
-		out02[bk] = h02[bk];
-		out03[bk] = h03[bk];
+		for(slot = 0; slot < 6; slot++) out[slot][bk] = h[slot][bk];
 		outunc[bk] = hunc[bk];
 		kx[bk] = &pts[base + bk].x;
+		if(use_endo) {
+			kx_beta[bk] = &beta_pts[base + bk].x;
+			kx_beta2[bk] = &beta2_pts[base + bk].x;
+		}
 	}
 
 	if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
-		secp->GetHash160_fromX_16(P2PKH, 0x02, kx, out02);
-		secp->GetHash160_fromX_16(P2PKH, 0x03, kx, out03);
+		secp->GetHash160_fromX_16(P2PKH, 0x02, kx, out[0]);
+		secp->GetHash160_fromX_16(P2PKH, 0x03, kx, out[1]);
+		if(use_endo) {
+			secp->GetHash160_fromX_16(P2PKH, 0x02, kx_beta, out[2]);
+			secp->GetHash160_fromX_16(P2PKH, 0x03, kx_beta, out[3]);
+			secp->GetHash160_fromX_16(P2PKH, 0x02, kx_beta2, out[4]);
+			secp->GetHash160_fromX_16(P2PKH, 0x03, kx_beta2, out[5]);
+		}
 	}
-	if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+	if(!use_endo && (FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
 		secp->GetHash160_16(P2PKH, false, &pts[base], outunc);
 	}
 
+	int nslots = use_endo ? 6 : 2;
 	for(bk = 0; bk < 16; bk++) {
 		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
-			for(l = 0; l < 2; l++) {
-				uint8_t *hash = l ? h03[bk] : h02[bk];
+			for(l = 0; l < nslots; l++) {
+				uint8_t *hash = h[l][bk];
 				if(!vanityrmdmatch(hash)) continue;
-				keyfound->SetInt32(bk);
-				keyfound->Mult(stride);
-				keyfound->Add(key_mpz);
-				publickey = secp->ComputePublicKey(keyfound);
-				secp->GetHash160(P2PKH, true, publickey, (uint8_t*)publickeyhashrmd160);
-				if(memcmp(hash, publickeyhashrmd160, 20) != 0) {
-					keyfound->Neg();
-					keyfound->Add(&secp->order);
-				}
-				writevanitykey(true, keyfound);
+				recover_endo_compress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 1);
 			}
 		}
-		if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+		if(!use_endo && (FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
 			if(!vanityrmdmatch(hunc[bk])) continue;
 			keyfound->SetInt32(bk);
 			keyfound->Mult(stride);
 			keyfound->Add(key_mpz);
 			writevanitykey(false, keyfound);
+		}
+	}
+	(void)publickey;
+	return 1;
+}
+#endif
+
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+/*
+ * GPU-assisted 16-way compressed hash160 (host EC, GPU hash).
+ * Used when a GPU backend is initialized and AVX-512 is not active.
+ */
+static int process_hash160_gpu_batch_16(
+	Point *pts, int j,
+	Int *key_mpz, Int *stride, Int *keyfound,
+	char *publickeyhashrmd160
+) {
+	if(!g_gpu_dispatcher || !gpu_dispatcher_available(g_gpu_dispatcher))
+		return 0;
+	if(FLAGENDOMORPHISM)
+		return 0;
+	if(!(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH))
+		return 0;
+	if(!hash160_coin_uses_batch())
+		return 0;
+
+	uint8_t keys[32][33];
+	uint8_t hashes[32][20];
+	int base = j * 16;
+	int bk, l, r;
+	Point publickey;
+
+	for(bk = 0; bk < 16; bk++) {
+		keys[bk][0] = 0x02;
+		pts[base + bk].x.Get32Bytes(keys[bk] + 1);
+		keys[16 + bk][0] = 0x03;
+		pts[base + bk].x.Get32Bytes(keys[16 + bk] + 1);
+	}
+	if(!gpu_dispatcher_hash160_33(g_gpu_dispatcher, &keys[0][0], 32, &hashes[0][0]))
+		return 0;
+
+	for(bk = 0; bk < 16; bk++) {
+		for(l = 0; l < 2; l++) {
+			uint8_t *hash = hashes[l * 16 + bk];
+			r = address_check((char*)hash, MAXLENGTHADDRESS);
+			if(!r) continue;
+			r = searchbinary(addressTable, (char*)hash, N);
+			if(!r) continue;
+			keyfound->SetInt32(bk);
+			keyfound->Mult(stride);
+			keyfound->Add(key_mpz);
+			publickey = secp->ComputePublicKey(keyfound);
+			secp->GetHash160(P2PKH, true, publickey, (uint8_t*)publickeyhashrmd160);
+			if(memcmp(hash, publickeyhashrmd160, 20) != 0) {
+				keyfound->Neg();
+				keyfound->Add(&secp->order);
+			}
+			writekey(true, keyfound);
+			notify_key_found(keyfound);
 		}
 	}
 	return 1;
@@ -5106,10 +5248,19 @@ void *thread_process(void *vargp)	{
 #else
 				int hash_batch = 4;
 #endif
+				if(hash_batch == 4 && g_gpu_dispatcher && gpu_dispatcher_available(g_gpu_dispatcher)
+					&& !FLAGENDOMORPHISM && (FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH)
+					&& hash160_coin_uses_batch()
+					&& (FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160)) {
+					hash_batch = 16; /* GPU path uses 16-wide batches */
+				}
 				for(j = 0; j < CPU_GRP_SIZE/hash_batch;j++){
 #if HASH160_AVX512_AVAILABLE
-					if(hash_batch == 16) {
-						process_hash160_avx512_batch_16(pts, (int)j, calculate_y,
+					if(hash_batch == 16 && hash160_avx512_batch_enabled()) {
+						process_hash160_avx512_batch_16(pts,
+							FLAGENDOMORPHISM ? endomorphism_beta : NULL,
+							FLAGENDOMORPHISM ? endomorphism_beta2 : NULL,
+							(int)j, calculate_y,
 							&key_mpz, &stride, &keyfound, publickeyhashrmd160, &publickey);
 						count += 16;
 						temp_stride.SetInt32(16);
@@ -5118,6 +5269,14 @@ void *thread_process(void *vargp)	{
 						continue;
 					}
 #endif
+					if(hash_batch == 16 && process_hash160_gpu_batch_16(pts, (int)j,
+							&key_mpz, &stride, &keyfound, publickeyhashrmd160)) {
+						count += 16;
+						temp_stride.SetInt32(16);
+						temp_stride.Mult(&stride);
+						key_mpz.Add(&temp_stride);
+						continue;
+					}
 					switch(FLAGMODE)	{
 						case MODE_RMD160:
 						case MODE_ADDRESS:
@@ -5764,7 +5923,10 @@ void *thread_process_vanity(void *vargp)	{
 				for(j = 0; j < CPU_GRP_SIZE/vanity_hash_batch;j++)	{
 #if HASH160_AVX512_AVAILABLE
 					if(vanity_hash_batch == 16) {
-						process_vanity_hash160_avx512_batch_16(pts, (int)j, calculate_y,
+						process_vanity_hash160_avx512_batch_16(pts,
+							FLAGENDOMORPHISM ? endomorphism_beta : NULL,
+							FLAGENDOMORPHISM ? endomorphism_beta2 : NULL,
+							(int)j, calculate_y,
 							&key_mpz, &stride, &keyfound, publickeyhashrmd160);
 						count += 16;
 						temp_stride.SetInt32(16);

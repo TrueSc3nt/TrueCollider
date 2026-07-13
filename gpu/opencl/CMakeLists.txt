@@ -1,10 +1,4 @@
-# OpenCL GPU backend (experimental / scaffolding).
-#
-# To enable:
-#   cmake -B build -DENABLE_OPENCL=ON
-#
-# This directory is a placeholder for the future OpenCL implementation.
-# OpenCL gives broader device support than CUDA (AMD, Intel, Apple, mobile).
+# OpenCL GPU backend
 
 find_package(OpenCL)
 
@@ -18,7 +12,13 @@ add_library(truecollider_opencl STATIC
 
 target_include_directories(truecollider_opencl PUBLIC
     ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/hash
     ${OpenCL_INCLUDE_DIRS}
+)
+
+target_sources(truecollider_opencl PRIVATE
+    ${CMAKE_SOURCE_DIR}/hash/sha256.cpp
+    ${CMAKE_SOURCE_DIR}/hash/ripemd160.cpp
 )
 
 target_link_libraries(truecollider_opencl ${OpenCL_LIBRARIES})
