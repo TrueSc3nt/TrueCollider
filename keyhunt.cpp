@@ -10690,7 +10690,7 @@ void menu() {
 	printf("    BTC:  1HmztBLDnwwaKAGbtALsYvCNBuoJYEic3h\n");
 	printf("    Tips to Iceland: bc1q39meky2mn5qjq704zz0nnkl0v7kj4uz6r529at\n");
 	printf("===============================================================\n\n");
-	exit(EXIT_FAILURE);
+	exit(EXIT_SUCCESS);
 }
 
 bool vanityrmdmatch(unsigned char *rmdhash)	{
