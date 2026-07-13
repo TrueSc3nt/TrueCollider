@@ -8,6 +8,10 @@
 extern "C" {
 #endif
 
+/* Address encode after GPU EC (host-side hash / bloom). */
+#define GPU_ENCODE_HASH160 0  /* BTC-family P2PKH hash160 */
+#define GPU_ENCODE_ETH     1  /* Keccak256(X||Y) → last 20 bytes */
+
 struct GpuDispatcher;
 
 struct GpuDispatcher* gpu_dispatcher_create(void);
@@ -36,15 +40,27 @@ int gpu_dispatcher_load_bloom(struct GpuDispatcher* disp,
                               const uint8_t* bf, uint64_t bits, uint64_t bytes, uint8_t hashes);
 
 /*
- * Full GPU search: privkeys (count*32 BE) -> secp256k1 -> hash160 -> bloom.
+ * Full GPU search: privkeys (count*32 BE) -> secp256k1 -> encode -> bloom.
+ * encode: GPU_ENCODE_HASH160 or GPU_ENCODE_ETH (ETH requires uncompressed).
  * Returns number of bloom hits; match_indices filled up to max_matches.
  */
 uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
                                         const uint8_t* privkeys,
                                         uint32_t count,
                                         int compressed,
+                                        int encode,
                                         uint32_t* match_indices,
                                         uint32_t max_matches);
+
+/*
+ * GPU EC only: privkeys (count*32 BE) -> count*65 pubkey bytes (0x02/03/04 + coords).
+ * Returns 1 on success. Used by Taproot / experimental BSGS helpers.
+ */
+int gpu_dispatcher_pubkey_batch(struct GpuDispatcher* disp,
+                                const uint8_t* privkeys,
+                                uint32_t count,
+                                int compressed,
+                                uint8_t* out_pubs65);
 
 /*
  * Submit a batch of compressed pubkeys for address-mode hash+filter.

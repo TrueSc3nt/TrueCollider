@@ -31,10 +31,10 @@ Sources of practice in the wild: [albertobsd/keyhunt](https://github.com/alberto
 | Vanity / mnemonic / poetry / brainwallet / minikeys | Done (CPU) |
 | BSGS CPU | Done |
 | AVX2 + AVX-512 hash160 | Done |
-| CUDA secp EC | Partial (stable small batches; device hash160 not production) |
+| CUDA secp EC (BTC-family + ETH/ETC + troot) | **Done** (host encode/bloom; batch up to 256) |
 | OpenCL hash160 | Done (EC on CPU) |
-| Kangaroo | **Not yet** |
-| Beginner docs | **This docs pass** |
+| GPU BSGS / Kangaroo / SOL GPU | **Not yet** |
+| Beginner docs | Done |
 | One-click Windows installer | Not yet |
 
 ---

@@ -22,6 +22,7 @@
 #include "../hash/sha256.h"
 #include "../hash/ripemd160.h"
 #include "../bloom/bloom.h"
+#include "../sha3/sha3.h"
 
 #ifndef ENABLE_CUDA
 extern "C" int tcuda_device_count(void) { return 0; }
@@ -83,6 +84,16 @@ static void host_hash160_pub(const uint8_t *pub, int compressed, uint8_t out20[2
     else
         sha256_65((uint8_t *)pub, sha);
     ripemd160_32(sha, out20);
+}
+
+/* ETH: keccak256(uncompressed X||Y) → last 20 bytes. pub must be 0x04||X||Y. */
+static void host_eth_addr_pub(const uint8_t *pub65, uint8_t out20[20]) {
+    uint8_t dig[32];
+    SHA3_256_CTX ctx;
+    SHA3_256_Init(&ctx);
+    SHA3_256_Update(&ctx, pub65 + 1, 64);
+    KECCAK_256_Final(dig, &ctx);
+    memcpy(out20, dig + 12, 20);
 }
 
 struct GpuDispatcher* gpu_dispatcher_create(void) {
@@ -232,6 +243,7 @@ uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
                                         const uint8_t* privkeys,
                                         uint32_t count,
                                         int compressed,
+                                        int encode,
                                         uint32_t* match_indices,
                                         uint32_t max_matches) {
     if (!disp || !disp->initialized || !disp->secp_ready || !disp->bloom_loaded)
@@ -240,6 +252,8 @@ uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
         return 0;
     if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA)
         return 0;
+    if (encode == GPU_ENCODE_ETH && compressed)
+        return 0; /* ETH needs uncompressed X||Y */
 
     /* Stack buffer for the stable single-key path; VirtualAlloc grow-only for larger. */
     uint8_t stack_pubs[65];
@@ -281,9 +295,14 @@ uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
         for (uint32_t i = 0; i < count; i++) {
             const uint8_t *pub = pubs + (size_t)i * 65;
             if (pub[0] == 0) continue;
-            uint8_t h160[20];
-            host_hash160_pub(pub, compressed, h160);
-            if (bloom_check(&disp->host_bloom, h160, 20) != 1)
+            uint8_t h20[20];
+            if (encode == GPU_ENCODE_ETH) {
+                if (pub[0] != 0x04) continue;
+                host_eth_addr_pub(pub, h20);
+            } else {
+                host_hash160_pub(pub, compressed, h20);
+            }
+            if (bloom_check(&disp->host_bloom, h20, 20) != 1)
                 continue;
             hits++;
             if (match_indices && stored < max_matches)
@@ -296,6 +315,31 @@ uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
     pthread_mutex_unlock(&disp->gpu_lock);
 #endif
     return (rc == 0) ? hits : 0;
+}
+
+int gpu_dispatcher_pubkey_batch(struct GpuDispatcher* disp,
+                                const uint8_t* privkeys,
+                                uint32_t count,
+                                int compressed,
+                                uint8_t* out_pubs65) {
+    if (!disp || !disp->initialized || !disp->secp_ready)
+        return 0;
+    if (!privkeys || !out_pubs65 || count == 0)
+        return 0;
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA)
+        return 0;
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+    int rc = tcuda_secp_pubkey_batch(privkeys, (int)count, compressed, out_pubs65);
+#ifdef _WIN32
+    LeaveCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+    return rc == 0 ? 1 : 0;
 }
 
 uint32_t gpu_dispatcher_search_address(struct GpuDispatcher* disp,

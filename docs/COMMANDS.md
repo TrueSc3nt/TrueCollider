@@ -160,14 +160,22 @@ Example:
 ## GPU
 
 ```bash
-# NVIDIA — GPU EC (address/rmd160); hash often still on host
-./keyhunt -m address -f targets.txt -U cuda -t 1 -l compress -s 5
+# NVIDIA CUDA — GPU secp EC + host hash160/bloom (BTC-family)
+./keyhunt -m address -f targets.txt -U cuda -G 128 -t 1 -l compress -q -s 5
 
-# OpenCL — GPU hash160, EC on CPU
+# NVIDIA CUDA — Ethereum (GPU EC + host keccak)
+./keyhunt -m address -c eth -f eth.txt -U cuda -G 128 -t 1 -q -s 5
+
+# NVIDIA CUDA — Taproot
+./keyhunt -m address -c troot -f troot.txt -U cuda -G 128 -t 1 -q -s 5
+
+# OpenCL — GPU hash160, EC on CPU (AMD/NVIDIA/Intel)
 ./keyhunt -m address -f targets.txt -U opencl -t 8 -l compress
 ```
 
-Vanity / BSGS / mnemonic / Solana stay **CPU**.
+Windows CUDA binary: `keyhunt_cuda.exe` (from `build_cuda_vs2022.bat`) or `run_gpu_cuda_example.bat`.
+
+Vanity / BSGS / mnemonic / Solana stay **CPU** for now. Prefer low `-t` with `-U cuda`.
 
 ---
 

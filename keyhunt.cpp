@@ -1969,10 +1969,18 @@ int main(int argc, char **argv)	{
 			g_backend_config.gpu_backend = GPU_BACKEND_NONE;
 		}
 		else if(!gpu_dispatcher_supports_mode(g_gpu_dispatcher, FLAGMODE)) {
-			fprintf(stderr,"[W] GPU backend does not support mode '%s'; running on CPU.\n",
-				FLAGMODE == MODE_ADDRESS ? "address" :
-				FLAGMODE == MODE_RMD160 ? "rmd160" :
-				FLAGMODE == MODE_VANITY ? "vanity" : "other");
+			if(FLAGMODE == MODE_BSGS) {
+				fprintf(stderr,"[W] BSGS baby/giant steps stay on CPU (group EC). "
+					"CUDA EC is used for address/rmd160/troot/eth; GPU BSGS kernels are on the roadmap.\n");
+			} else {
+				fprintf(stderr,"[W] GPU backend does not support mode '%s'; running on CPU.\n",
+					FLAGMODE == MODE_ADDRESS ? "address" :
+					FLAGMODE == MODE_RMD160 ? "rmd160" :
+					FLAGMODE == MODE_VANITY ? "vanity" : "other");
+			}
+		} else if(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160) {
+			fprintf(stderr,"[+] GPU search enabled for this mode (batch up to %u, -G to tune).\n",
+				g_backend_config.gpu_batch_size > 256 ? 256u : g_backend_config.gpu_batch_size);
 		}
 	}
 
@@ -4324,6 +4332,90 @@ void *thread_process_troot(void *vargp) {
 	while(continue_flag) {
 		get_next_search_key(&key_mpz, &n_range_start, &n_range_end);
 
+		/* CUDA path: batch privkeys → GPU EC → host taproot tweak + filter. */
+		if(g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher) && !FLAGENDOMORPHISM) {
+			int batch = (int)g_backend_config.gpu_batch_size;
+			if(batch < 1) batch = 1;
+			if(batch > 256) batch = 256;
+			uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
+			uint8_t *pubs = (uint8_t*)malloc((size_t)batch * 65);
+			if(privs && pubs) {
+				Int ktmp;
+				ktmp.Set(&key_mpz);
+				for(int i = 0; i < batch; i++) {
+					ktmp.Get32Bytes(privs + (size_t)i * 32);
+					ktmp.Add(&stride);
+				}
+				if(gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, 0, pubs)) {
+					for(int i = 0; i < batch; i++) {
+						const uint8_t *pub = pubs + (size_t)i * 65;
+						if(pub[0] != 0x04) continue;
+						Point pk;
+						pk.x.Set32Bytes((unsigned char*)(pub + 1));
+						pk.y.Set32Bytes((unsigned char*)(pub + 33));
+						pk.z.SetInt32(1);
+						uint8_t troot_out[32];
+						compute_taproot_output(pk, troot_out);
+						int r = bf_check(&troot_bf_filter, troot_out, 32);
+						if(r == -1 && troot_bf_filter.use_bloom_fallback) {
+							r = bloom_check(&troot_bloom, troot_out, 32);
+						}
+						if(!r) continue;
+						r = troot_searchbinary(trootTable, troot_out, N_TROOT);
+						if(!r) continue;
+						Int current_key;
+						current_key.Set(&key_mpz);
+						Int offset;
+						offset.SetInt64(i);
+						offset.Mult(&stride);
+						current_key.Add(&offset);
+						publickey = secp->ComputePublicKey(&current_key);
+						char *hextemp = current_key.GetBase16();
+						char pubkey_hex[132];
+						secp->GetPublicKeyHex(true, publickey, pubkey_hex);
+						char x_hex[65];
+						for(int b = 0; b < 32; b++) sprintf(x_hex + b * 2, "%02x", troot_out[b]);
+						x_hex[64] = '\0';
+						printf("\n[+] TAPROOT ADDRESS FOUND!\n");
+						printf("[+] Private Key (hex): %s\n", hextemp);
+						printf("[+] Public Key: %s\n", pubkey_hex);
+						printf("[+] Taproot Output Key (x-only): %s\n", x_hex);
+#if defined(_MSC_VER)
+						WaitForSingleObject(write_keys, INFINITE);
+#else
+						pthread_mutex_lock(&write_keys);
+#endif
+						FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+						if(f) {
+							fprintf(f, "Mode: address (taproot)\nPrivate Key: %s\nPublic Key: %s\nTaproot Output Key: %s\n\n",
+								hextemp, pubkey_hex, x_hex);
+							fclose(f);
+						}
+#if defined(_MSC_VER)
+						ReleaseMutex(write_keys);
+#else
+						pthread_mutex_unlock(&write_keys);
+#endif
+						free(hextemp);
+						notify_key_found(&current_key);
+						free(privs);
+						free(pubs);
+						return NULL;
+					}
+					Int grp_stride;
+					grp_stride.SetInt64(batch);
+					grp_stride.Mult(&stride);
+					key_mpz.Add(&grp_stride);
+					steps[thread_number]++;
+					free(privs);
+					free(pubs);
+					continue;
+				}
+			}
+			free(privs);
+			free(pubs);
+		}
+
 		uint8_t key_bytes[32];
 		key_mpz.Get32Bytes(key_bytes);
 
@@ -5101,6 +5193,12 @@ static int hash160_coin_uses_batch(void) {
 		FLAGCRYPTO == CRYPTO_ALL;
 }
 
+/* Coins that can use CUDA secp EC + host address encode. */
+static int gpu_secp_coin_supported(void) {
+	return hash160_coin_uses_batch() ||
+		FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC;
+}
+
 static int hash160_coin_uses_address_table(void) {
 	return hash160_coin_uses_batch();
 }
@@ -5569,7 +5667,7 @@ static int process_vanity_hash160_avx2_batch_8(
 
 #if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
 /*
- * Full device path: privkeys -> secp256k1 -> hash160 -> bloom on GPU.
+ * Full device path: privkeys -> secp256k1 -> hash160/keccak -> bloom on host.
  * Host confirms bloom hits against the sorted address table.
  * Returns 1 if the batch was handled on GPU (caller should skip CPU EC).
  */
@@ -5583,13 +5681,19 @@ static int process_secp_gpu_privkey_batch(
 		return 0; /* GPU endo: run without -e for max raw EC/hash rate; use CPU -e for 6x coverage */
 	if(!(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160 || FLAGMODE == MODE_VANITY))
 		return 0;
-	if(!hash160_coin_uses_batch() && FLAGMODE != MODE_VANITY)
+	if(!gpu_secp_coin_supported() && FLAGMODE != MODE_VANITY)
 		return 0;
+	/* ETH/ETC only in address mode (keccak), not rmd160. */
+	if((FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC) && FLAGMODE != MODE_ADDRESS)
+		return 0;
+
+	int is_eth = (FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC);
+	int encode = is_eth ? GPU_ENCODE_ETH : GPU_ENCODE_HASH160;
 
 	int batch = (int)g_backend_config.gpu_batch_size;
 	if(batch < 1) batch = 1;
-	/* Larger launches have tripped Windows TDR / heap issues on some hosts. */
-	if(batch > 1) batch = 1;
+	/* Chunked CUDA launches; keep host batches bounded for TDR / memory. */
+	if(batch > 256) batch = 256;
 	uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
 	uint32_t *matches = (uint32_t*)malloc((size_t)batch * sizeof(uint32_t));
 	if(!privs || !matches) {
@@ -5607,15 +5711,20 @@ static int process_secp_gpu_privkey_batch(
 
 	int passes[2];
 	int npass = 0;
-	if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH)
-		passes[npass++] = 1;
-	if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH)
+	if(is_eth) {
+		/* Ethereum always uses uncompressed X||Y for keccak. */
 		passes[npass++] = 0;
+	} else {
+		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH)
+			passes[npass++] = 1;
+		if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH)
+			passes[npass++] = 0;
+	}
 
 	Point publickey;
 	for(int p = 0; p < npass; p++) {
 		uint32_t hits = gpu_dispatcher_search_privkeys(
-			g_gpu_dispatcher, privs, (uint32_t)batch, passes[p],
+			g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], encode,
 			matches, (uint32_t)batch);
 		for(uint32_t h = 0; h < hits; h++) {
 			uint32_t idx = matches[h];
@@ -5626,12 +5735,20 @@ static int process_secp_gpu_privkey_batch(
 			offset.Mult(stride);
 			keyfound->Add(&offset);
 			publickey = secp->ComputePublicKey(keyfound);
-			secp->GetHash160(P2PKH, passes[p] != 0, publickey, (uint8_t*)publickeyhashrmd160);
+			if(is_eth) {
+				generate_binaddress_eth(publickey, (uint8_t*)publickeyhashrmd160);
+			} else {
+				secp->GetHash160(P2PKH, passes[p] != 0, publickey, (uint8_t*)publickeyhashrmd160);
+			}
 			int r = address_check(publickeyhashrmd160, MAXLENGTHADDRESS);
 			if(!r) continue;
 			r = searchbinary(addressTable, publickeyhashrmd160, N);
 			if(!r) continue;
-			writekey(passes[p] != 0, keyfound);
+			if(is_eth) {
+				writekeyeth(keyfound);
+			} else {
+				writekey(passes[p] != 0, keyfound);
+			}
 			notify_key_found(keyfound);
 		}
 	}
@@ -9691,7 +9808,7 @@ void menu() {
 	printf("  -U backend   GPU backend: none, cuda, opencl (default: none)\n");
 	printf("                 cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)\n");
 	printf("                 opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU\n");
-	printf("  -G N         GPU batch size hint (CUDA may clamp for stability)\n");
+	printf("  -G N         GPU batch size hint (default 128; CUDA clamps to 1..256)\n");
 	printf("  -I stride    Stride value for address/rmd160/xpoint modes\n\n");
 
 	printf("OUTPUT:\n");

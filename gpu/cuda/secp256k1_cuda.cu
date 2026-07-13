@@ -995,8 +995,8 @@ extern "C" int tcuda_secp_pubkey_batch(const uint8_t *privkeys, int count, int c
     if (!ensure_batch_bufs(count))
         return -1;
 
-    /* Process in small chunks to stay under Windows TDR and device stack limits. */
-    const int chunk = 32;
+    /* Chunked launches stay under Windows TDR / device stack limits. */
+    const int chunk = 128;
     for (int off = 0; off < count; off += chunk) {
         int n = count - off;
         if (n > chunk) n = chunk;
