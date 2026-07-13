@@ -78,17 +78,19 @@ struct CpuFeatures detect_cpu_features(void) {
     f.ssse3 = (ecx >> 9) & 1;
     int osxsave = (ecx >> 27) & 1;
 
-    if (osxsave && xgetbv_enabled(0x6)) { /* XCR0[2]=SSE, XCR0[1]=AVX */
+    if (osxsave && xgetbv_enabled(0x6)) { /* XCR0: XMM + YMM */
         f.avx = (ecx >> 28) & 1;
     }
 
     if (max_leaf >= 7) {
         uint32_t eax7, ebx7, ecx7, edx7;
         tc_cpuidex(7, 0, &eax7, &ebx7, &ecx7, &edx7);
-        if (f.avx && xgetbv_enabled(0xE6)) { /* AVX2 requires OS support for ymm */
+        /* AVX2 only needs YMM state in XCR0 (same as AVX). */
+        if (f.avx && xgetbv_enabled(0x6)) {
             f.avx2 = (ebx7 >> 5) & 1;
         }
-        if (f.avx2 && xgetbv_enabled(0xE6)) { /* AVX-512 requires OS support for zmm/ymm/xmm */
+        /* AVX-512 needs Opmask + ZMM_Hi256 + Hi16_ZMM (XCR0 bits 5–7) plus YMM/XMM. */
+        if (f.avx2 && xgetbv_enabled(0xE6)) {
             f.avx512f = (ebx7 >> 16) & 1;
             f.avx512bw = (ebx7 >> 30) & 1;
             f.avx512vl = (ebx7 >> 31) & 1;
@@ -105,12 +107,35 @@ struct CpuFeatures detect_cpu_features(void) {
  */
 const char* cpu_vector_name(void) {
     struct CpuFeatures f = detect_cpu_features();
-    if (f.avx512f) return "AVX-512F";
+    if (f.avx512f && f.avx512bw) return "AVX-512";
     if (f.avx2) return "AVX2";
     if (f.avx) return "AVX";
     if (f.ssse3) return "SSSE3";
     if (f.sse2) return "SSE2";
     return "scalar";
+}
+
+const char* cpu_vector_level_name(int level) {
+    switch (level) {
+        case CPU_VECTOR_AVX512: return "AVX-512";
+        case CPU_VECTOR_AVX2:   return "AVX2";
+        case CPU_VECTOR_AVX:    return "AVX";
+        case CPU_VECTOR_SSE:    return "SSE";
+        case CPU_VECTOR_NONE:   return "scalar";
+        default:                return "unknown";
+    }
+}
+
+/*
+ * Which hash160 implementation actually runs for the selected level.
+ * AVX/AVX2 have no dedicated hash kernels yet — they use SSE 4-wide.
+ */
+const char* cpu_hash_kernel_name(int level) {
+    if (level == CPU_VECTOR_AVX512)
+        return "AVX-512 16-wide hash160";
+    if (level >= CPU_VECTOR_SSE)
+        return "SSE 4-wide hash160";
+    return "scalar hash160";
 }
 
 /*

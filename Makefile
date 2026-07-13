@@ -11,8 +11,8 @@ CXX := g++
 CC  := gcc
 CPU_GRP_SIZE ?= 1024
 
-CXXFLAGS_BASE := -Wall -Wextra -Wno-deprecated-copy -O2 -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)
-CFLAGS_BASE   := -Wall -Wextra -Wno-unused-parameter -O2 -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)
+CXXFLAGS_BASE := -Wall -Wextra -Wno-deprecated-copy -O2 -I. -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)
+CFLAGS_BASE   := -Wall -Wextra -Wno-unused-parameter -O2 -I. -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)
 
 # Detect x86 vs ARM vs other
 IS_X86 := $(filter x86_64 i386 i686 amd64,$(ARCH))
@@ -81,8 +81,11 @@ endif
 
 TARGET := keyhunt
 
+default: $(TARGET)
+
 # Windows cross-compile target (Linux/WSL -> MinGW x86_64 .exe)
-# Builds a static, SSE-free binary that runs on Windows without extra DLLs.
+# Builds a static binary that runs on Windows without extra DLLs.
+# NOTE: must not be the first target (would recurse as default goal).
 windows:
 	@echo "[+] Cross-compiling Windows x86_64 .exe with MinGW..."
 	$(MAKE) clean
@@ -90,8 +93,6 @@ windows:
 		TARGET=keyhunt.exe "LIBS=-lm -lwinpthread -lws2_32 -static" \
 		"CXXFLAGS_BASE=-Wall -Wextra -O2 -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)" \
 		"CFLAGS_BASE=-Wall -Wextra -O2 -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)"
-
-default: $(TARGET)
 
 $(TARGET): keyhunt_nolto.o $(OBJECTS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LIBS)
@@ -109,7 +110,7 @@ Point.o: secp256k1/Point.cpp secp256k1/Point.h secp256k1/Int.h
 SECP256K1.o: secp256k1/SECP256K1.cpp secp256k1/SECP256K1.h secp256k1/Point.h secp256k1/Int.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-IntMod.o: secp256k1/IntMod.cpp secp256k1/IntMod.h secp256k1/Int.h
+IntMod.o: secp256k1/IntMod.cpp secp256k1/Int.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 Random.o: secp256k1/Random.cpp secp256k1/Random.h

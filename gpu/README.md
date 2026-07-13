@@ -1,69 +1,72 @@
-# GPU Backend (Experimental)
+# GPU backends
 
-This directory contains scaffolding for optional CUDA and OpenCL backends. The runtime dispatcher lives in `gpu/gpu_dispatcher.cpp` and is selected with `-U cuda` or `-U opencl`.
+Runtime selection: `-U none` (default) · `-U cuda` · `-U opencl`.
 
-## Why GPU?
+Dispatcher: `gpu/gpu_dispatcher.cpp`.
 
-Bitcoin private key search is embarrassingly parallel: each candidate key is independent, and the hot loop is secp256k1 scalar multiplication followed by SHA-256 / RIPEMD-160 hashing. A GPU can execute thousands of these in parallel, making it the biggest potential speedup for 2026-era tools.
+## Status (honest)
 
-## Status
+| Backend | EC (secp256k1) | hash160 | Bloom / filter | Vendors |
+|---------|----------------|---------|----------------|---------|
+| **CUDA** | On GPU (`secp256k1_cuda.cu`) | Host (device self-test fails) | Host bloom | NVIDIA |
+| **OpenCL** | Host CPU | On GPU (`hash160_opencl`) | Host | NVIDIA, AMD, Intel |
+| **CPU** | Host | SSE / AVX-512 | Fuse or bloom | All |
 
-| Backend | Status | Notes |
-|---------|--------|-------|
-| CUDA    | Phase 2 | Batch hash160 + self-test; search loop uses host EC + GPU hash when `-U cuda` |
-| OpenCL  | Phase 1 | Batch hash160 + self-test; same host-EC / GPU-hash path with `-U opencl` |
+### CUDA path (`-U cuda`)
 
-## Selecting the backend at runtime
+1. Upload / keep bloom on host (`tcuda_secp_search_init`, host-filter mode).
+2. Batch privkeys → `tcuda_secp_pubkey_batch` (device EC).
+3. Host SHA256 + RIPEMD160 + `bloom_check`.
+4. CPU confirms hits and writes keys.
+
+**Limits today:** search batch forced to **1** for driver stability on some Windows hosts; no `-e` on the GPU secp helper; vanity/BSGS/etc. stay CPU.
+
+### OpenCL path (`-U opencl`)
+
+1. Enumerate GPU platforms (prefers NVIDIA/AMD by compute units).
+2. Self-test batch hash160 of compressed pubkeys.
+3. Main loop: CPU EC → `gpu_dispatcher_hash160_33` → host filter (when AVX-512 path is not active and `-e` is off).
+
+**Requires:** OpenCL ICD + headers. Works with Adrenalin (AMD), NVIDIA OpenCL, Intel GPU runtimes.
+
+## Build
 
 ```bash
-# CPU only (default)
-./keyhunt -m address -f targets.txt -U none -t 8
-
-# CUDA (host builds pubkeys, GPU hashes)
-./keyhunt -m address -f targets.txt -U cuda -t 8
-
-# OpenCL
-./keyhunt -m address -f targets.txt -U opencl -t 8
-```
-
-GPU hash offload is used for compress address/rmd160 batches when AVX-512 is not active and endomorphism is off. Full secp256k1 on-device remains future work.
-
-## Building with GPU support
-
-```bash
-# CUDA
+# NVIDIA CUDA
 cmake -B build-cuda -DENABLE_CUDA=ON
-cmake --build build-cuda -j$(nproc)
+cmake --build build-cuda -j
+# Windows helper: build_cuda_vs2022.bat → keyhunt_cuda.exe
 
-# OpenCL
+# OpenCL (AMD / NVIDIA / Intel)
 cmake -B build-opencl -DENABLE_OPENCL=ON
-cmake --build build-opencl -j$(nproc)
+cmake --build build-opencl -j
 ```
 
-## Planned GPU kernel layout
+```bash
+./keyhunt -m address -f targets.txt -U cuda -t 1 -l compress
+./keyhunt -m address -f targets.txt -U opencl -t 8 -l compress
+```
 
-1. `secp256k1_mul_kernel` — batch scalar multiplications of the base point G.
-2. `hash160_kernel` — batch SHA-256 then RIPEMD-160 of the compressed public key.
-3. `filter_lookup_kernel` — XOR-fuse filter membership test on device.
-4. `reduce_kernel` — collect candidate keys that pass both filter and confirmation.
+## Flags
 
-## Integration plan
+| Flag | Meaning |
+|------|---------|
+| `-U cuda\|opencl\|none` | Backend |
+| `-G N` | Batch size **hint** (CUDA may clamp) |
 
-The main `keyhunt.cpp` delegates to a `GpuDispatcher` that:
+## Roadmap
 
-- Fills a GPU input buffer with `N` candidate private keys.
-- Runs the EC + hash160 pipeline in one or many CUDA streams / OpenCL command queues.
-- Copies back a small list of candidates for the CPU to confirm.
-- Keeps the CPU busy with the next batch while the GPU works.
+1. Correct CUDA device hash160 → device-side bloom.
+2. Larger safe CUDA batches (chunked launches under TDR limits).
+3. OpenCL secp256k1 EC (parity with CUDA for AMD).
+4. Vanity on GPU secp helper.
+5. Optional large pages for huge host filters.
 
-A `CPU_GRP_SIZE` value remains for CPU-only builds, and `GPU_BATCH_SIZE` (default 65536) controls how many keys are dispatched to the GPU per launch.
+## Layout
 
-## Contributing
-
-If you have CUDA/OpenCL experience, the missing pieces are:
-
-- A secp256k1 point-multiplication kernel that matches the `Int/Point` logic in `secp256k1/`.
-- A GPU-friendly Bloom/binary-fuse lookup.
-- Benchmark harness comparing CPU vs GPU throughput.
-
-Open a PR against `https://github.com/TrueSc3nt/TrueCollider`.
+```
+gpu/
+  gpu_dispatcher.cpp|.h     # -U routing
+  cuda/                     # CUDA secp + hash160 + bridge
+  opencl/                   # OpenCL hash160
+```

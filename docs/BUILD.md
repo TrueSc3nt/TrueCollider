@@ -148,6 +148,44 @@ With `-e` (endomorphism) and compress-only search, AVX-512 also accelerates the 
 
 ---
 
+## Native Windows + CUDA (NVIDIA)
+
+Requires **VS 2022 Build Tools** (or VS with MSVC v143) and a complete **CUDA 12.x** toolkit. VS 2025/18 alone can break `nvcc`.
+
+```bat
+build_cuda_vs2022.bat
+REM Output: build-cuda-vs2022\keyhunt.exe  (copy as keyhunt_cuda.exe)
+```
+
+Manual:
+
+```bat
+call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+set CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8
+cmake -B build-cuda-vs2022 -G Ninja -DENABLE_CUDA=ON -DENABLE_AVX512=ON
+cmake --build build-cuda-vs2022 -j
+```
+
+Run:
+
+```bat
+keyhunt_cuda.exe -m address -f targets.txt -U cuda -t 1 -l compress -s 5
+```
+
+---
+
+## OpenCL (AMD / NVIDIA / Intel)
+
+```bash
+cmake -B build-opencl -DENABLE_OPENCL=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-opencl -j
+./build-opencl/keyhunt -m address -f targets.txt -U opencl -t 8 -l compress
+```
+
+Install the vendor OpenCL ICD (AMD Adrenalin, NVIDIA GPU driver OpenCL, or Intel). Headers must provide `CL/cl.h` (or `OpenCL/cl.h` on macOS).
+
+---
+
 ## Troubleshooting
 
 ### `pthread.h` not found on Windows
@@ -166,3 +204,9 @@ Use the Termux toolchain file, which disables SSE:
 ```bash
 cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/termux-aarch64.cmake
 ```
+
+### CUDA build: `nvcc` cannot find MSVC
+Use **VS 2022** `vcvars64.bat`, not only VS 2025/18. See `build_cuda_vs2022.bat`.
+
+### OpenCL: no devices
+Install a GPU OpenCL driver ICD. `topencl_hello` lists platforms/devices at startup with `-U opencl`.

@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "libbase58.h"
@@ -42,33 +43,30 @@ bool b58tobin(void *bin, size_t *binszp, const char *b58, size_t b58sz)
 	const unsigned char *b58u = (void*)b58;
 	unsigned char *binu = bin;
 	size_t outisz = (binsz + sizeof(b58_almostmaxint_t) - 1) / sizeof(b58_almostmaxint_t);
-	b58_almostmaxint_t outi[outisz];
+	b58_almostmaxint_t *outi = (b58_almostmaxint_t*)calloc(outisz, sizeof(b58_almostmaxint_t));
 	b58_maxint_t t;
 	b58_almostmaxint_t c;
 	size_t i, j;
 	uint8_t bytesleft = binsz % sizeof(b58_almostmaxint_t);
 	b58_almostmaxint_t zeromask = bytesleft ? (b58_almostmaxint_mask << (bytesleft * 8)) : 0;
 	unsigned zerocount = 0;
-	
+	bool ok = false;
+
+	if (!outi)
+		return false;
+
 	if (!b58sz)
 		b58sz = strlen(b58);
-	
-	for (i = 0; i < outisz; ++i) {
-		outi[i] = 0;
-	}
-	
-	// Leading zeros, just count
+
 	for (i = 0; i < b58sz && b58u[i] == '1'; ++i)
 		++zerocount;
-	
+
 	for ( ; i < b58sz; ++i)
 	{
 		if (b58u[i] & 0x80)
-			// High-bit set on invalid digit
-			return false;
+			goto done;
 		if (b58digits_map[b58u[i]] == -1)
-			// Invalid base58 digit
-			return false;
+			goto done;
 		c = (unsigned)b58digits_map[b58u[i]];
 		for (j = outisz; j--; )
 		{
@@ -77,13 +75,11 @@ bool b58tobin(void *bin, size_t *binszp, const char *b58, size_t b58sz)
 			outi[j] = t & b58_almostmaxint_mask;
 		}
 		if (c)
-			// Output number too big (carry to the next int32)
-			return false;
+			goto done;
 		if (outi[0] & zeromask)
-			// Output number too big (last int32 filled too far)
-			return false;
+			goto done;
 	}
-	
+
 	j = 0;
 	if (bytesleft) {
 		for (i = bytesleft; i > 0; --i) {
@@ -91,15 +87,14 @@ bool b58tobin(void *bin, size_t *binszp, const char *b58, size_t b58sz)
 		}
 		++j;
 	}
-	
+
 	for (; j < outisz; ++j)
 	{
 		for (i = sizeof(*outi); i > 0; --i) {
 			*(binu++) = (outi[j] >> (8 * (i - 1))) & 0xff;
 		}
 	}
-	
-	// Count canonical base58 byte count
+
 	binu = bin;
 	for (i = 0; i < binsz; ++i)
 	{
@@ -108,8 +103,11 @@ bool b58tobin(void *bin, size_t *binszp, const char *b58, size_t b58sz)
 		--*binszp;
 	}
 	*binszp += zerocount;
-	
-	return true;
+	ok = true;
+
+done:
+	free(outi);
+	return ok;
 }
 
 static
@@ -124,19 +122,19 @@ int b58check(const void *bin, size_t binsz, const char *base58str, size_t b58sz)
 	unsigned char buf[32];
 	const uint8_t *binc = bin;
 	unsigned i;
+	(void)b58sz;
 	if (binsz < 4)
 		return -4;
 	if (!my_dblsha256(buf, bin, binsz - 4))
 		return -2;
 	if (memcmp(&binc[binsz - 4], buf, 4))
 		return -1;
-	
-	// Check number of zeros is correct AFTER verifying checksum (to avoid possibility of accessing base58str beyond the end)
+
 	for (i = 0; binc[i] == '\0' && base58str[i] == '1'; ++i)
-	{}  // Just finding the end of zeros, nothing to do in loop
+	{}
 	if (binc[i] == '\0' || base58str[i] == '1')
 		return -3;
-	
+
 	return binc[0];
 }
 
@@ -148,14 +146,17 @@ bool b58enc(char *b58, size_t *b58sz, const void *data, size_t binsz)
 	int carry;
 	size_t i, j, high, zcount = 0;
 	size_t size;
-	
+	uint8_t *buf;
+	bool ok = false;
+
 	while (zcount < binsz && !bin[zcount])
 		++zcount;
-	
+
 	size = (binsz - zcount) * 138 / 100 + 1;
-	uint8_t buf[size];
-	memset(buf, 0, size);
-	
+	buf = (uint8_t*)calloc(size, 1);
+	if (!buf)
+		return false;
+
 	for (i = zcount, high = size - 1; i < binsz; ++i, high = j)
 	{
 		for (carry = bin[i], j = size - 1; (j > high) || carry; --j)
@@ -164,28 +165,30 @@ bool b58enc(char *b58, size_t *b58sz, const void *data, size_t binsz)
 			buf[j] = carry % 58;
 			carry /= 58;
 			if (!j) {
-				// Otherwise j wraps to maxint which is > high
 				break;
 			}
 		}
 	}
-	
+
 	for (j = 0; j < size && !buf[j]; ++j);
-	
+
 	if (*b58sz <= zcount + size - j)
 	{
 		*b58sz = zcount + size - j + 1;
-		return false;
+		goto done;
 	}
-	
+
 	if (zcount)
 		memset(b58, '1', zcount);
 	for (i = zcount; j < size; ++i, ++j)
 		b58[i] = b58digits_ordered[buf[j]];
 	b58[i] = '\0';
 	*b58sz = i + 1;
-	
-	return true;
+	ok = true;
+
+done:
+	free(buf);
+	return ok;
 }
 
 bool b58enc_custom(char *b58, size_t *b58sz, const void *data, size_t binsz,char *buffer)
@@ -194,14 +197,17 @@ bool b58enc_custom(char *b58, size_t *b58sz, const void *data, size_t binsz,char
 	int carry;
 	size_t i, j, high, zcount = 0;
 	size_t size;
-	
+	uint8_t *buf;
+	bool ok = false;
+
 	while (zcount < binsz && !bin[zcount])
 		++zcount;
-	
+
 	size = (binsz - zcount) * 138 / 100 + 1;
-	uint8_t buf[size];
-	memset(buf, 0, size);
-	
+	buf = (uint8_t*)calloc(size, 1);
+	if (!buf)
+		return false;
+
 	for (i = zcount, high = size - 1; i < binsz; ++i, high = j)
 	{
 		for (carry = bin[i], j = size - 1; (j > high) || carry; --j)
@@ -210,43 +216,55 @@ bool b58enc_custom(char *b58, size_t *b58sz, const void *data, size_t binsz,char
 			buf[j] = carry % 58;
 			carry /= 58;
 			if (!j) {
-				// Otherwise j wraps to maxint which is > high
 				break;
 			}
 		}
 	}
-	
+
 	for (j = 0; j < size && !buf[j]; ++j);
-	
+
 	if (*b58sz <= zcount + size - j)
 	{
 		*b58sz = zcount + size - j + 1;
-		return false;
+		goto done;
 	}
-	
+
 	if (zcount)
 		memset(b58, buffer[0], zcount);
 	for (i = zcount; j < size; ++i, ++j)
 		b58[i] = buffer[buf[j]];
 	b58[i] = '\0';
 	*b58sz = i + 1;
-	
-	return true;
+	ok = true;
+
+done:
+	free(buf);
+	return ok;
 }
 
 
 bool b58check_enc(char *b58c, size_t *b58c_sz, uint8_t ver, const void *data, size_t datasz)
 {
-	uint8_t buf[1 + datasz + 0x20];
-	uint8_t *hash = &buf[1 + datasz];
-	
+	uint8_t *buf = (uint8_t*)malloc(1 + datasz + 0x20);
+	uint8_t *hash;
+	bool ok;
+
+	if (!buf) {
+		*b58c_sz = 0;
+		return false;
+	}
+	hash = &buf[1 + datasz];
+
 	buf[0] = ver;
 	memcpy(&buf[1], data, datasz);
 	if (!my_dblsha256(hash, buf, datasz + 1))
 	{
 		*b58c_sz = 0;
+		free(buf);
 		return false;
 	}
-	
-	return b58enc(b58c, b58c_sz, buf, 1 + datasz + 4);
+
+	ok = b58enc(b58c, b58c_sz, buf, 1 + datasz + 4);
+	free(buf);
+	return ok;
 }

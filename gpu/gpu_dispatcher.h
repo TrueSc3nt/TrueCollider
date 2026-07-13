@@ -1,7 +1,7 @@
 #ifndef GPU_DISPATCHER_H
 #define GPU_DISPATCHER_H
 
-#include "backend_config.h"
+#include "../backend_config.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -15,6 +15,8 @@ void gpu_dispatcher_destroy(struct GpuDispatcher* disp);
 
 int gpu_dispatcher_init(struct GpuDispatcher* disp, const struct BackendConfig* cfg);
 int gpu_dispatcher_available(const struct GpuDispatcher* disp);
+/* 1 if CUDA secp256k1 + device bloom path passed self-test / is usable. */
+int gpu_dispatcher_secp_ready(const struct GpuDispatcher* disp);
 
 /* Returns 1 if the current mode can be run on the GPU. */
 int gpu_dispatcher_supports_mode(const struct GpuDispatcher* disp, int mode);
@@ -28,6 +30,21 @@ int gpu_dispatcher_hash160_33(struct GpuDispatcher* disp,
                               const uint8_t* keys33,
                               uint32_t count,
                               uint8_t* out20);
+
+/* Upload host bloom filter for device-side probing (CUDA secp path). */
+int gpu_dispatcher_load_bloom(struct GpuDispatcher* disp,
+                              const uint8_t* bf, uint64_t bits, uint64_t bytes, uint8_t hashes);
+
+/*
+ * Full GPU search: privkeys (count*32 BE) -> secp256k1 -> hash160 -> bloom.
+ * Returns number of bloom hits; match_indices filled up to max_matches.
+ */
+uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
+                                        const uint8_t* privkeys,
+                                        uint32_t count,
+                                        int compressed,
+                                        uint32_t* match_indices,
+                                        uint32_t max_matches);
 
 /*
  * Submit a batch of compressed pubkeys for address-mode hash+filter.

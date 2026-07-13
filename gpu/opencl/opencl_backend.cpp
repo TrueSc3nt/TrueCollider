@@ -38,15 +38,30 @@ static int ocl_init(void) {
     std::vector<cl_platform_id> plats(nplat);
     clGetPlatformIDs(nplat, plats.data(), NULL);
 
-    cl_device_id device = NULL;
-    for (cl_uint p = 0; p < nplat && !device; p++) {
+    cl_device_id best = NULL;
+    cl_uint best_cus = 0;
+    for (cl_uint p = 0; p < nplat; p++) {
         cl_uint ndev = 0;
         if (clGetDeviceIDs(plats[p], CL_DEVICE_TYPE_GPU, 0, NULL, &ndev) != CL_SUCCESS || ndev == 0)
             continue;
         std::vector<cl_device_id> devs(ndev);
         clGetDeviceIDs(plats[p], CL_DEVICE_TYPE_GPU, ndev, devs.data(), NULL);
-        device = devs[0];
+        for (cl_uint d = 0; d < ndev; d++) {
+            cl_uint cus = 0;
+            clGetDeviceInfo(devs[d], CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(cus), &cus, NULL);
+            char vend[128] = {0};
+            clGetDeviceInfo(devs[d], CL_DEVICE_VENDOR, sizeof(vend), vend, NULL);
+            /* Prefer NVIDIA / AMD when CU counts are close. */
+            int bonus = 0;
+            if (strstr(vend, "NVIDIA") || strstr(vend, "Advanced Micro Devices") || strstr(vend, "AMD"))
+                bonus = 64;
+            if (!best || cus + bonus > best_cus) {
+                best = devs[d];
+                best_cus = cus + bonus;
+            }
+        }
     }
+    cl_device_id device = best;
     if (!device) {
         /* Fall back to any device (CPU OpenCL). */
         for (cl_uint p = 0; p < nplat && !device; p++) {
@@ -100,9 +115,37 @@ extern "C" int topencl_device_count(void) {
 }
 
 extern "C" int topencl_hello(void) {
-    int count = topencl_device_count();
-    printf("[OpenCL] GPU devices detected: %d\n", count);
-    return count;
+    cl_uint nplat = 0;
+    if (clGetPlatformIDs(0, NULL, &nplat) != CL_SUCCESS || nplat == 0) {
+        printf("[OpenCL] No platforms found\n");
+        return 0;
+    }
+    std::vector<cl_platform_id> plats(nplat);
+    clGetPlatformIDs(nplat, plats.data(), NULL);
+    int total = 0;
+    for (cl_uint p = 0; p < nplat; p++) {
+        char pname[128] = {0}, pvend[128] = {0};
+        clGetPlatformInfo(plats[p], CL_PLATFORM_NAME, sizeof(pname), pname, NULL);
+        clGetPlatformInfo(plats[p], CL_PLATFORM_VENDOR, sizeof(pvend), pvend, NULL);
+        cl_uint ndev = 0;
+        if (clGetDeviceIDs(plats[p], CL_DEVICE_TYPE_GPU, 0, NULL, &ndev) != CL_SUCCESS || ndev == 0)
+            continue;
+        std::vector<cl_device_id> devs(ndev);
+        clGetDeviceIDs(plats[p], CL_DEVICE_TYPE_GPU, ndev, devs.data(), NULL);
+        for (cl_uint d = 0; d < ndev; d++) {
+            char dname[256] = {0}, dvend[128] = {0};
+            clGetDeviceInfo(devs[d], CL_DEVICE_NAME, sizeof(dname), dname, NULL);
+            clGetDeviceInfo(devs[d], CL_DEVICE_VENDOR, sizeof(dvend), dvend, NULL);
+            printf("[OpenCL] GPU %d: %s (%s) via %s / %s\n",
+                   total, dname, dvend, pname, pvend);
+            total++;
+        }
+    }
+    if (total == 0)
+        printf("[OpenCL] No GPU devices detected (NVIDIA/AMD/Intel OpenCL drivers required)\n");
+    else
+        printf("[OpenCL] %d GPU device(s) available for hash160 offload\n", total);
+    return total;
 }
 
 extern "C" int topencl_hash160_33_batch(const uint8_t *host_keys, int count, uint8_t *host_out) {
@@ -139,19 +182,17 @@ extern "C" int topencl_hash160_33_batch(const uint8_t *host_keys, int count, uin
 }
 
 extern "C" int topencl_hash160_33_selftest(void) {
+    /* Compressed secp256k1 G (privkey=1) */
     const uint8_t pubkey[33] = {
-        0x02, 0x79, 0xbe, 0x67, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62,
+        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62,
         0x95, 0xce, 0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28,
         0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98
     };
-    uint8_t expected[20], sha[32], padded[64];
-    memcpy(padded, pubkey, 33);
-    padded[33] = 0x80;
-    memset(padded + 34, 0, 29);
-    padded[62] = 0x01;
-    padded[63] = 0x08;
-    sha256_33(padded, sha);
-    ripemd160_32(sha, expected);
+    /* hash160(compressed G) */
+    const uint8_t expected[20] = {
+        0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
+        0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6
+    };
 
     uint8_t keys[33 * 16];
     uint8_t out[20 * 16];
@@ -161,7 +202,9 @@ extern "C" int topencl_hash160_33_selftest(void) {
         return 0;
     }
     if (memcmp(out, expected, 20) != 0) {
-        fprintf(stderr, "[E] topencl_hash160_33_selftest: hash mismatch.\n");
+        fprintf(stderr, "[E] topencl_hash160_33_selftest: hash mismatch.\n  got: ");
+        for (int i = 0; i < 20; i++) fprintf(stderr, "%02x", out[i]);
+        fprintf(stderr, "\n");
         return 0;
     }
     printf("[+] OpenCL hash160 self-test passed.\n");

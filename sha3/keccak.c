@@ -32,6 +32,9 @@
 
 #define	secret	/* can't use in variable-time operations, should zero */
 
+#if defined(_MSC_VER)
+#define	FOR5(X, STMT) for ((X) = 0; (X) < 5; ++(X)) STMT
+#else
 #define	FOR5(X, STMT) do						      \
 {									      \
 	(X) = 0; (STMT);						      \
@@ -40,6 +43,7 @@
 	(X) = 3; (STMT);						      \
 	(X) = 4; (STMT);						      \
 } while (0)
+#endif
 
 static inline secret uint64_t
 rol64(secret uint64_t v, unsigned c)

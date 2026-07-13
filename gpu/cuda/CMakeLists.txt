@@ -20,6 +20,7 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 add_library(truecollider_cuda STATIC
     cuda_backend.cu
     hash160_cuda.cu
+    secp256k1_cuda.cu
 )
 
 target_include_directories(truecollider_cuda PUBLIC
@@ -29,13 +30,9 @@ target_include_directories(truecollider_cuda PUBLIC
 )
 
 set_target_properties(truecollider_cuda PROPERTIES
-    CUDA_SEPARABLE_COMPILATION ON
+    CUDA_SEPARABLE_COMPILATION OFF
     POSITION_INDEPENDENT_CODE ON
+    CUDA_RESOLVE_DEVICE_SYMBOLS ON
 )
 
-target_link_libraries(keyhunt truecollider_cuda)
-
-target_sources(truecollider_cuda PRIVATE
-    ${CMAKE_SOURCE_DIR}/hash/sha256.cpp
-    ${CMAKE_SOURCE_DIR}/hash/ripemd160.cpp
-)
+target_link_libraries(keyhunt truecollider_cuda CUDA::cudart)

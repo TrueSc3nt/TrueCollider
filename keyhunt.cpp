@@ -33,11 +33,22 @@ Developed & Modified by TrueScent
 #include "gpu/gpu_dispatcher.h"
 #include "hash/hash160_avx512.h"
 
-#if defined(__MINGW32__) || defined(__MINGW64__)
+#if defined(__MINGW32__) || defined(__MINGW64__) || defined(_MSC_VER)
 static int rand_r(unsigned int *seed) {
-    *seed = *seed * 1103515245 + 12345;
-    return (*seed >> 16) & 0x7FFF;
+    *seed = *seed * 1103515245u + 12345u;
+    return (int)((*seed >> 16) & 0x7FFF);
 }
+#if defined(_MSC_VER)
+#ifndef strtok_r
+#define strtok_r(str, delim, save) strtok_s((str), (delim), (save))
+#endif
+#ifndef popen
+#define popen _popen
+#endif
+#ifndef pclose
+#define pclose _pclose
+#endif
+#endif
 #endif
 
 #if defined(_MSC_VER)
@@ -1311,6 +1322,12 @@ int main(int argc, char **argv)	{
 			fprintf(stderr,"[W] Skipping checksums on files\n");
 		break;
 		case 'A':
+			if(strcmp(optarg,"auto") == 0) {
+				g_backend_config.cpu_vector_auto = 1;
+				g_backend_config.cpu_vector = CPU_VECTOR_AVX512; /* upper bound; clamped at init */
+				printf("[+] CPU vectorization: auto-detect best (SSE/AVX/AVX2/AVX-512)\n");
+			}
+			else {
 			g_backend_config.cpu_vector_auto = 0;
 			if(strcmp(optarg,"none") == 0) {
 				g_backend_config.cpu_vector = CPU_VECTOR_NONE;
@@ -1333,8 +1350,21 @@ int main(int argc, char **argv)	{
 				printf("[+] CPU vectorization set to AVX-512\n");
 			}
 			else {
-				fprintf(stderr,"[E] Unknown CPU vector mode '%s'. Use none/sse/avx/avx2/avx512.\n",optarg);
+				fprintf(stderr,"[E] Unknown CPU vector mode '%s'. Use auto/none/sse/avx/avx2/avx512.\n",optarg);
 				exit(EXIT_FAILURE);
+			}
+			}
+		break;
+		case 'G':
+			{
+				unsigned long gbs = strtoul(optarg, NULL, 0);
+				if(gbs < 1 || gbs > 1048576) {
+					fprintf(stderr,"[E] -G batch size must be 1..1048576\n");
+					exit(EXIT_FAILURE);
+				}
+				g_backend_config.gpu_batch_size = (uint32_t)gbs;
+				printf("[+] GPU batch size hint: %u (CUDA may clamp for driver stability)\n",
+					g_backend_config.gpu_batch_size);
 			}
 		break;
 		case 'U':
@@ -1853,12 +1883,16 @@ int main(int argc, char **argv)	{
 			? cpu_vector_auto_level()
 			: g_backend_config.cpu_vector;
 		int clamped = cpu_clamp_vector_level(requested);
-		if(clamped != requested) {
-			fprintf(stderr,"[W] Requested CPU vector level not supported on this CPU/OS; using a safe fallback.\n");
+		if(clamped != requested && !g_backend_config.cpu_vector_auto) {
+			fprintf(stderr,"[W] Requested CPU vector level not supported on this CPU/OS; using %s.\n",
+				cpu_vector_level_name(clamped));
 		}
 		g_backend_config.cpu_vector = clamped;
-		printf("[+] CPU vectorization: %s (runtime level %d)\n",
-			cpu_vector_name(), g_backend_config.cpu_vector);
+		printf("[+] CPU detect: %s → selected %s → using %s%s\n",
+			cpu_vector_name(),
+			cpu_vector_level_name(clamped),
+			cpu_hash_kernel_name(clamped),
+			g_backend_config.cpu_vector_auto ? " (auto)" : "");
 	}
 
 #if HASH160_AVX512_AVAILABLE
@@ -2082,6 +2116,9 @@ int main(int argc, char **argv)	{
 			printf(" done! %" PRIu64 " values were loaded and sorted\n",N);
 			if(FLAGHAS_P2SH_TARGETS) {
 				printf("[+] P2SH (3...) targets detected — script-hash search enabled\n");
+			}
+			if(g_gpu_dispatcher && gpu_dispatcher_available(g_gpu_dispatcher) && bloom.ready && bloom.bf) {
+				gpu_dispatcher_load_bloom(g_gpu_dispatcher, bloom.bf, bloom.bits, bloom.bytes, bloom.hashes);
 			}
 			writeFileIfNeeded(fileName);
 		}
@@ -3352,10 +3389,17 @@ int main(int argc, char **argv)	{
 				break;
 #endif
 			}
+#if defined(_MSC_VER)
+			if(tid[j] == NULL)	{
+				fprintf(stderr,"[E] CreateThread thread_process failed\n");
+				exit(EXIT_FAILURE);
+			}
+#else
 			if(s != 0)	{
 				fprintf(stderr,"[E] pthread_create thread_process\n");
 				exit(EXIT_FAILURE);
 			}
+#endif
 		}
 	}
 	
@@ -4697,17 +4741,12 @@ void *thread_process_pub2addr(void *vargp) {
 
 #if HASH160_AVX512_AVAILABLE
 /*
- * AVX-512 batch path:
- * - Always available for non-endo compress/uncompress.
- * - With endomorphism, only compress-only searches use 16-wide batches
- *   (uncompressed endo still uses the 4-wide path).
+ * AVX-512 batch path for address/rmd160/vanity:
+ * - Non-endo: compress and/or uncompress
+ * - Endo: compress (6 variants) and uncompress (6 variants: P/β/β² × ±Y)
  */
 static int hash160_avx512_batch_enabled(void) {
-	if(g_backend_config.cpu_vector != CPU_VECTOR_AVX512)
-		return 0;
-	if(FLAGENDOMORPHISM && FLAGSEARCH != SEARCH_COMPRESS)
-		return 0;
-	return 1;
+	return g_backend_config.cpu_vector == CPU_VECTOR_AVX512;
 }
 
 /* Recover private key for compressed endomorphism slot l in {0..5}. */
@@ -4757,6 +4796,40 @@ static void recover_endo_compress_hit(int l, int bk, Int *key_mpz, Int *stride,
 	}
 }
 
+/* Recover for uncompressed endomorphism slots: 0=P, 1=-P, 2=βP, 3=-βP, 4=β²P, 5=-β²P. */
+static void recover_endo_uncompress_hit(int l, int bk, Int *key_mpz, Int *stride,
+	Int *keyfound, uint8_t *hash, char *confirm_buf, int vanity)
+{
+	Point publickey;
+	keyfound->SetInt32(bk);
+	keyfound->Mult(stride);
+	keyfound->Add(key_mpz);
+	switch(l) {
+		case 0:
+		case 1:
+			break;
+		case 2:
+		case 3:
+			keyfound->ModMulK1order(&lambda);
+			break;
+		case 4:
+		case 5:
+			keyfound->ModMulK1order(&lambda2);
+			break;
+	}
+	publickey = secp->ComputePublicKey(keyfound);
+	secp->GetHash160(P2PKH, false, publickey, (uint8_t*)confirm_buf);
+	if(memcmp(hash, confirm_buf, 20) != 0) {
+		keyfound->Neg();
+		keyfound->Add(&secp->order);
+	}
+	if(vanity) writevanitykey(false, keyfound);
+	else {
+		writekey(false, keyfound);
+		notify_key_found(keyfound);
+	}
+}
+
 static int hash160_coin_uses_batch(void) {
 	return FLAGCRYPTO == CRYPTO_BTC || FLAGCRYPTO == CRYPTO_LTC ||
 		FLAGCRYPTO == CRYPTO_BTG || FLAGCRYPTO == CRYPTO_BCH ||
@@ -4793,8 +4866,7 @@ static void try_p2sh_hit(int k, uint8_t *hash, bool compressed,
 
 /*
  * 16-way AVX-512 hash160 + address check for one batch.
- * When endomorphism is enabled, beta_pts / beta2_pts must be non-NULL and
- * FLAGSEARCH must be SEARCH_COMPRESS (enforced by hash160_avx512_batch_enabled).
+ * Supports compress/uncompress and endomorphism (β / β²).
  */
 static int process_hash160_avx512_batch_16(
 	Point *pts, Point *beta_pts, Point *beta2_pts, int j, bool calculate_y,
@@ -4805,18 +4877,21 @@ static int process_hash160_avx512_batch_16(
 		return 0;
 
 	uint8_t h[6][16][20];
-	uint8_t hunc[16][20];
+	uint8_t hunc[6][16][20];
 	uint8_t *out[6][16];
-	uint8_t *outunc[16];
+	uint8_t *outunc[6][16];
 	Int *kx[16], *kx_beta[16], *kx_beta2[16];
+	Point neg_pts[16], neg_beta[16], neg_beta2[16];
 	int base = j * 16;
 	int bk, l, r, slot;
 	Point publickey;
 	int use_endo = FLAGENDOMORPHISM && beta_pts && beta2_pts;
 
 	for(bk = 0; bk < 16; bk++) {
-		for(slot = 0; slot < 6; slot++) out[slot][bk] = h[slot][bk];
-		outunc[bk] = hunc[bk];
+		for(slot = 0; slot < 6; slot++) {
+			out[slot][bk] = h[slot][bk];
+			outunc[slot][bk] = hunc[slot][bk];
+		}
 		kx[bk] = &pts[base + bk].x;
 		if(use_endo) {
 			kx_beta[bk] = &beta_pts[base + bk].x;
@@ -4834,8 +4909,20 @@ static int process_hash160_avx512_batch_16(
 			secp->GetHash160_fromX_16(P2PKH, 0x03, kx_beta2, out[5]);
 		}
 	}
-	if(!use_endo && (FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
-		secp->GetHash160_16(P2PKH, false, &pts[base], outunc);
+	if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+		secp->GetHash160_16(P2PKH, false, &pts[base], outunc[0]);
+		if(use_endo) {
+			for(bk = 0; bk < 16; bk++) {
+				neg_pts[bk] = secp->Negation(pts[base + bk]);
+				neg_beta[bk] = secp->Negation(beta_pts[base + bk]);
+				neg_beta2[bk] = secp->Negation(beta2_pts[base + bk]);
+			}
+			secp->GetHash160_16(P2PKH, false, neg_pts, outunc[1]);
+			secp->GetHash160_16(P2PKH, false, &beta_pts[base], outunc[2]);
+			secp->GetHash160_16(P2PKH, false, neg_beta, outunc[3]);
+			secp->GetHash160_16(P2PKH, false, &beta2_pts[base], outunc[4]);
+			secp->GetHash160_16(P2PKH, false, neg_beta2, outunc[5]);
+		}
 	}
 
 	uint8_t hp2sh_c[16][20], hp2sh_u[16][20];
@@ -4853,10 +4940,11 @@ static int process_hash160_avx512_batch_16(
 		}
 	}
 
-	int nslots = use_endo ? 6 : 2;
+	int nslots_c = use_endo ? 6 : 2;
+	int nslots_u = use_endo ? 6 : 1;
 	for(bk = 0; bk < 16; bk++) {
 		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
-			for(l = 0; l < nslots; l++) {
+			for(l = 0; l < nslots_c; l++) {
 				uint8_t *hash = h[l][bk];
 				r = address_check((char*)hash, MAXLENGTHADDRESS);
 				if(!r) continue;
@@ -4879,11 +4967,16 @@ static int process_hash160_avx512_batch_16(
 				}
 			}
 		}
-		if(!use_endo && (FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
-			r = address_check((char*)hunc[bk], MAXLENGTHADDRESS);
-			if(r) {
-				r = searchbinary(addressTable, (char*)hunc[bk], N);
-				if(r) {
+		if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+			for(l = 0; l < nslots_u; l++) {
+				uint8_t *hash = hunc[l][bk];
+				r = address_check((char*)hash, MAXLENGTHADDRESS);
+				if(!r) continue;
+				r = searchbinary(addressTable, (char*)hash, N);
+				if(!r) continue;
+				if(use_endo) {
+					recover_endo_uncompress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 0);
+				} else {
 					keyfound->SetInt32(bk);
 					keyfound->Mult(stride);
 					keyfound->Add(key_mpz);
@@ -4914,18 +5007,20 @@ static int process_vanity_hash160_avx512_batch_16(
 		return 0;
 
 	uint8_t h[6][16][20];
-	uint8_t hunc[16][20];
+	uint8_t hunc[6][16][20];
 	uint8_t *out[6][16];
-	uint8_t *outunc[16];
+	uint8_t *outunc[6][16];
 	Int *kx[16], *kx_beta[16], *kx_beta2[16];
+	Point neg_pts[16], neg_beta[16], neg_beta2[16];
 	int base = j * 16;
 	int bk, l, slot;
-	Point publickey;
 	int use_endo = FLAGENDOMORPHISM && beta_pts && beta2_pts;
 
 	for(bk = 0; bk < 16; bk++) {
-		for(slot = 0; slot < 6; slot++) out[slot][bk] = h[slot][bk];
-		outunc[bk] = hunc[bk];
+		for(slot = 0; slot < 6; slot++) {
+			out[slot][bk] = h[slot][bk];
+			outunc[slot][bk] = hunc[slot][bk];
+		}
 		kx[bk] = &pts[base + bk].x;
 		if(use_endo) {
 			kx_beta[bk] = &beta_pts[base + bk].x;
@@ -4943,28 +5038,128 @@ static int process_vanity_hash160_avx512_batch_16(
 			secp->GetHash160_fromX_16(P2PKH, 0x03, kx_beta2, out[5]);
 		}
 	}
-	if(!use_endo && (FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
-		secp->GetHash160_16(P2PKH, false, &pts[base], outunc);
+	if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+		secp->GetHash160_16(P2PKH, false, &pts[base], outunc[0]);
+		if(use_endo) {
+			for(bk = 0; bk < 16; bk++) {
+				neg_pts[bk] = secp->Negation(pts[base + bk]);
+				neg_beta[bk] = secp->Negation(beta_pts[base + bk]);
+				neg_beta2[bk] = secp->Negation(beta2_pts[base + bk]);
+			}
+			secp->GetHash160_16(P2PKH, false, neg_pts, outunc[1]);
+			secp->GetHash160_16(P2PKH, false, &beta_pts[base], outunc[2]);
+			secp->GetHash160_16(P2PKH, false, neg_beta, outunc[3]);
+			secp->GetHash160_16(P2PKH, false, &beta2_pts[base], outunc[4]);
+			secp->GetHash160_16(P2PKH, false, neg_beta2, outunc[5]);
+		}
 	}
 
-	int nslots = use_endo ? 6 : 2;
+	int nslots_c = use_endo ? 6 : 2;
+	int nslots_u = use_endo ? 6 : 1;
 	for(bk = 0; bk < 16; bk++) {
 		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
-			for(l = 0; l < nslots; l++) {
+			for(l = 0; l < nslots_c; l++) {
 				uint8_t *hash = h[l][bk];
 				if(!vanityrmdmatch(hash)) continue;
 				recover_endo_compress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 1);
 			}
 		}
-		if(!use_endo && (FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
-			if(!vanityrmdmatch(hunc[bk])) continue;
-			keyfound->SetInt32(bk);
-			keyfound->Mult(stride);
-			keyfound->Add(key_mpz);
-			writevanitykey(false, keyfound);
+		if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+			for(l = 0; l < nslots_u; l++) {
+				uint8_t *hash = hunc[l][bk];
+				if(!vanityrmdmatch(hash)) continue;
+				if(use_endo)
+					recover_endo_uncompress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 1);
+				else {
+					keyfound->SetInt32(bk);
+					keyfound->Mult(stride);
+					keyfound->Add(key_mpz);
+					writevanitykey(false, keyfound);
+				}
+			}
 		}
 	}
-	(void)publickey;
+	return 1;
+}
+#endif
+
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+/*
+ * Full device path: privkeys -> secp256k1 -> hash160 -> bloom on GPU.
+ * Host confirms bloom hits against the sorted address table.
+ * Returns 1 if the batch was handled on GPU (caller should skip CPU EC).
+ */
+static int process_secp_gpu_privkey_batch(
+	Int *key_mpz, Int *stride, Int *keyfound,
+	char *publickeyhashrmd160, uint64_t *count_out
+) {
+	if(!g_gpu_dispatcher || !gpu_dispatcher_secp_ready(g_gpu_dispatcher))
+		return 0;
+	if(FLAGENDOMORPHISM)
+		return 0; /* GPU endo: run without -e for max raw EC/hash rate; use CPU -e for 6x coverage */
+	if(!(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160 || FLAGMODE == MODE_VANITY))
+		return 0;
+	if(!hash160_coin_uses_batch() && FLAGMODE != MODE_VANITY)
+		return 0;
+
+	int batch = (int)g_backend_config.gpu_batch_size;
+	if(batch < 1) batch = 1;
+	/* Larger launches have tripped Windows TDR / heap issues on some hosts. */
+	if(batch > 1) batch = 1;
+	uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
+	uint32_t *matches = (uint32_t*)malloc((size_t)batch * sizeof(uint32_t));
+	if(!privs || !matches) {
+		free(privs);
+		free(matches);
+		return 0;
+	}
+
+	Int ktmp;
+	ktmp.Set(key_mpz);
+	for(int i = 0; i < batch; i++) {
+		ktmp.Get32Bytes(privs + (size_t)i * 32);
+		ktmp.Add(stride);
+	}
+
+	int passes[2];
+	int npass = 0;
+	if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH)
+		passes[npass++] = 1;
+	if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH)
+		passes[npass++] = 0;
+
+	Point publickey;
+	for(int p = 0; p < npass; p++) {
+		uint32_t hits = gpu_dispatcher_search_privkeys(
+			g_gpu_dispatcher, privs, (uint32_t)batch, passes[p],
+			matches, (uint32_t)batch);
+		for(uint32_t h = 0; h < hits; h++) {
+			uint32_t idx = matches[h];
+			if(idx >= (uint32_t)batch) continue;
+			keyfound->Set(key_mpz);
+			Int offset;
+			offset.SetInt32((int)idx);
+			offset.Mult(stride);
+			keyfound->Add(&offset);
+			publickey = secp->ComputePublicKey(keyfound);
+			secp->GetHash160(P2PKH, passes[p] != 0, publickey, (uint8_t*)publickeyhashrmd160);
+			int r = address_check(publickeyhashrmd160, MAXLENGTHADDRESS);
+			if(!r) continue;
+			r = searchbinary(addressTable, publickeyhashrmd160, N);
+			if(!r) continue;
+			writekey(passes[p] != 0, keyfound);
+			notify_key_found(keyfound);
+		}
+	}
+
+	Int advance;
+	advance.SetInt32(batch);
+	advance.Mult(stride);
+	key_mpz->Add(&advance);
+	if(count_out) *count_out += (uint64_t)batch;
+
+	free(privs);
+	free(matches);
 	return 1;
 }
 #endif
@@ -5117,6 +5312,17 @@ void *thread_process(void *vargp)	{
 				}
 			}
 			do {
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+				if(process_secp_gpu_privkey_batch(&key_mpz, &stride, &keyfound,
+						publickeyhashrmd160, &count)) {
+					/* DEBUGCOUNT keys per stats step (same as CPU GRP cycle). */
+					while(count >= DEBUGCOUNT) {
+						steps[thread_number]++;
+						count -= DEBUGCOUNT;
+					}
+					continue;
+				}
+#endif
 				temp_stride.SetInt32(CPU_GRP_SIZE / 2);
 				temp_stride.Mult(&stride);
 				key_mpz.Add(&temp_stride);
@@ -8942,8 +9148,14 @@ void menu() {
 
 	printf("PERFORMANCE:\n");
 	printf("  -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)\n");
-	printf("  -A mode      CPU vectorization: none, sse, avx, avx2, avx512 (default: auto)\n");
-	printf("  -U backend   GPU backend: none, cuda, opencl (experimental, default: none)\n");
+	printf("  -A mode      CPU vectorization (default: auto):\n");
+	printf("                 auto   - Detect best: AVX-512 → AVX2 → AVX → SSE → scalar\n");
+	printf("                 none, sse, avx, avx2, avx512\n");
+	printf("               AVX/AVX2 use SSE 4-wide hash today; AVX-512 uses 16-wide.\n");
+	printf("  -U backend   GPU backend: none, cuda, opencl (default: none)\n");
+	printf("                 cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)\n");
+	printf("                 opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU\n");
+	printf("  -G N         GPU batch size hint (CUDA may clamp for stability)\n");
 	printf("  -I stride    Stride value for address/rmd160/xpoint modes\n\n");
 
 	printf("OUTPUT:\n");

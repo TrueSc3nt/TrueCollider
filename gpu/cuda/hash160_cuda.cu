@@ -71,21 +71,16 @@ static __device__ void sha256_oneblock(const uint8_t block[64], uint8_t out[32])
         0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
     };
 
-    uint32_t w[16];
-    for (int i = 0; i < 16; i++) {
-        w[i] = load_be32(block + i * 4);
-    }
+    uint32_t w[64];
+    for (int i = 0; i < 16; i++) w[i] = load_be32(block + i * 4);
+    for (int i = 16; i < 64; i++)
+        w[i] = sig1(w[i - 2]) + w[i - 7] + sig0(w[i - 15]) + w[i - 16];
 
     uint32_t a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
     uint32_t e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
 
-    for (int round = 0; round < 64; round++) {
-        uint32_t wt = (round < 16) ? w[round] :
-            sig0(w[(round - 15) & 15]) + w[(round - 16) & 15] +
-            sig1(w[(round - 2) & 15]) + w[(round - 7) & 15];
-        w[round & 15] = wt;
-
-        uint32_t T1 = h + Sig1(e) + Ch(e, f, g) + K[round] + wt;
+    for (int i = 0; i < 64; i++) {
+        uint32_t T1 = h + Sig1(e) + Ch(e, f, g) + K[i] + w[i];
         uint32_t T2 = Sig0(a) + Maj(a, b, c);
         h = g; g = f; f = e; e = d + T1;
         d = c; c = b; b = a; a = T1 + T2;
@@ -146,19 +141,21 @@ static __device__ void ripemd160_oneblock(const uint8_t block[64], uint8_t out[2
     static const uint32_t Kp[5] = {0x50a28be6,0x5c4dd124,0x6d703ef3,0x7a6d76e9,0};
 
     uint32_t w[16];
-    for (int i = 0; i < 16; i++) w[i] = load_be32(block + i * 4);
+    for (int i = 0; i < 16; i++) {
+        const uint8_t *p = block + i * 4;
+        w[i] = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+    }
 
     uint32_t a = 0x67452301, b = 0xefcdab89, c = 0x98badcfe, d = 0x10325476, e = 0xc3d2e1f0;
     uint32_t ap = a, bp = b, cp = c, dp = d, ep = e;
 
     for (int j = 0; j < 80; j++) {
         int round = j / 16;
-        int idx = j % 16;
-        uint32_t t1 = a + rmd_f(j, b, c, d) + w[r[j]] + K[round];
-        a = e; e = d; d = rol(c, 10); c = b; b = rol(t1, s[j]) + b;
+        uint32_t t = rol(a + rmd_f(j, b, c, d) + w[r[j]] + K[round], s[j]) + e;
+        a = e; e = d; d = rol(c, 10); c = b; b = t;
 
-        uint32_t t2 = ap + rmd_f(79 - j, bp, cp, dp) + w[rp[j]] + Kp[round];
-        ap = ep; ep = dp; dp = rol(cp, 10); cp = bp; bp = rol(t2, sp[j]) + bp;
+        t = rol(ap + rmd_f(79 - j, bp, cp, dp) + w[rp[j]] + Kp[round], sp[j]) + ep;
+        ap = ep; ep = dp; dp = rol(cp, 10); cp = bp; bp = t;
     }
 
     uint32_t na = 0x67452301 + c + dp;
@@ -167,11 +164,11 @@ static __device__ void ripemd160_oneblock(const uint8_t block[64], uint8_t out[2
     uint32_t nd = 0x10325476 + a + bp;
     uint32_t ne = 0xc3d2e1f0 + b + cp;
 
-    store_be32(out + 0, na);
-    store_be32(out + 4, nb);
-    store_be32(out + 8, nc);
-    store_be32(out + 12, nd);
-    store_be32(out + 16, ne);
+    out[0]=(uint8_t)na; out[1]=(uint8_t)(na>>8); out[2]=(uint8_t)(na>>16); out[3]=(uint8_t)(na>>24);
+    out[4]=(uint8_t)nb; out[5]=(uint8_t)(nb>>8); out[6]=(uint8_t)(nb>>16); out[7]=(uint8_t)(nb>>24);
+    out[8]=(uint8_t)nc; out[9]=(uint8_t)(nc>>8); out[10]=(uint8_t)(nc>>16); out[11]=(uint8_t)(nc>>24);
+    out[12]=(uint8_t)nd; out[13]=(uint8_t)(nd>>8); out[14]=(uint8_t)(nd>>16); out[15]=(uint8_t)(nd>>24);
+    out[16]=(uint8_t)ne; out[17]=(uint8_t)(ne>>8); out[18]=(uint8_t)(ne>>16); out[19]=(uint8_t)(ne>>24);
 }
 
 static __device__ void hash160_compressed33(const uint8_t *key33, uint8_t out20[20]) {
@@ -187,9 +184,10 @@ static __device__ void hash160_compressed33(const uint8_t *key33, uint8_t out20[
 
     for (int i = 0; i < 32; i++) block[i] = sha[i];
     block[32] = 0x80;
-    for (int i = 33; i < 62; i++) block[i] = 0;
-    block[62] = 0x01;
-    block[63] = 0x00;
+    for (int i = 33; i < 56; i++) block[i] = 0;
+    /* RIPEMD-160 length is little-endian bit count = 256 = 0x0100 */
+    block[56] = 0x00; block[57] = 0x01; block[58] = 0x00; block[59] = 0x00;
+    block[60] = 0x00; block[61] = 0x00; block[62] = 0x00; block[63] = 0x00;
 
     ripemd160_oneblock(block, out20);
 }
@@ -224,22 +222,17 @@ extern "C" int tcuda_hash160_33_batch(const uint8_t *host_keys, int count, uint8
 }
 
 extern "C" int tcuda_hash160_33_selftest(void) {
+    /* Compressed pubkey of privkey=1 (secp256k1 G) */
     const uint8_t pubkey[33] = {
-        0x02, 0x79, 0xbe, 0x67, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62,
+        0x02, 0x79, 0xbe, 0x66, 0x7e, 0xf9, 0xdc, 0xbb, 0xac, 0x55, 0xa0, 0x62,
         0x95, 0xce, 0x87, 0x0b, 0x07, 0x02, 0x9b, 0xfc, 0xdb, 0x2d, 0xce, 0x28,
         0xd9, 0x59, 0xf2, 0x81, 0x5b, 0x16, 0xf8, 0x17, 0x98
     };
-    uint8_t expected[20];
-    uint8_t sha[32];
-    uint8_t padded[64];
-
-    memcpy(padded, pubkey, 33);
-    padded[33] = 0x80;
-    memset(padded + 34, 0, 29);
-    padded[62] = 0x01;
-    padded[63] = 0x08;
-    sha256_33(padded, sha);
-    ripemd160_32(sha, expected);
+    /* hash160(compressed G) */
+    static const uint8_t expected[20] = {
+        0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
+        0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6
+    };
 
     uint8_t keys[33 * 16];
     uint8_t out[20 * 16];
@@ -250,7 +243,11 @@ extern "C" int tcuda_hash160_33_selftest(void) {
         return 0;
     }
     if (memcmp(out, expected, 20) != 0) {
-        fprintf(stderr, "[E] tcuda_hash160_33_selftest: hash mismatch.\n");
+        fprintf(stderr, "[E] tcuda_hash160_33_selftest: hash mismatch.\n  got: ");
+        for (int i = 0; i < 20; i++) fprintf(stderr, "%02x", out[i]);
+        fprintf(stderr, "\n  exp: ");
+        for (int i = 0; i < 20; i++) fprintf(stderr, "%02x", expected[i]);
+        fprintf(stderr, "\n");
         return 0;
     }
     printf("[+] CUDA hash160 self-test passed.\n");

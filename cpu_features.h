@@ -20,6 +20,8 @@ struct CpuFeatures {
 
 struct CpuFeatures detect_cpu_features(void);
 const char* cpu_vector_name(void);
+const char* cpu_vector_level_name(int level);
+const char* cpu_hash_kernel_name(int level);
 int cpu_vector_auto_level(void);
 
 /* True when CPU + OS expose AVX-512F/BW (required for hash160 AVX-512 kernel). */

@@ -52,9 +52,15 @@ endif()
 # Compiler flags
 # ---------------------------------------------------------------------------
 if(MSVC)
-    add_compile_options(/W3 /O2)
+    # Only apply MSVC flags to C/C++ — bare flags break nvcc under Ninja.
+    add_compile_options(
+        $<$<COMPILE_LANGUAGE:C>:/W3>
+        $<$<COMPILE_LANGUAGE:CXX>:/W3>
+        $<$<COMPILE_LANGUAGE:C>:/O2>
+        $<$<COMPILE_LANGUAGE:CXX>:/O2>
+    )
     if(ENABLE_LTO)
-        add_compile_options(/GL)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/GL>)
         add_link_options(/LTCG)
     endif()
     if(IS_ARM64 OR NOT IS_X86)
@@ -113,7 +119,8 @@ set(CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/backend_config.cpp
     ${CMAKE_SOURCE_DIR}/cpu_features.cpp
     ${CMAKE_SOURCE_DIR}/gpu/gpu_dispatcher.cpp
-    ${CMAKE_SOURCE_DIR}/util.c
+    ${CMAKE_SOURCE_DIR}/gpu/cuda/host_hash160_bridge.cpp
+    ${CMAKE_SOURCE_DIR}/util.cpp
     ${CMAKE_SOURCE_DIR}/base58/base58.c
     ${CMAKE_SOURCE_DIR}/rmd160/rmd160.c
     ${CMAKE_SOURCE_DIR}/sha3/sha3.c
@@ -190,6 +197,7 @@ target_link_libraries(keyhunt ${PLATFORM_LIBS})
 # ---------------------------------------------------------------------------
 if(ENABLE_CUDA)
     enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
     add_compile_definitions(ENABLE_CUDA)
     add_subdirectory(gpu/cuda)
 endif()
