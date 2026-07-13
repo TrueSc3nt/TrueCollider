@@ -1345,6 +1345,7 @@ int main(int argc, char **argv)	{
 		switch(c) {
 			case 'h':
 				menu();
+				exit(EXIT_SUCCESS);
 			break;
 		case 'y':
 			FLAGDRYRUN = 1;

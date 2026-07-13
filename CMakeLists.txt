@@ -28,15 +28,17 @@ else()
     set(IS_WINDOWS FALSE)
 endif()
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|i686|i386|X86")
+# Prefer compiler target over host CMAKE_SYSTEM_PROCESSOR when cross-compiling
+# without a full toolchain file (CI aarch64 used to keep host x86_64).
+set(_KH_COMPILER_TARGET "${CMAKE_CXX_COMPILER}${CMAKE_C_COMPILER}${CMAKE_SYSTEM_PROCESSOR}")
+if(_KH_COMPILER_TARGET MATCHES "aarch64|arm64|ARM64")
+    set(IS_ARM64 TRUE)
+    set(IS_X86 FALSE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|i686|i386|x86)$")
     set(IS_X86 TRUE)
+    set(IS_ARM64 FALSE)
 else()
     set(IS_X86 FALSE)
-endif()
-
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
-    set(IS_ARM64 TRUE)
-else()
     set(IS_ARM64 FALSE)
 endif()
 
@@ -46,6 +48,13 @@ if(TERMUX)
     set(IS_TERMUX TRUE)
 else()
     set(IS_TERMUX FALSE)
+endif()
+
+# Never enable x86 SIMD on non-x86 targets (cross compilers reject -mavx*).
+if(NOT IS_X86 OR IS_ARM64)
+    set(ENABLE_SSE OFF CACHE BOOL "SSE disabled on non-x86" FORCE)
+    set(ENABLE_AVX OFF CACHE BOOL "AVX disabled on non-x86" FORCE)
+    set(ENABLE_AVX512 OFF CACHE BOOL "AVX-512 disabled on non-x86" FORCE)
 endif()
 
 # ---------------------------------------------------------------------------

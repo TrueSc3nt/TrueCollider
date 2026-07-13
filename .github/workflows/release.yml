@@ -46,10 +46,13 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu cmake
       - run: |
           cmake -B build-arm \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
             -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
-            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
-            -DENABLE_SSE=OFF
+            -DENABLE_SSE=OFF \
+            -DENABLE_AVX=OFF \
+            -DENABLE_AVX512=OFF
           cmake --build build-arm -j$(nproc)
           cp build-arm/keyhunt keyhunt-linux-aarch64
       - uses: actions/upload-artifact@v4
