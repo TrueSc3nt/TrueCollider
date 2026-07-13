@@ -1,0 +1,2 @@
+# Sample Solana target (ed25519 seed = 0x1)
+6ASf5EcmmEHTgDJ4X4ZT5vT6iHVJBXPg5AN5YoTCpGWt

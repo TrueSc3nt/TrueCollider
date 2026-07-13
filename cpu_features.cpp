@@ -128,11 +128,15 @@ const char* cpu_vector_level_name(int level) {
 
 /*
  * Which hash160 implementation actually runs for the selected level.
- * AVX/AVX2 have no dedicated hash kernels yet — they use SSE 4-wide.
+ * AVX1 (no AVX2) has no integer YMM hash kernel — uses SSE 4-wide.
  */
 const char* cpu_hash_kernel_name(int level) {
     if (level == CPU_VECTOR_AVX512)
         return "AVX-512 16-wide hash160";
+    if (level == CPU_VECTOR_AVX2)
+        return "AVX2 8-wide hash160";
+    if (level == CPU_VECTOR_AVX)
+        return "SSE 4-wide hash160 (AVX1 has no integer hash kernel)";
     if (level >= CPU_VECTOR_SSE)
         return "SSE 4-wide hash160";
     return "scalar hash160";
@@ -140,10 +144,16 @@ const char* cpu_hash_kernel_name(int level) {
 
 /*
  * Auto-select the best CPU vector level (matches CPU_VECTOR_* in backend_config.h).
+ * Prefer AVX2 over bare AVX: AVX1 cannot run the integer hash kernel.
  */
 int cpu_has_avx512_hash160(void) {
     struct CpuFeatures f = detect_cpu_features();
     return f.avx512f && f.avx512bw;
+}
+
+int cpu_has_avx2_hash160(void) {
+    struct CpuFeatures f = detect_cpu_features();
+    return f.avx2;
 }
 
 int cpu_clamp_vector_level(int requested) {
@@ -155,9 +165,14 @@ int cpu_clamp_vector_level(int requested) {
     }
     if (requested >= CPU_VECTOR_AVX2) {
         if (f.avx2) return CPU_VECTOR_AVX2;
-        requested = CPU_VECTOR_AVX;
+        /* Skip bare AVX for auto-like fallbacks from higher levels. */
+        if (requested == CPU_VECTOR_AVX2)
+            requested = CPU_VECTOR_SSE;
+        else
+            requested = CPU_VECTOR_AVX;
     }
-    if (requested >= CPU_VECTOR_AVX) {
+    if (requested >= CPU_VECTOR_AVX && requested < CPU_VECTOR_AVX2) {
+        /* Explicit -A avx: allow selecting the level (hash still SSE). */
         if (f.avx) return CPU_VECTOR_AVX;
         requested = CPU_VECTOR_SSE;
     }

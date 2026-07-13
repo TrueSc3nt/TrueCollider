@@ -27,11 +27,13 @@ Developed & Modified by TrueScent
 #include "hash/sha256.h"
 #include "hash/sha512.h"
 #include "hash/ripemd160.h"
+#include "ed25519/ed25519.h"
 
 #include "backend_config.h"
 #include "cpu_features.h"
 #include "gpu/gpu_dispatcher.h"
 #include "hash/hash160_avx512.h"
+#include "hash/hash160_avx2.h"
 
 #if defined(__MINGW32__) || defined(__MINGW64__) || defined(_MSC_VER)
 static int rand_r(unsigned int *seed) {
@@ -133,6 +135,10 @@ struct troot_value	{
 	uint8_t value[32];
 };
 
+struct sol_value	{
+	uint8_t value[32];
+};
+
 struct tothread {
 	int nt;     //Number thread
 	char *rs;   //range start
@@ -228,6 +234,7 @@ int minimum_same_bytes(unsigned char* A,unsigned char* B, int length);
 
 void writekey(bool compressed,Int *key);
 void writekeyeth(Int *key);
+void writekeysol(Int *key);
 
 void checkpointer(void *ptr,const char *file,const char *function,const  char *name,int line);
 
@@ -238,6 +245,7 @@ bool readFileAddress(char *fileName);
 bool readFileVanity(char *fileName);
 bool forceReadFileAddress(char *fileName);
 bool forceReadFileAddressEth(char *fileName);
+bool forceReadFileAddressSol(char *fileName);
 bool forceReadFileXPoint(char *fileName);
 bool processOneVanity();
 int autodetect_crypto_from_file(const char *fileName);
@@ -256,6 +264,7 @@ DWORD WINAPI thread_process(LPVOID vargp);
 DWORD WINAPI thread_process_mnemonic(LPVOID vargp);
 DWORD WINAPI thread_process_derived(LPVOID vargp);
 DWORD WINAPI thread_process_troot(LPVOID vargp);
+DWORD WINAPI thread_process_sol(LPVOID vargp);
 DWORD WINAPI thread_process_poetry(LPVOID vargp);
 DWORD WINAPI thread_process_brainwallet(LPVOID vargp);
 DWORD WINAPI thread_process_pub2addr(LPVOID vargp);
@@ -273,6 +282,7 @@ void *thread_process(void *vargp);
 void *thread_process_mnemonic(void *vargp);
 void *thread_process_derived(void *vargp);
 void *thread_process_troot(void *vargp);
+void *thread_process_sol(void *vargp);
 void *thread_process_poetry(void *vargp);
 void *thread_process_brainwallet(void *vargp);
 void *thread_process_pub2addr(void *vargp);
@@ -539,6 +549,11 @@ struct bloom troot_bloom;
 struct binaryfuse_wrapper troot_bf_filter;
 struct troot_value *trootTable = NULL;
 uint64_t N_TROOT = 0;
+
+struct bloom sol_bloom;
+struct binaryfuse_wrapper sol_bf_filter;
+struct sol_value *solTable = NULL;
+uint64_t N_SOL = 0;
 
 uint64_t *steps = NULL;
 unsigned int *ends = NULL;
@@ -1876,6 +1891,21 @@ int main(int argc, char **argv)	{
 		FLAGENDOMORPHISM = 0;
 	}
 
+	if(FLAGCRYPTO == CRYPTO_SOL) {
+		if(FLAGENDOMORPHISM) {
+			fprintf(stderr,"[W] Endomorphism does not apply to Solana (ed25519); disabling it.\n");
+			FLAGENDOMORPHISM = 0;
+		}
+		if(FLAGPATH) {
+			fprintf(stderr,"[E] BIP32 derivation (-p) is secp256k1-only; not supported with -c sol.\n");
+			exit(EXIT_FAILURE);
+		}
+		if(FLAGMODE != MODE_ADDRESS && FLAGMODE != 0) {
+			/* MODE_ADDRESS is the only meaningful Solana search mode */
+		}
+		printf("[+] Solana mode: ed25519 seed -> base58 pubkey address\n");
+	}
+
 	/* Initialize CPU/GPU backend configuration. */
 	g_backend_config.search_mode = FLAGMODE;
 	{
@@ -1905,6 +1935,23 @@ int main(int argc, char **argv)	{
 			printf("[+] Running AVX-512 hash160 self-test...\n");
 			if(!hash160_avx512_selftest()) {
 				fprintf(stderr,"[W] AVX-512 hash160 self-test failed; falling back to SSE.\n");
+				g_backend_config.cpu_vector = cpu_clamp_vector_level(CPU_VECTOR_SSE);
+			}
+		}
+	}
+#endif
+
+#if HASH160_AVX2_AVAILABLE
+	if(g_backend_config.cpu_vector == CPU_VECTOR_AVX2) {
+		struct CpuFeatures _cf = detect_cpu_features();
+		if(!_cf.avx2) {
+			fprintf(stderr,"[W] AVX2 not available; falling back to SSE.\n");
+			g_backend_config.cpu_vector = cpu_clamp_vector_level(CPU_VECTOR_SSE);
+		}
+		else {
+			printf("[+] Running AVX2 hash160 self-test...\n");
+			if(!hash160_avx2_selftest()) {
+				fprintf(stderr,"[W] AVX2 hash160 self-test failed; falling back to SSE.\n");
 				g_backend_config.cpu_vector = cpu_clamp_vector_level(CPU_VECTOR_SSE);
 			}
 		}
@@ -2110,7 +2157,8 @@ int main(int argc, char **argv)	{
 			break;
 		}
 		
-		if(FLAGMODE != MODE_VANITY && !FLAGREADEDFILE1)	{
+		if(FLAGMODE != MODE_VANITY && !FLAGREADEDFILE1 &&
+		   FLAGCRYPTO != CRYPTO_SOL && FLAGCRYPTO != CRYPTO_TROOT)	{
 			printf("[+] Sorting data ...");
 			_sort(addressTable,N);
 			printf(" done! %" PRIu64 " values were loaded and sorted\n",N);
@@ -3330,6 +3378,8 @@ int main(int argc, char **argv)	{
 						tid[j] = CreateThread(NULL, 0, thread_process_derived, (void*)tt, 0, &s);
 					} else if(FLAGCRYPTO == CRYPTO_TROOT) {
 						tid[j] = CreateThread(NULL, 0, thread_process_troot, (void*)tt, 0, &s);
+					} else if(FLAGCRYPTO == CRYPTO_SOL) {
+						tid[j] = CreateThread(NULL, 0, thread_process_sol, (void*)tt, 0, &s);
 					} else {
 						tid[j] = CreateThread(NULL, 0, thread_process, (void*)tt, 0, &s);
 					}
@@ -3362,6 +3412,8 @@ int main(int argc, char **argv)	{
 						s = pthread_create(&tid[j],NULL,thread_process_derived,(void *)tt);
 					} else if(FLAGCRYPTO == CRYPTO_TROOT) {
 						s = pthread_create(&tid[j],NULL,thread_process_troot,(void *)tt);
+					} else if(FLAGCRYPTO == CRYPTO_SOL) {
+						s = pthread_create(&tid[j],NULL,thread_process_sol,(void *)tt);
 					} else {
 						s = pthread_create(&tid[j],NULL,thread_process,(void *)tt);
 					}
@@ -4347,6 +4399,213 @@ void *thread_process_troot(void *vargp) {
 }
 
 
+static void solana_pubkey_from_seed(const uint8_t seed[32], uint8_t pubkey_out[32]) {
+	uint8_t priv[64];
+	ed25519_create_keypair(pubkey_out, priv, seed);
+}
+
+int sol_searchbinary(struct sol_value *arr, uint8_t *data, int64_t array_length) {
+	int64_t low = 0, high = array_length - 1, mid;
+	while(low <= high) {
+		mid = low + (high - low) / 2;
+		int cmp = memcmp(arr[mid].value, data, 32);
+		if(cmp == 0) return 1;
+		if(cmp < 0) low = mid + 1;
+		else high = mid - 1;
+	}
+	return 0;
+}
+
+void sol_sort(struct sol_value *arr, int64_t n) {
+	for(int64_t i = 1; i < n; i++) {
+		struct sol_value key = arr[i];
+		int64_t j = i - 1;
+		while(j >= 0 && memcmp(arr[j].value, key.value, 32) > 0) {
+			arr[j + 1] = arr[j];
+			j--;
+		}
+		arr[j + 1] = key;
+	}
+}
+
+static int sol_parse_target_line(const char *line, uint8_t out[32]) {
+	int len = (int)strlen(line);
+	char hexbuf[65];
+	if(len == 64) {
+		memcpy(hexbuf, line, 64);
+		hexbuf[64] = '\0';
+		if(isValidHex(hexbuf)) {
+			hexs2bin(hexbuf, out);
+			return 1;
+		}
+	}
+	if(len >= 32 && len <= 44) {
+		uint8_t raw[32];
+		size_t raw_len = 32;
+		memset(raw, 0, 32);
+		if(b58tobin(raw, &raw_len, line, (size_t)len)) {
+			memcpy(out, raw, 32);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+bool forceReadFileAddressSol(char *fileName) {
+	FILE *f = fopen(fileName, "r");
+	if(!f) {
+		fprintf(stderr, "[E] Cannot open Solana target file: %s\n", fileName);
+		return false;
+	}
+
+	uint64_t count = 0;
+	char line[128];
+	uint8_t tmp[32];
+	while(fgets(line, sizeof(line), f)) {
+		int len = strlen(line);
+		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+		if(len == 0) continue;
+		if(sol_parse_target_line(line, tmp)) count++;
+	}
+	if(count == 0) {
+		fprintf(stderr, "[E] No valid Solana addresses (base58) or 64-char hex pubkeys in %s\n", fileName);
+		fclose(f);
+		return false;
+	}
+
+	if(!initBloomFilter(&sol_bloom, count)) {
+		fclose(f);
+		return false;
+	}
+	bf_init(&sol_bf_filter, (uint32_t)count, 0.000001);
+
+	solTable = (struct sol_value *)malloc(sizeof(struct sol_value) * count);
+	if(!solTable) {
+		fprintf(stderr, "[E] Memory allocation failed for Solana table\n");
+		fclose(f);
+		return false;
+	}
+
+	fseek(f, 0, SEEK_SET);
+	uint64_t i = 0;
+	while(i < count && fgets(line, sizeof(line), f)) {
+		int len = strlen(line);
+		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+		if(len == 0) continue;
+		if(sol_parse_target_line(line, solTable[i].value)) {
+			bloom_add(&sol_bloom, solTable[i].value, 32);
+			bf_add(&sol_bf_filter, solTable[i].value, 32);
+			i++;
+		}
+	}
+	fclose(f);
+
+	N_SOL = count;
+	sol_sort(solTable, N_SOL);
+
+	printf("[+] Loaded %" PRIu64 " Solana target pubkey(s)\n", N_SOL);
+	printf("[+] Building Solana binary fuse filter from %" PRIu64 " keys... ", N_SOL);
+	fflush(stdout);
+	if(bf_build(&sol_bf_filter) != 0) {
+		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		sol_bf_filter.use_bloom_fallback = 1;
+	} else {
+		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&sol_bf_filter) / (double)1048576);
+	}
+	FLAGREADEDFILE1 = 1;
+	N = N_SOL;
+	return true;
+}
+
+#if defined(_MSC_VER)
+DWORD WINAPI thread_process_sol(LPVOID vargp) {
+#else
+void *thread_process_sol(void *vargp) {
+#endif
+	struct tothread *tt;
+	int thread_number, continue_flag = 1;
+	tt = (struct tothread *)vargp;
+	thread_number = tt->nt;
+	free(tt);
+
+	Int key_mpz;
+	Int grp_stride;
+	grp_stride.SetInt64(CPU_GRP_SIZE);
+	grp_stride.Mult(&stride);
+
+	while(continue_flag) {
+#if defined(_MSC_VER)
+		WaitForSingleObject(write_random, INFINITE);
+#else
+		pthread_mutex_lock(&write_random);
+#endif
+		if(n_range_start.IsGreater(&n_range_end)) {
+			continue_flag = 0;
+#if defined(_MSC_VER)
+			ReleaseMutex(write_random);
+#else
+			pthread_mutex_unlock(&write_random);
+#endif
+			break;
+		}
+		if(FLAGSEARCHMODE == SEARCHMODE_SEQUENTIAL || FLAGSEARCHMODE == SEARCHMODE_REVERSE) {
+			key_mpz.Set(&n_range_start);
+			n_range_start.Add(&grp_stride);
+		} else {
+			get_next_search_key(&key_mpz, &n_range_start, &n_range_end);
+		}
+#if defined(_MSC_VER)
+		ReleaseMutex(write_random);
+#else
+		pthread_mutex_unlock(&write_random);
+#endif
+
+		for(int i = 0; i < CPU_GRP_SIZE; i++) {
+			Int current_key;
+			current_key.Set(&key_mpz);
+			Int offset;
+			offset.SetInt64(i);
+			offset.Mult(&stride);
+			current_key.Add(&offset);
+
+			if(current_key.IsGreater(&n_range_end)) {
+				continue_flag = 0;
+				break;
+			}
+
+			uint8_t seed[32];
+			uint8_t pubkey[32];
+			current_key.Get32Bytes(seed);
+			solana_pubkey_from_seed(seed, pubkey);
+
+			int r = bf_check(&sol_bf_filter, pubkey, 32);
+			if(r == -1 && sol_bf_filter.use_bloom_fallback) {
+				r = bloom_check(&sol_bloom, pubkey, 32);
+			}
+			if(r) {
+				r = sol_searchbinary(solTable, pubkey, N_SOL);
+				if(r) {
+					writekeysol(&current_key);
+					notify_key_found(&current_key);
+					ends[thread_number] = 1;
+					return NULL;
+				}
+			}
+		}
+
+		steps[thread_number]++;
+		if(FLAGQUIET == 0 && steps[thread_number] % 100 == 0) {
+			char *hextemp = key_mpz.GetBase16();
+			printf("\r[Thread %d] Base seed: %s    \r", thread_number, hextemp);
+			free(hextemp);
+			fflush(stdout);
+		}
+	}
+	ends[thread_number] = 1;
+	return NULL;
+}
+
+
 #if defined(_MSC_VER)
 DWORD WINAPI thread_process_poetry(LPVOID vargp) {
 #else
@@ -4739,15 +4998,20 @@ void *thread_process_pub2addr(void *vargp) {
 	return NULL;
 }
 
-#if HASH160_AVX512_AVAILABLE
+#if HASH160_AVX512_AVAILABLE || HASH160_AVX2_AVAILABLE
 /*
- * AVX-512 batch path for address/rmd160/vanity:
- * - Non-endo: compress and/or uncompress
- * - Endo: compress (6 variants) and uncompress (6 variants: P/β/β² × ±Y)
+ * Wide SIMD batch path for address/rmd160/vanity (AVX-512 16-wide / AVX2 8-wide).
  */
+#if HASH160_AVX512_AVAILABLE
 static int hash160_avx512_batch_enabled(void) {
 	return g_backend_config.cpu_vector == CPU_VECTOR_AVX512;
 }
+#endif
+#if HASH160_AVX2_AVAILABLE
+static int hash160_avx2_batch_enabled(void) {
+	return g_backend_config.cpu_vector == CPU_VECTOR_AVX2;
+}
+#endif
 
 /* Recover private key for compressed endomorphism slot l in {0..5}. */
 static void recover_endo_compress_hit(int l, int bk, Int *key_mpz, Int *stride,
@@ -4868,6 +5132,7 @@ static void try_p2sh_hit(int k, uint8_t *hash, bool compressed,
  * 16-way AVX-512 hash160 + address check for one batch.
  * Supports compress/uncompress and endomorphism (β / β²).
  */
+#if HASH160_AVX512_AVAILABLE
 static int process_hash160_avx512_batch_16(
 	Point *pts, Point *beta_pts, Point *beta2_pts, int j, bool calculate_y,
 	Int *key_mpz, Int *stride, Int *keyfound,
@@ -5082,6 +5347,225 @@ static int process_vanity_hash160_avx512_batch_16(
 	return 1;
 }
 #endif
+
+#if HASH160_AVX2_AVAILABLE
+static int process_hash160_avx2_batch_8(
+	Point *pts, Point *beta_pts, Point *beta2_pts, int j, bool calculate_y,
+	Int *key_mpz, Int *stride, Int *keyfound,
+	char *publickeyhashrmd160, Point *publickey_out
+) {
+	if(!hash160_avx2_batch_enabled() || !hash160_coin_uses_batch())
+		return 0;
+
+	uint8_t h[6][8][20];
+	uint8_t hunc[6][8][20];
+	uint8_t *out[6][8];
+	uint8_t *outunc[6][8];
+	Int *kx[8], *kx_beta[8], *kx_beta2[8];
+	Point neg_pts[8], neg_beta[8], neg_beta2[8];
+	int base = j * 8;
+	int bk, l, r, slot;
+	Point publickey;
+	int use_endo = FLAGENDOMORPHISM && beta_pts && beta2_pts;
+
+	for(bk = 0; bk < 8; bk++) {
+		for(slot = 0; slot < 6; slot++) {
+			out[slot][bk] = h[slot][bk];
+			outunc[slot][bk] = hunc[slot][bk];
+		}
+		kx[bk] = &pts[base + bk].x;
+		if(use_endo) {
+			kx_beta[bk] = &beta_pts[base + bk].x;
+			kx_beta2[bk] = &beta2_pts[base + bk].x;
+		}
+	}
+
+	if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+		secp->GetHash160_fromX_8(P2PKH, 0x02, kx, out[0]);
+		secp->GetHash160_fromX_8(P2PKH, 0x03, kx, out[1]);
+		if(use_endo) {
+			secp->GetHash160_fromX_8(P2PKH, 0x02, kx_beta, out[2]);
+			secp->GetHash160_fromX_8(P2PKH, 0x03, kx_beta, out[3]);
+			secp->GetHash160_fromX_8(P2PKH, 0x02, kx_beta2, out[4]);
+			secp->GetHash160_fromX_8(P2PKH, 0x03, kx_beta2, out[5]);
+		}
+	}
+	if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+		secp->GetHash160_8(P2PKH, false, &pts[base], outunc[0]);
+		if(use_endo) {
+			for(bk = 0; bk < 8; bk++) {
+				neg_pts[bk] = secp->Negation(pts[base + bk]);
+				neg_beta[bk] = secp->Negation(beta_pts[base + bk]);
+				neg_beta2[bk] = secp->Negation(beta2_pts[base + bk]);
+			}
+			secp->GetHash160_8(P2PKH, false, neg_pts, outunc[1]);
+			secp->GetHash160_8(P2PKH, false, &beta_pts[base], outunc[2]);
+			secp->GetHash160_8(P2PKH, false, neg_beta, outunc[3]);
+			secp->GetHash160_8(P2PKH, false, &beta2_pts[base], outunc[4]);
+			secp->GetHash160_8(P2PKH, false, neg_beta2, outunc[5]);
+		}
+	}
+
+	uint8_t hp2sh_c[8][20], hp2sh_u[8][20];
+	uint8_t *out_p2sh_c[8], *out_p2sh_u[8];
+	if(FLAGHAS_P2SH_TARGETS && !use_endo) {
+		for(bk = 0; bk < 8; bk++) {
+			out_p2sh_c[bk] = hp2sh_c[bk];
+			out_p2sh_u[bk] = hp2sh_u[bk];
+		}
+		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+			secp->GetHash160_8(P2SH, true, &pts[base], out_p2sh_c);
+		}
+		if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+			secp->GetHash160_8(P2SH, false, &pts[base], out_p2sh_u);
+		}
+	}
+
+	int nslots_c = use_endo ? 6 : 2;
+	int nslots_u = use_endo ? 6 : 1;
+	for(bk = 0; bk < 8; bk++) {
+		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+			for(l = 0; l < nslots_c; l++) {
+				uint8_t *hash = h[l][bk];
+				r = address_check((char*)hash, MAXLENGTHADDRESS);
+				if(!r) continue;
+				r = searchbinary(addressTable, (char*)hash, N);
+				if(!r) continue;
+				if(use_endo) {
+					recover_endo_compress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 0);
+				} else {
+					keyfound->SetInt32(bk);
+					keyfound->Mult(stride);
+					keyfound->Add(key_mpz);
+					publickey = secp->ComputePublicKey(keyfound);
+					secp->GetHash160(P2PKH, true, publickey, (uint8_t*)publickeyhashrmd160);
+					if(memcmp(hash, publickeyhashrmd160, 20) != 0) {
+						keyfound->Neg();
+						keyfound->Add(&secp->order);
+					}
+					writekey(true, keyfound);
+					notify_key_found(keyfound);
+				}
+			}
+		}
+		if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+			for(l = 0; l < nslots_u; l++) {
+				uint8_t *hash = hunc[l][bk];
+				r = address_check((char*)hash, MAXLENGTHADDRESS);
+				if(!r) continue;
+				r = searchbinary(addressTable, (char*)hash, N);
+				if(!r) continue;
+				if(use_endo) {
+					recover_endo_uncompress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 0);
+				} else {
+					keyfound->SetInt32(bk);
+					keyfound->Mult(stride);
+					keyfound->Add(key_mpz);
+					writekey(false, keyfound);
+					notify_key_found(keyfound);
+				}
+			}
+		}
+		if(FLAGHAS_P2SH_TARGETS && !use_endo) {
+			if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+				try_p2sh_hit(bk, hp2sh_c[bk], true, key_mpz, stride, keyfound, publickeyhashrmd160);
+			}
+			if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+				try_p2sh_hit(bk, hp2sh_u[bk], false, key_mpz, stride, keyfound, publickeyhashrmd160);
+			}
+		}
+	}
+	(void)publickey_out;
+	return 1;
+}
+
+
+static int process_vanity_hash160_avx2_batch_8(
+	Point *pts, Point *beta_pts, Point *beta2_pts, int j, bool calculate_y,
+	Int *key_mpz, Int *stride, Int *keyfound,
+	char *publickeyhashrmd160
+) {
+	if(!hash160_avx2_batch_enabled())
+		return 0;
+
+	uint8_t h[6][8][20];
+	uint8_t hunc[6][8][20];
+	uint8_t *out[6][8];
+	uint8_t *outunc[6][8];
+	Int *kx[8], *kx_beta[8], *kx_beta2[8];
+	Point neg_pts[8], neg_beta[8], neg_beta2[8];
+	int base = j * 8;
+	int bk, l, slot;
+	int use_endo = FLAGENDOMORPHISM && beta_pts && beta2_pts;
+
+	for(bk = 0; bk < 8; bk++) {
+		for(slot = 0; slot < 6; slot++) {
+			out[slot][bk] = h[slot][bk];
+			outunc[slot][bk] = hunc[slot][bk];
+		}
+		kx[bk] = &pts[base + bk].x;
+		if(use_endo) {
+			kx_beta[bk] = &beta_pts[base + bk].x;
+			kx_beta2[bk] = &beta2_pts[base + bk].x;
+		}
+	}
+
+	if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+		secp->GetHash160_fromX_8(P2PKH, 0x02, kx, out[0]);
+		secp->GetHash160_fromX_8(P2PKH, 0x03, kx, out[1]);
+		if(use_endo) {
+			secp->GetHash160_fromX_8(P2PKH, 0x02, kx_beta, out[2]);
+			secp->GetHash160_fromX_8(P2PKH, 0x03, kx_beta, out[3]);
+			secp->GetHash160_fromX_8(P2PKH, 0x02, kx_beta2, out[4]);
+			secp->GetHash160_fromX_8(P2PKH, 0x03, kx_beta2, out[5]);
+		}
+	}
+	if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+		secp->GetHash160_8(P2PKH, false, &pts[base], outunc[0]);
+		if(use_endo) {
+			for(bk = 0; bk < 8; bk++) {
+				neg_pts[bk] = secp->Negation(pts[base + bk]);
+				neg_beta[bk] = secp->Negation(beta_pts[base + bk]);
+				neg_beta2[bk] = secp->Negation(beta2_pts[base + bk]);
+			}
+			secp->GetHash160_8(P2PKH, false, neg_pts, outunc[1]);
+			secp->GetHash160_8(P2PKH, false, &beta_pts[base], outunc[2]);
+			secp->GetHash160_8(P2PKH, false, neg_beta, outunc[3]);
+			secp->GetHash160_8(P2PKH, false, &beta2_pts[base], outunc[4]);
+			secp->GetHash160_8(P2PKH, false, neg_beta2, outunc[5]);
+		}
+	}
+
+	int nslots_c = use_endo ? 6 : 2;
+	int nslots_u = use_endo ? 6 : 1;
+	for(bk = 0; bk < 8; bk++) {
+		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+			for(l = 0; l < nslots_c; l++) {
+				uint8_t *hash = h[l][bk];
+				if(!vanityrmdmatch(hash)) continue;
+				recover_endo_compress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 1);
+			}
+		}
+		if((FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) && calculate_y) {
+			for(l = 0; l < nslots_u; l++) {
+				uint8_t *hash = hunc[l][bk];
+				if(!vanityrmdmatch(hash)) continue;
+				if(use_endo)
+					recover_endo_uncompress_hit(l, bk, key_mpz, stride, keyfound, hash, publickeyhashrmd160, 1);
+				else {
+					keyfound->SetInt32(bk);
+					keyfound->Mult(stride);
+					keyfound->Add(key_mpz);
+					writevanitykey(false, keyfound);
+				}
+			}
+		}
+	}
+	return 1;
+}
+#endif /* HASH160_AVX2_AVAILABLE */
+
+#endif /* HASH160_AVX512_AVAILABLE || HASH160_AVX2_AVAILABLE */
 
 #if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
 /*
@@ -5449,10 +5933,14 @@ void *thread_process(void *vargp)	{
 					endomorphism_beta2[0].x.ModMulK1(&pn.x, &beta2);
 				}
 				
-#if HASH160_AVX512_AVAILABLE
-				int hash_batch = hash160_avx512_batch_enabled() && hash160_coin_uses_batch() ? 16 : 4;
-#else
 				int hash_batch = 4;
+#if HASH160_AVX512_AVAILABLE
+				if(hash160_avx512_batch_enabled() && hash160_coin_uses_batch())
+					hash_batch = 16;
+#endif
+#if HASH160_AVX2_AVAILABLE
+				if(hash_batch == 4 && hash160_avx2_batch_enabled() && hash160_coin_uses_batch())
+					hash_batch = 8;
 #endif
 				if(hash_batch == 4 && g_gpu_dispatcher && gpu_dispatcher_available(g_gpu_dispatcher)
 					&& !FLAGENDOMORPHISM && (FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH)
@@ -5470,6 +5958,20 @@ void *thread_process(void *vargp)	{
 							&key_mpz, &stride, &keyfound, publickeyhashrmd160, &publickey);
 						count += 16;
 						temp_stride.SetInt32(16);
+						temp_stride.Mult(&stride);
+						key_mpz.Add(&temp_stride);
+						continue;
+					}
+#endif
+#if HASH160_AVX2_AVAILABLE
+					if(hash_batch == 8 && hash160_avx2_batch_enabled()) {
+						process_hash160_avx2_batch_8(pts,
+							FLAGENDOMORPHISM ? endomorphism_beta : NULL,
+							FLAGENDOMORPHISM ? endomorphism_beta2 : NULL,
+							(int)j, calculate_y,
+							&key_mpz, &stride, &keyfound, publickeyhashrmd160, &publickey);
+						count += 8;
+						temp_stride.SetInt32(8);
 						temp_stride.Mult(&stride);
 						key_mpz.Add(&temp_stride);
 						continue;
@@ -6121,10 +6623,14 @@ void *thread_process_vanity(void *vargp)	{
 					endomorphism_beta2[0].x.ModMulK1(&pn.x, &beta2);
 				}
 				
-#if HASH160_AVX512_AVAILABLE
-				int vanity_hash_batch = hash160_avx512_batch_enabled() ? 16 : 4;
-#else
 				int vanity_hash_batch = 4;
+#if HASH160_AVX512_AVAILABLE
+				if(hash160_avx512_batch_enabled())
+					vanity_hash_batch = 16;
+#endif
+#if HASH160_AVX2_AVAILABLE
+				if(vanity_hash_batch == 4 && hash160_avx2_batch_enabled())
+					vanity_hash_batch = 8;
 #endif
 				for(j = 0; j < CPU_GRP_SIZE/vanity_hash_batch;j++)	{
 #if HASH160_AVX512_AVAILABLE
@@ -6136,6 +6642,20 @@ void *thread_process_vanity(void *vargp)	{
 							&key_mpz, &stride, &keyfound, publickeyhashrmd160);
 						count += 16;
 						temp_stride.SetInt32(16);
+						temp_stride.Mult(&stride);
+						key_mpz.Add(&temp_stride);
+						continue;
+					}
+#endif
+#if HASH160_AVX2_AVAILABLE
+					if(vanity_hash_batch == 8) {
+						process_vanity_hash160_avx2_batch_8(pts,
+							FLAGENDOMORPHISM ? endomorphism_beta : NULL,
+							FLAGENDOMORPHISM ? endomorphism_beta2 : NULL,
+							(int)j, calculate_y,
+							&key_mpz, &stride, &keyfound, publickeyhashrmd160);
+						count += 8;
+						temp_stride.SetInt32(8);
 						temp_stride.Mult(&stride);
 						key_mpz.Add(&temp_stride);
 						continue;
@@ -7732,7 +8252,7 @@ int autodetect_crypto_from_file(const char *fileName) {
 
 	char line[256];
 	int btc_count = 0, eth_count = 0, ltc_count = 0, doge_count = 0;
-	int xrp_count = 0, btg_count = 0, troot_count = 0;
+	int xrp_count = 0, btg_count = 0, troot_count = 0, sol_count = 0;
 
 	while(fgets(line, sizeof(line), f)) {
 		int len = strlen(line);
@@ -7766,10 +8286,19 @@ int autodetect_crypto_from_file(const char *fileName) {
 		else if(len == 40) {
 			troot_count++;
 		}
+		else if(len >= 32 && len <= 44 && isValidBase58String(line)) {
+			uint8_t raw[32];
+			size_t raw_len = 32;
+			memset(raw, 0, 32);
+			if(b58tobin(raw, &raw_len, line, (size_t)len)) {
+				/* BTC/legacy decode to 25 bytes; Solana pubkeys are 32 bytes. */
+				sol_count++;
+			}
+		}
 	}
 	fclose(f);
 
-	int total = btc_count + eth_count + ltc_count + doge_count + xrp_count + btg_count + troot_count;
+	int total = btc_count + eth_count + ltc_count + doge_count + xrp_count + btg_count + troot_count + sol_count;
 	if(total == 0) {
 		printf("[!] Could not detect address type from file, defaulting to BTC\n");
 		return CRYPTO_BTC;
@@ -7783,6 +8312,7 @@ int autodetect_crypto_from_file(const char *fileName) {
 	if(xrp_count > 0) printf("XRP(%d) ", xrp_count);
 	if(btg_count > 0) printf("BTG(%d) ", btg_count);
 	if(troot_count > 0) printf("TROOT(%d) ", troot_count);
+	if(sol_count > 0) printf("SOL(%d) ", sol_count);
 	printf("\n");
 
 	int types_found = 0;
@@ -7793,8 +8323,13 @@ int autodetect_crypto_from_file(const char *fileName) {
 	if(xrp_count > 0) types_found++;
 	if(btg_count > 0) types_found++;
 	if(troot_count > 0) types_found++;
+	if(sol_count > 0) types_found++;
 
 	if(types_found > 1) {
+		if(sol_count > 0 && (btc_count + eth_count + ltc_count + doge_count + xrp_count + btg_count + troot_count) > 0) {
+			printf("[!] Solana (ed25519) cannot be mixed with secp256k1 currencies; use -c sol alone\n");
+			return CRYPTO_SOL;
+		}
 		printf("[+] Multiple currency types detected, using ALL mode\n");
 		return CRYPTO_ALL;
 	}
@@ -7805,6 +8340,7 @@ int autodetect_crypto_from_file(const char *fileName) {
 	if(xrp_count > 0) return CRYPTO_XRP;
 	if(btg_count > 0) return CRYPTO_BTG;
 	if(troot_count > 0) return CRYPTO_TROOT;
+	if(sol_count > 0) return CRYPTO_SOL;
 	return CRYPTO_BTC;
 }
 
@@ -9062,7 +9598,7 @@ void menu() {
 	printf("               ltc   = Litecoin L... addresses\n");
 	printf("               doge  = Dogecoin D... addresses\n");
 	printf("               xrp   = XRP (Ripple) r... addresses\n");
-	printf("               sol   = Solana (base58) addresses\n");
+	printf("               sol   = Solana ed25519 base58 addresses (CPU address mode)\n");
 	printf("               bch   = Bitcoin Cash addresses\n");
 	printf("               btg   = Bitcoin Gold G... addresses\n");
 	printf("               etc   = Ethereum Classic 0x... addresses\n");
@@ -9149,9 +9685,9 @@ void menu() {
 	printf("PERFORMANCE:\n");
 	printf("  -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)\n");
 	printf("  -A mode      CPU vectorization (default: auto):\n");
-	printf("                 auto   - Detect best: AVX-512 → AVX2 → AVX → SSE → scalar\n");
+	printf("                 auto   - Detect best: AVX-512 → AVX2 → SSE → scalar\n");
 	printf("                 none, sse, avx, avx2, avx512\n");
-	printf("               AVX/AVX2 use SSE 4-wide hash today; AVX-512 uses 16-wide.\n");
+	printf("               AVX2 = 8-wide hash160; AVX-512 = 16-wide; AVX1/SSE = 4-wide SSE.\n");
 	printf("  -U backend   GPU backend: none, cuda, opencl (default: none)\n");
 	printf("                 cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)\n");
 	printf("                 opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU\n");
@@ -9607,6 +10143,45 @@ void writekeyeth(Int *key)	{
 	free(hextemp);
 }
 
+void writekeysol(Int *key)	{
+	FILE *keys;
+	uint8_t seed[32], pubkey[32], priv[64];
+	char address[64];
+	size_t address_len = sizeof(address);
+	char *hextemp;
+	char pubkey_hex[65];
+
+	hextemp = key->GetBase16();
+	key->Get32Bytes(seed);
+	ed25519_create_keypair(pubkey, priv, seed);
+	memset(address, 0, sizeof(address));
+	if(!b58enc(address, &address_len, pubkey, 32)) {
+		fprintf(stderr, "[E] b58enc failed for Solana address\n");
+		address[0] = '\0';
+	}
+	for(int b = 0; b < 32; b++) sprintf(pubkey_hex + b * 2, "%02x", pubkey[b]);
+	pubkey_hex[64] = '\0';
+
+#if defined(_MSC_VER)
+	WaitForSingleObject(write_keys, INFINITE);
+#else
+	pthread_mutex_lock(&write_keys);
+#endif
+	keys = fopen("KEYFOUNDKEYFOUND.txt","a+");
+	if(keys != NULL)	{
+		fprintf(keys,"Mode: address (solana)\nPrivate Key (seed hex): %s\nPublic Key: %s\nAddress: %s\n\n",
+			hextemp, pubkey_hex, address);
+		fclose(keys);
+	}
+	printf("\nHit! Solana seed: %s\npubkey: %s\nAddress: %s\n", hextemp, pubkey_hex, address);
+#if defined(_MSC_VER)
+	ReleaseMutex(write_keys);
+#else
+	pthread_mutex_unlock(&write_keys);
+#endif
+	free(hextemp);
+}
+
 bool isBase58(char c) {
     // Define the base58 set
     const char base58Set[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
@@ -9856,6 +10431,9 @@ bool readFileAddress(char *fileName)	{
 					if(!initBloomFilter(&troot_bloom, 1024)) return false;
 					bf_init(&troot_bf_filter, 1024, 0.000001);
 					return forceReadFileTroot(fileName);
+				}
+				if(FLAGCRYPTO == CRYPTO_SOL)	{
+					return forceReadFileAddressSol(fileName);
 				}
 			break;
 			case MODE_MINIKEYS:

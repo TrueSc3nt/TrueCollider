@@ -23,9 +23,8 @@
 #include "../hash/sha256.h"
 #include "../hash/ripemd160.h"
 #include "../backend_config.h"
-#if HASH160_AVX512_AVAILABLE
 #include "../hash/hash160_avx512.h"
-#endif
+#include "../hash/hash160_avx2.h"
 
 Secp256K1::Secp256K1() {
 }
@@ -960,6 +959,135 @@ void Secp256K1::GetHash160_fromX_16(int type, unsigned char prefix, Int *kx[16],
 
   case P2SH:
     fprintf(stderr, "[E] GetHash160_fromX_16: P2SH unsupported\n");
+    exit(0);
+  break;
+  }
+}
+
+#if HASH160_AVX2_AVAILABLE
+static void hash160_batch_8x33(const uint8_t *inputs[8], uint8_t *outputs[8]) {
+  if (g_backend_config.cpu_vector == CPU_VECTOR_AVX2) {
+    hash160_avx2_8x33(inputs, outputs);
+    return;
+  }
+  for (int i = 0; i < 8; i++) {
+    uint8_t sha[32];
+    uint8_t padded[64];
+    memcpy(padded, inputs[i], 33);
+    sha256_33(padded, sha);
+    ripemd160_32(sha, outputs[i]);
+  }
+}
+
+static void hash160_batch_8x65(const uint8_t *inputs[8], uint8_t *outputs[8]) {
+  if (g_backend_config.cpu_vector == CPU_VECTOR_AVX2) {
+    hash160_avx2_8x65(inputs, outputs);
+    return;
+  }
+  for (int i = 0; i < 8; i++) {
+    uint8_t sha[32];
+    uint8_t padded[128];
+    memcpy(padded, inputs[i], 65);
+    sha256_65(padded, sha);
+    ripemd160_32(sha, outputs[i]);
+  }
+}
+
+static void hash160_batch_8x22(const uint8_t *inputs[8], uint8_t *outputs[8]) {
+  if (g_backend_config.cpu_vector == CPU_VECTOR_AVX2) {
+    hash160_avx2_8x22(inputs, outputs);
+    return;
+  }
+  for (int i = 0; i < 8; i++) {
+    uint8_t sha[32];
+    sha256((uint8_t*)inputs[i], 22, sha);
+    ripemd160_32(sha, outputs[i]);
+  }
+}
+#endif
+
+void Secp256K1::GetHash160_8(int type, bool compressed, Point pts[8], uint8_t *outputs[8]) {
+#if HASH160_AVX2_AVAILABLE
+  uint8_t keys[8][128];
+  const uint8_t *in_ptrs[8];
+
+  switch (type) {
+  case P2PKH:
+  case BECH32:
+    if (!compressed) {
+      for (int i = 0; i < 8; i++) {
+        keys[i][0] = 0x04;
+        pts[i].x.Get32Bytes(keys[i] + 1);
+        pts[i].y.Get32Bytes(keys[i] + 33);
+        in_ptrs[i] = keys[i];
+      }
+      hash160_batch_8x65(in_ptrs, outputs);
+    } else {
+      for (int i = 0; i < 8; i++) {
+        keys[i][0] = pts[i].y.IsEven() ? 0x02 : 0x03;
+        pts[i].x.Get32Bytes(keys[i] + 1);
+        in_ptrs[i] = keys[i];
+      }
+      hash160_batch_8x33(in_ptrs, outputs);
+    }
+    break;
+
+  case P2SH:
+  {
+    uint8_t p2pkh[8][20];
+    uint8_t *p2pkh_ptrs[8];
+    for (int i = 0; i < 8; i++) p2pkh_ptrs[i] = p2pkh[i];
+    GetHash160_8(P2PKH, compressed, pts, p2pkh_ptrs);
+    for (int i = 0; i < 8; i++) {
+      keys[i][0] = 0x00;
+      keys[i][1] = 0x14;
+      memcpy(keys[i] + 2, p2pkh[i], 20);
+      in_ptrs[i] = keys[i];
+    }
+    hash160_batch_8x22(in_ptrs, outputs);
+  }
+  break;
+
+  default:
+    for (int q = 0; q < 2; q++) {
+      GetHash160(type, compressed, pts[q * 4], pts[q * 4 + 1], pts[q * 4 + 2], pts[q * 4 + 3],
+        outputs[q * 4], outputs[q * 4 + 1], outputs[q * 4 + 2], outputs[q * 4 + 3]);
+    }
+    break;
+  }
+#else
+  for (int q = 0; q < 2; q++) {
+    GetHash160(type, compressed, pts[q * 4], pts[q * 4 + 1], pts[q * 4 + 2], pts[q * 4 + 3],
+      outputs[q * 4], outputs[q * 4 + 1], outputs[q * 4 + 2], outputs[q * 4 + 3]);
+  }
+#endif
+}
+
+void Secp256K1::GetHash160_fromX_8(int type, unsigned char prefix, Int *kx[8], uint8_t *outputs[8]) {
+  switch (type) {
+  case P2PKH:
+  case BECH32:
+#if HASH160_AVX2_AVAILABLE
+  {
+    uint8_t keys[8][64];
+    const uint8_t *in_ptrs[8];
+    for (int i = 0; i < 8; i++) {
+      keys[i][0] = prefix;
+      kx[i]->Get32Bytes(keys[i] + 1);
+      in_ptrs[i] = keys[i];
+    }
+    hash160_batch_8x33(in_ptrs, outputs);
+  }
+#else
+  for (int q = 0; q < 2; q++) {
+    GetHash160_fromX(type, prefix, kx[q * 4], kx[q * 4 + 1], kx[q * 4 + 2], kx[q * 4 + 3],
+      outputs[q * 4], outputs[q * 4 + 1], outputs[q * 4 + 2], outputs[q * 4 + 3]);
+  }
+#endif
+  break;
+
+  case P2SH:
+    fprintf(stderr, "[E] GetHash160_fromX_8: P2SH unsupported\n");
     exit(0);
   break;
   }

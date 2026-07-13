@@ -27,6 +27,9 @@ int cpu_vector_auto_level(void);
 /* True when CPU + OS expose AVX-512F/BW (required for hash160 AVX-512 kernel). */
 int cpu_has_avx512_hash160(void);
 
+/* True when CPU + OS expose AVX2 (required for hash160 AVX2 kernel). */
+int cpu_has_avx2_hash160(void);
+
 /*
  * Clamp a requested CPU_VECTOR_* level to what this machine supports.
  * Used so -A avx512 on an SSE-only PC safely falls back instead of crashing.

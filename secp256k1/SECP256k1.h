@@ -62,6 +62,10 @@ public:
   void GetHash160_16(int type, bool compressed, Point pts[16], uint8_t *outputs[16]);
   void GetHash160_fromX_16(int type, unsigned char prefix, Int *kx[16], uint8_t *outputs[16]);
 
+  /* 8-way batch hash160 (AVX2 when enabled, else 2x SSE/scalar). */
+  void GetHash160_8(int type, bool compressed, Point pts[8], uint8_t *outputs[8]);
+  void GetHash160_fromX_8(int type, unsigned char prefix, Int *kx[8], uint8_t *outputs[8]);
+
 
   Point Add(Point &p1, Point &p2);
   Point Add2(Point &p1, Point &p2);

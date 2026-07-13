@@ -109,6 +109,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/hash
     ${CMAKE_SOURCE_DIR}/xxhash
     ${CMAKE_SOURCE_DIR}/gpu
+    ${CMAKE_SOURCE_DIR}/ed25519
 )
 
 # ---------------------------------------------------------------------------
@@ -137,6 +138,19 @@ set(CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/hash/ripemd160.cpp
     ${CMAKE_SOURCE_DIR}/hash/sha256.cpp
     ${CMAKE_SOURCE_DIR}/hash/sha512.cpp
+    ${CMAKE_SOURCE_DIR}/ed25519/fe.c
+    ${CMAKE_SOURCE_DIR}/ed25519/ge.c
+    ${CMAKE_SOURCE_DIR}/ed25519/sc.c
+    ${CMAKE_SOURCE_DIR}/ed25519/keypair.c
+    ${CMAKE_SOURCE_DIR}/ed25519/sha512_bridge.cpp
+)
+
+set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/ed25519/fe.c
+    ${CMAKE_SOURCE_DIR}/ed25519/ge.c
+    ${CMAKE_SOURCE_DIR}/ed25519/sc.c
+    ${CMAKE_SOURCE_DIR}/ed25519/keypair.c
+    PROPERTIES COMPILE_DEFINITIONS "ED25519_NO_SEED"
 )
 
 if(IS_X86 AND ENABLE_SSE AND NOT IS_TERMUX)
@@ -149,7 +163,22 @@ endif()
 if(IS_X86 AND ENABLE_AVX512 AND NOT IS_TERMUX)
     list(APPEND CORE_SOURCES
         ${CMAKE_SOURCE_DIR}/hash/hash160_avx512.cpp
+        ${CMAKE_SOURCE_DIR}/hash/hash160_avx2.cpp
     )
+endif()
+
+if(IS_X86 AND ENABLE_AVX512 AND NOT IS_TERMUX)
+    if(MSVC)
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/hash/hash160_avx512.cpp
+            PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/hash/hash160_avx2.cpp
+            PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+    else()
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/hash/hash160_avx512.cpp
+            PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw")
+        set_source_files_properties(${CMAKE_SOURCE_DIR}/hash/hash160_avx2.cpp
+            PROPERTIES COMPILE_FLAGS "-mavx2")
+    endif()
 endif()
 
 if(MSVC)
@@ -158,16 +187,6 @@ if(MSVC)
     )
     include_directories(${CMAKE_SOURCE_DIR}/compat)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
-endif()
-
-if(IS_X86 AND ENABLE_AVX512 AND NOT IS_TERMUX)
-    if(MSVC)
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/hash/hash160_avx512.cpp
-            PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
-    else()
-        set_source_files_properties(${CMAKE_SOURCE_DIR}/hash/hash160_avx512.cpp
-            PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw")
-    endif()
 endif()
 
 # ---------------------------------------------------------------------------

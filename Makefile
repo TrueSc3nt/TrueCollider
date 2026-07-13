@@ -64,13 +64,15 @@ LIBS := -lm -lpthread
 OBJECTS := oldbloom.o bloom.o base58.o rmd160.o sha3.o keccak.o xxhash.o \
            util.o backend_config.o cpu_features.o Int.o Point.o SECP256K1.o \
            IntMod.o Random.o IntGroup.o gpu/gpu_dispatcher.o \
-           hash/ripemd160.o hash/sha256.o hash/sha512.o
+           hash/ripemd160.o hash/sha256.o hash/sha512.o \
+           ed25519/fe.o ed25519/ge.o ed25519/sc.o ed25519/keypair.o \
+           ed25519/sha512_bridge.o
 
 # On x86 (non-Termux), also compile SSE hash files
 IS_TERMUX := $(shell test -d /data/data/com.termux && echo yes)
 ifneq ($(IS_X86),)
   ifneq ($(IS_TERMUX),yes)
-    OBJECTS += hash/ripemd160_sse.o hash/sha256_sse.o hash/hash160_avx512.o
+    OBJECTS += hash/ripemd160_sse.o hash/sha256_sse.o hash/hash160_avx512.o hash/hash160_avx2.o
     SSE_DEFINE := -DHAVE_SSE
   else
     SSE_DEFINE := -DNO_SSE
@@ -164,6 +166,22 @@ hash/sha256.o: hash/sha256.cpp hash/sha256.h
 hash/sha512.o: hash/sha512.cpp hash/sha512.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
+# ed25519 (Solana)
+ed25519/fe.o: ed25519/fe.c ed25519/fe.h
+	$(CC) $(CFLAGS) -Ied25519 -DED25519_NO_SEED -c $< -o $@
+
+ed25519/ge.o: ed25519/ge.c ed25519/ge.h ed25519/fe.h ed25519/precomp_data.h
+	$(CC) $(CFLAGS) -Ied25519 -DED25519_NO_SEED -c $< -o $@
+
+ed25519/sc.o: ed25519/sc.c ed25519/sc.h
+	$(CC) $(CFLAGS) -Ied25519 -DED25519_NO_SEED -c $< -o $@
+
+ed25519/keypair.o: ed25519/keypair.c ed25519/ed25519.h ed25519/ed25519_sha512_bridge.h ed25519/ge.h
+	$(CC) $(CFLAGS) -Ied25519 -DED25519_NO_SEED -c $< -o $@
+
+ed25519/sha512_bridge.o: ed25519/sha512_bridge.cpp ed25519/ed25519_sha512_bridge.h hash/sha512.h
+	$(CXX) $(CXXFLAGS) -Ied25519 -c $< -o $@
+
 # SSE hash files (x86 non-Termux only)
 ifneq ($(IS_X86),)
   ifneq ($(IS_TERMUX),yes)
@@ -175,10 +193,13 @@ hash/sha256_sse.o: hash/sha256_sse.cpp hash/sha256.h
 
 hash/hash160_avx512.o: hash/hash160_avx512.cpp hash/hash160_avx512.h hash/sha256.h hash/ripemd160.h
 	$(CXX) $(CXXFLAGS) -mavx512f -mavx512bw -c $< -o $@
+
+hash/hash160_avx2.o: hash/hash160_avx2.cpp hash/hash160_avx2.h hash/sha256.h hash/ripemd160.h
+	$(CXX) $(CXXFLAGS) -mavx2 -c $< -o $@
   endif
 endif
 
 .PHONY: default clean windows
 
 clean:
-	rm -f $(TARGET) keyhunt.exe keyhunt_nolto.o *.o hash/*.o gpu/*.o
+	rm -f $(TARGET) keyhunt.exe keyhunt_nolto.o *.o hash/*.o gpu/*.o ed25519/*.o
