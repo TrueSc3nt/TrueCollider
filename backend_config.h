@@ -19,6 +19,7 @@ extern "C" {
 #define MODE_POETRY     8
 #define MODE_BRAINWALLET 9
 #define MODE_PUB2ADDR   10
+#define MODE_KANGAROO   11
 
 /* CPU vectorization levels. */
 #define CPU_VECTOR_NONE   0
@@ -33,15 +34,20 @@ extern "C" {
 #define GPU_BACKEND_OPENCL  2
 
 struct BackendConfig {
-    /* CPU vectorization (-E none/sse/avx/avx2/avx512 or auto). */
+    /* CPU vectorization (-A none/sse/avx/avx2/avx512 or auto). */
     int cpu_vector;
     int cpu_vector_auto;  /* 1 = pick best available at runtime */
 
-    /* GPU (-G cuda/opencl or none). */
+    /* GPU (-U cuda/opencl or none). */
     int gpu_enabled;
     int gpu_backend;
     int gpu_device;
     uint32_t gpu_batch_size;
+    int gpu_batch_user_set; /* 1 if -G was given */
+
+    /* Memory budget for GPU/search buffers (-M MB|auto). 0 = unset. */
+    uint64_t memory_budget_bytes;
+    int memory_auto; /* 1 = size from free GPU VRAM */
 
     /* Global mode so backends can reject unsupported modes. */
     int search_mode;

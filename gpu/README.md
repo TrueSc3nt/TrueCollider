@@ -21,9 +21,12 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 | BTC / LTC / DOGE / XRP / BCH / BTG / `all` — `address` / `rmd160` | GPU EC + host hash160 + host bloom |
 | ETH / ETC — `address` | GPU EC (uncompressed) + host keccak + host bloom |
 | Taproot (`troot`) — `address` | GPU EC + host taproot tweak + filter |
-| Batch size | Default **128**, clamp **1..256** (`-G`); device launches chunked (128) for TDR |
+| Batch size | **`-M auto`/`-M MB`** sizes from free VRAM (Rotor/Collider style); **`-G`** optional override. Device launches use 256-thread grids in TDR-safe chunks (up to 64K) |
 | Device hash160 bloom search | Implemented but **not** production (self-test historically failed) |
-| BSGS / vanity / SOL / kangaroo | CPU (GPU BSGS / ed25519 / kangaroo on roadmap) |
+| vanity / xpoint / pubkey2addr / minikeys / mnemonic / poetry / brainwallet | GPU EC + host filter (derivation stays CPU) |
+| BSGS | GPU EC for baby-table build; giant-step CPU |
+| SOL (`-c sol`) | **CUDA SHA512 + host ed25519** (`-U cuda`) |
+| Kangaroo | CPU (`-m kangaroo`) |
 
 ### CUDA path (`-U cuda`)
 
@@ -89,7 +92,8 @@ Or double-click / run: `run_gpu_cuda_example.bat`.
 | Flag | Meaning |
 |------|---------|
 | `-U cuda\|opencl\|none` | Backend |
-| `-G N` | Batch size hint (CUDA EC uses `1..256`, default `128`) |
+| `-G N` | Batch size hint (clamped by `-M` / VRAM plan; large grids chunked) |
+| `-M MB\|auto\|2G` | Host/VRAM memory budget (CUDA sizes batches; BSGS scales blooms) |
 
 ---
 

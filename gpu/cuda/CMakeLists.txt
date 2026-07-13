@@ -21,13 +21,19 @@ add_library(truecollider_cuda STATIC
     cuda_backend.cu
     hash160_cuda.cu
     secp256k1_cuda.cu
+    ed25519_cuda.cu
+    ed25519_cuda_host.cpp
 )
 
 target_include_directories(truecollider_cuda PUBLIC
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/secp256k1
     ${CMAKE_SOURCE_DIR}/hash
+    ${CMAKE_SOURCE_DIR}/ed25519
 )
+
+# Host ge_scalarmult_base for Solana finish (linked via keyhunt ed25519 objs).
+# Declarations only in .cu; symbols from keyhunt's ed25519/*.c at link time.
 
 set_target_properties(truecollider_cuda PROPERTIES
     CUDA_SEPARABLE_COMPILATION OFF

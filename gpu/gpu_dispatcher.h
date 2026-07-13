@@ -21,6 +21,7 @@ int gpu_dispatcher_init(struct GpuDispatcher* disp, const struct BackendConfig* 
 int gpu_dispatcher_available(const struct GpuDispatcher* disp);
 /* 1 if CUDA secp256k1 + device bloom path passed self-test / is usable. */
 int gpu_dispatcher_secp_ready(const struct GpuDispatcher* disp);
+int gpu_dispatcher_ed25519_ready(const struct GpuDispatcher* disp);
 
 /* Returns 1 if the current mode can be run on the GPU. */
 int gpu_dispatcher_supports_mode(const struct GpuDispatcher* disp, int mode);
@@ -61,6 +62,12 @@ int gpu_dispatcher_pubkey_batch(struct GpuDispatcher* disp,
                                 uint32_t count,
                                 int compressed,
                                 uint8_t* out_pubs65);
+
+/* Solana: seeds (count*32) → ed25519 pubs (count*32). CUDA SHA512 + host ge. */
+int gpu_dispatcher_ed25519_pubkey_batch(struct GpuDispatcher* disp,
+                                        const uint8_t* seeds32,
+                                        uint32_t count,
+                                        uint8_t* out_pubs32);
 
 /*
  * Submit a batch of compressed pubkeys for address-mode hash+filter.

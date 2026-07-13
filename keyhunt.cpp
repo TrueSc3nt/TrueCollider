@@ -9,6 +9,7 @@ Developed & Modified by TrueScent
 #include <math.h>
 #include <time.h>
 #include <vector>
+#include <map>
 #include <inttypes.h>
 #include "base58/libbase58.h"
 #include "rmd160/rmd160.h"
@@ -53,6 +54,9 @@ static int rand_r(unsigned int *seed) {
 #endif
 #endif
 
+#if defined(__MINGW32__) || defined(__MINGW64__)
+#include <windows.h>
+#endif
 #if defined(_MSC_VER)
 #include "compat/getopt.h"
 #include <windows.h>
@@ -102,6 +106,7 @@ static int rand_r(unsigned int *seed) {
 #define MODE_POETRY 8
 #define MODE_BRAINWALLET 9
 #define MODE_PUB2ADDR 10
+#define MODE_KANGAROO 11
 
 #define SEARCH_UNCOMPRESS 0
 #define SEARCH_COMPRESS 1
@@ -235,6 +240,13 @@ int minimum_same_bytes(unsigned char* A,unsigned char* B, int length);
 void writekey(bool compressed,Int *key);
 void writekeyeth(Int *key);
 void writekeysol(Int *key);
+int run_kangaroo_search(const char *pubkey_file);
+static void append_found_file(const char *tag, const char *body);
+static int gpu_check_privkey_list(const uint8_t *privs, int count, int compressed, int is_eth);
+static int process_secp_gpu_privkey_batch(Int *key_mpz, Int *stride, Int *keyfound,
+	char *publickeyhashrmd160, uint64_t *count_out);
+static uint64_t host_total_ram_bytes(void);
+static void bsgs_recommend_from_ram(uint64_t ram_bytes, int *out_k, const char **out_n_hex);
 
 void checkpointer(void *ptr,const char *file,const char *function,const  char *name,int line);
 
@@ -310,7 +322,7 @@ char *bit_range_str_min;
 char *bit_range_str_max;
 
 const char *bsgs_modes[5] = {"sequential","backward","both","random","dance"};
-const char *modes[11] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr"};
+const char *modes[12] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr","kangaroo"};
 const char *cryptos[13] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol","auto"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
 const char *searchmodes[7] = {"sequential","random","chaos","gravity","spiral","reverse","auto"};
@@ -573,9 +585,11 @@ int FLAGVANITY = 0;
 int FLAGBASEMINIKEY = 0;
 int FLAGBSGSMODE = 0;
 int FLAGDEBUG = 0;
+int FLAGDRYRUN = 0;
 int FLAGQUIET = 0;
 int FLAGMATRIX = 0;
 int KFACTOR = 1;
+int FLAG_K_AUTO = 0;
 int FLAGNODECHECK = 0;
 int MAXLENGTHADDRESS = -1;
 int NTHREADS = 1;
@@ -1327,11 +1341,15 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
-	while ((c = getopt(argc, argv, "deh6MqRSVZ:A:B:b:c:C:D:E:f:I:k:l:m:N::n:p:r:s:t:T:U:v:G:8:z:x:w:L:W")) != -1) {
+	while ((c = getopt(argc, argv, "deh6M:qRSVZyZ:A:B:b:c:C:D:E:f:I:k:l:m:N::n:p:r:s:t:T:U:v:G:8:z:x:w:L:W")) != -1) {
 		switch(c) {
 			case 'h':
 				menu();
 			break;
+		case 'y':
+			FLAGDRYRUN = 1;
+			printf("[+] Dry-run: will print resolved config and exit (no search)\n");
+		break;
 		case '6':
 			FLAGSKIPCHECKSUM = 1;
 			fprintf(stderr,"[W] Skipping checksums on files\n");
@@ -1378,7 +1396,8 @@ int main(int argc, char **argv)	{
 					exit(EXIT_FAILURE);
 				}
 				g_backend_config.gpu_batch_size = (uint32_t)gbs;
-				printf("[+] GPU batch size hint: %u (CUDA may clamp for driver stability)\n",
+				g_backend_config.gpu_batch_user_set = 1;
+				printf("[+] GPU batch size hint: %u (clamped by -M / free VRAM)\n",
 					g_backend_config.gpu_batch_size);
 			}
 		break;
@@ -1537,11 +1556,20 @@ int main(int argc, char **argv)	{
 				str_stride = optarg;
 			break;
 			case 'k':
-				KFACTOR = (int)strtol(optarg,NULL,10);
-				if(KFACTOR <= 0)	{
-					KFACTOR = 1;
+				if(optarg && (strcmp(optarg, "auto") == 0 || strcmp(optarg, "AUTO") == 0)) {
+					FLAG_K_AUTO = 1;
+					printf("[+] K factor: auto (from system RAM / -M)\n");
 				}
-				printf("[+] K factor %i\n",KFACTOR);
+				else {
+					KFACTOR = (int)strtol(optarg, NULL, 10);
+					if(KFACTOR <= 0) KFACTOR = 1;
+					FLAG_K_AUTO = 0;
+					if((KFACTOR & (KFACTOR - 1)) != 0) {
+						fprintf(stderr, "[W] -k %d is not a power of 2; optimal values are 1,2,4,8,16,...\n",
+							KFACTOR);
+					}
+					printf("[+] K factor %i\n", KFACTOR);
+				}
 			break;
 
 			case 'l':
@@ -1561,11 +1589,39 @@ int main(int argc, char **argv)	{
 				}
 			break;
 			case 'M':
-				FLAGMATRIX = 1;
-				printf("[+] Matrix screen\n");
+				if(optarg && (strcmp(optarg, "matrix") == 0 || strcmp(optarg, "Matrix") == 0)) {
+					FLAGMATRIX = 1;
+					printf("[+] Matrix screen\n");
+				}
+				else if(optarg && (strcmp(optarg, "auto") == 0 || strcmp(optarg, "AUTO") == 0)) {
+					g_backend_config.memory_auto = 1;
+					g_backend_config.memory_budget_bytes = 0;
+					printf("[+] GPU/search memory: auto (from free VRAM)\n");
+				}
+				else if(optarg) {
+					char *end = NULL;
+					unsigned long mb = strtoul(optarg, &end, 10);
+					/* Accept 512, 512M, 2G / 2GB */
+					if(end && (*end == 'G' || *end == 'g')) {
+						mb = mb * 1024ul;
+						end++;
+						if(*end == 'B' || *end == 'b') end++;
+					}
+					else if(end && (*end == 'M' || *end == 'm')) {
+						end++;
+						if(*end == 'B' || *end == 'b') end++;
+					}
+					if(mb < 64 || mb > 1048576) {
+						fprintf(stderr,"[E] -M memory must be auto, matrix, or 64..1048576 (MB). Got '%s'\n", optarg);
+						exit(EXIT_FAILURE);
+					}
+					g_backend_config.memory_auto = 0;
+					g_backend_config.memory_budget_bytes = (uint64_t)mb * 1024ull * 1024ull;
+					printf("[+] GPU/search memory budget: %lu MB\n", mb);
+				}
 			break;
 			case 'm':
-				switch(indexOf(optarg,modes,11)) {
+				switch(indexOf(optarg,modes,12)) {
 					case MODE_XPOINT: //xpoint
 						FLAGMODE = MODE_XPOINT;
 						printf("[+] Mode xpoint\n");
@@ -1584,8 +1640,7 @@ int main(int argc, char **argv)	{
 						printf("[+] Mode rmd160\n");
 					break;
 					case MODE_PUB2RMD:
-						FLAGMODE = MODE_PUB2RMD;
-						printf("[+] Mode pub2rmd was removed\n");
+						printf("[+] Mode pub2rmd was removed (use -m rmd160 with hash targets).\n");
 						exit(0);
 					break;
 					case MODE_MINIKEYS:
@@ -1617,6 +1672,10 @@ int main(int argc, char **argv)	{
 						FLAGSEARCHMODE = SEARCHMODE_RANDOM;
 						printf("[+] Mode pubkey2addr (random pubkey->address search)\n");
 						printf("[+] Defaulting to -x random\n");
+					break;
+					case MODE_KANGAROO:
+						FLAGMODE = MODE_KANGAROO;
+						printf("[+] Mode kangaroo (Pollard's kangaroo CPU; use -r / -b + pubkey file)\n");
 					break;
 					default:
 						fprintf(stderr,"[E] Unknow mode value %s\n",optarg);
@@ -1969,19 +2028,71 @@ int main(int argc, char **argv)	{
 			g_backend_config.gpu_backend = GPU_BACKEND_NONE;
 		}
 		else if(!gpu_dispatcher_supports_mode(g_gpu_dispatcher, FLAGMODE)) {
-			if(FLAGMODE == MODE_BSGS) {
-				fprintf(stderr,"[W] BSGS baby/giant steps stay on CPU (group EC). "
-					"CUDA EC is used for address/rmd160/troot/eth; GPU BSGS kernels are on the roadmap.\n");
+			fprintf(stderr,"[W] GPU backend does not support mode '%s'; running on CPU.\n",
+				FLAGMODE == MODE_ADDRESS ? "address" :
+				FLAGMODE == MODE_RMD160 ? "rmd160" :
+				FLAGMODE == MODE_VANITY ? "vanity" :
+				FLAGMODE == MODE_BSGS ? "bsgs" : "other");
+		} else if(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160 ||
+			  FLAGMODE == MODE_VANITY || FLAGMODE == MODE_XPOINT ||
+			  FLAGMODE == MODE_PUB2ADDR || FLAGMODE == MODE_MINIKEYS ||
+			  FLAGMODE == MODE_MNEMONIC || FLAGMODE == MODE_POETRY ||
+			  FLAGMODE == MODE_BRAINWALLET || FLAGMODE == MODE_BSGS) {
+			if(FLAGCRYPTO == CRYPTO_SOL) {
+				if(gpu_dispatcher_ed25519_ready(g_gpu_dispatcher)) {
+					fprintf(stderr,"[+] GPU Solana path enabled (CUDA SHA512 + host ed25519 ge; batch %u).\n",
+						g_backend_config.gpu_batch_size);
+				} else {
+					fprintf(stderr,"[W] Solana CUDA ed25519 not ready; using CPU ed25519.\n");
+				}
+			} else if(FLAGMODE == MODE_BSGS) {
+				fprintf(stderr,"[+] GPU BSGS EC enabled (baby-table build + giant-step ComputePublicKey; batch %u).\n",
+					g_backend_config.gpu_batch_size);
 			} else {
-				fprintf(stderr,"[W] GPU backend does not support mode '%s'; running on CPU.\n",
-					FLAGMODE == MODE_ADDRESS ? "address" :
-					FLAGMODE == MODE_RMD160 ? "rmd160" :
-					FLAGMODE == MODE_VANITY ? "vanity" : "other");
+				fprintf(stderr,"[+] GPU EC enabled for mode (batch %u keys; -G / -M to tune).\n",
+					g_backend_config.gpu_batch_size);
 			}
-		} else if(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160) {
-			fprintf(stderr,"[+] GPU search enabled for this mode (batch up to %u, -G to tune).\n",
-				g_backend_config.gpu_batch_size > 256 ? 256u : g_backend_config.gpu_batch_size);
 		}
+	}
+
+	if(FLAGDRYRUN) {
+		printf("[+] Dry-run config summary:\n");
+		printf("    mode=%s crypto=%d threads=%d search=%d\n",
+			FLAGMODE == MODE_ADDRESS ? "address" :
+			FLAGMODE == MODE_RMD160 ? "rmd160" :
+			FLAGMODE == MODE_BSGS ? "bsgs" :
+			FLAGMODE == MODE_VANITY ? "vanity" :
+			FLAGMODE == MODE_XPOINT ? "xpoint" :
+			FLAGMODE == MODE_KANGAROO ? "kangaroo" : "other",
+			FLAGCRYPTO, NTHREADS, FLAGSEARCHMODE);
+		printf("    GPU enabled=%d backend=%s batch=%u\n",
+			g_backend_config.gpu_enabled,
+			g_backend_config.gpu_backend == GPU_BACKEND_CUDA ? "cuda" :
+			g_backend_config.gpu_backend == GPU_BACKEND_OPENCL ? "opencl" : "none",
+			g_backend_config.gpu_batch_size);
+		if(g_backend_config.memory_auto)
+			printf("    memory=auto\n");
+		else if(g_backend_config.memory_budget_bytes)
+			printf("    memory_budget=%.1f MB\n",
+				(double)g_backend_config.memory_budget_bytes / (1024.0 * 1024.0));
+		else
+			printf("    memory=default(auto under CUDA)\n");
+		{
+			uint64_t ram = host_total_ram_bytes();
+			int rk = 1;
+			const char *rn = "0x100000000000";
+			bsgs_recommend_from_ram(ram ? ram : g_backend_config.memory_budget_bytes, &rk, &rn);
+			printf("    host_RAM≈%.1f GB → BSGS recommend -n %s -k %d%s\n",
+				ram ? (double)ram / (1024.0 * 1024.0 * 1024.0) : 0.0, rn, rk,
+				FLAG_K_AUTO ? " (will apply -k auto)" : "");
+			if(FLAGMODE == MODE_BSGS || FLAG_K_AUTO || FLAG_N)
+				printf("    current -k=%d%s -n=%s\n", KFACTOR, FLAG_K_AUTO ? " (auto)" : "",
+					FLAG_N && str_N ? str_N : "(default 0x100000000000)");
+		}
+		printf("    file=%s endomorphism=%d\n",
+			FLAGFILE ? fileName : "(default)", FLAGENDOMORPHISM);
+		printf("[+] Dry-run complete; exiting without search.\n");
+		exit(0);
 	}
 
 	if(FLAGPATH && FLAGMODE != MODE_ADDRESS && FLAGMODE != MODE_RMD160) {
@@ -2269,6 +2380,25 @@ int main(int argc, char **argv)	{
 
 		BSGS_M.SetInt64(bsgs_m);
 
+		/* Auto -k / -n from RAM or -M (Keyhunt classic tables). */
+		if(FLAG_K_AUTO || (g_backend_config.memory_auto && !FLAG_N && KFACTOR == 1)) {
+			uint64_t ram = host_total_ram_bytes();
+			if(g_backend_config.memory_budget_bytes > 0)
+				ram = g_backend_config.memory_budget_bytes;
+			int rk = 1;
+			const char *rn = "0x100000000000";
+			bsgs_recommend_from_ram(ram, &rk, &rn);
+			if(FLAG_K_AUTO || KFACTOR == 1) {
+				KFACTOR = rk;
+				printf("[+] BSGS auto -k %d (from ~%.1f GB RAM/-M)\n",
+					KFACTOR, ram ? (double)ram / (1024.0 * 1024.0 * 1024.0) : 0.0);
+			}
+			if(!FLAG_N && rn) {
+				FLAG_N = 1;
+				str_N = (char*)rn;
+				printf("[+] BSGS auto -n %s\n", str_N);
+			}
+		}
 
 		if(FLAG_N)	{	//Custom N by the -n param
 						
@@ -2287,6 +2417,18 @@ int main(int argc, char **argv)	{
 			BSGS_N.SetInt64((uint64_t)0x100000000000);
 		}
 
+		/* n cannot be less than 2^20 (1048576) — classic Keyhunt rule. */
+		{
+			Int nmin;
+			nmin.SetInt64(1048576ULL);
+			if(BSGS_N.IsLower(&nmin)) {
+				char *hn = BSGS_N.GetBase16();
+				fprintf(stderr, "[E] -n must be >= 1048576 (2^20). Got 0x%s\n", hn);
+				free(hn);
+				exit(EXIT_FAILURE);
+			}
+		}
+
 		if(BSGS_N.HasSqrt())	{	//If the root is exact
 			BSGS_M.Set(&BSGS_N);
 			BSGS_M.ModSqrt();
@@ -2294,6 +2436,17 @@ int main(int argc, char **argv)	{
 		else	{
 			fprintf(stderr,"[E] -n param doesn't have exact square root\n");
 			exit(EXIT_FAILURE);
+		}
+
+		if((KFACTOR & (KFACTOR - 1)) != 0) {
+			fprintf(stderr, "[W] -k %d is not a power of 2; optimal BSGS k are 1,2,4,8,16,...\n",
+				KFACTOR);
+		}
+
+		{
+			char *hn = BSGS_N.GetBase16();
+			printf("[+] BSGS tuning: N=0x%s  k=%d  (M = sqrt(N)*k after multiply)\n", hn, KFACTOR);
+			free(hn);
 		}
 
 		BSGS_AUX.Set(&BSGS_M);
@@ -2442,6 +2595,43 @@ int main(int argc, char **argv)	{
 		}
 		else	{
 			itemsbloom3 = 1000;
+		}
+
+		/* -M memory budget (Collider-bsgs -w/-htsz analogue): size/warn BSGS blooms+tables. */
+		{
+			uint64_t budget = g_backend_config.memory_budget_bytes;
+#if defined(_MSC_VER)
+			if(budget == 0 && g_backend_config.memory_auto) {
+				MEMORYSTATUSEX st;
+				st.dwLength = sizeof(st);
+				if(GlobalMemoryStatusEx(&st) && st.ullAvailPhys > (512ull << 20))
+					budget = (uint64_t)(st.ullAvailPhys * 50ull / 100ull);
+			}
+#endif
+			uint64_t est = (itemsbloom + itemsbloom2 + itemsbloom3) * 256ull * 5ull
+				+ (uint64_t)bsgs_m3 * 48ull;
+			if(budget > 0) {
+				printf("[+] BSGS memory plan: estimate %.1f MB, budget %.1f MB "
+					"(-M; Collider-bsgs -w/-htsz style). Use -k to grow baby steps, -z for bloom.\n",
+					(double)est / 1048576.0, (double)budget / 1048576.0);
+				if(est > budget && itemsbloom > 1000) {
+					double scale = (double)budget / (double)est;
+					if(scale < 0.25) scale = 0.25;
+					itemsbloom = (uint64_t)((double)itemsbloom * scale);
+					itemsbloom2 = (uint64_t)((double)itemsbloom2 * scale);
+					itemsbloom3 = (uint64_t)((double)itemsbloom3 * scale);
+					if(itemsbloom < 1000) itemsbloom = 1000;
+					if(itemsbloom2 < 1000) itemsbloom2 = 1000;
+					if(itemsbloom3 < 1000) itemsbloom3 = 1000;
+					est = (itemsbloom + itemsbloom2 + itemsbloom3) * 256ull * 5ull
+						+ (uint64_t)bsgs_m3 * 48ull;
+					printf("[+] Scaled BSGS bloom partitions to fit -M (~%.1f MB estimated)\n",
+						(double)est / 1048576.0);
+				}
+			} else {
+				printf("[+] BSGS memory estimate ~%.1f MB (pass -M MB|auto to budget blooms/tables)\n",
+					(double)est / 1048576.0);
+			}
 		}
 		
 		printf("[+] Bloom filter for %" PRIu64 " elements ",bsgs_m);
@@ -3324,6 +3514,10 @@ int main(int argc, char **argv)	{
 		free(aux);
 	}
 	if(FLAGMODE != MODE_BSGS)	{
+		if(FLAGMODE == MODE_KANGAROO) {
+			int rc = run_kangaroo_search(fileName);
+			exit(rc == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+		}
 		if(FLAGMODE == MODE_MNEMONIC) {
 			if(FLAGMNEMONIC_ALL_LANGS) {
 				preload_all_wordlists();
@@ -3410,9 +3604,13 @@ int main(int argc, char **argv)	{
 				case MODE_BRAINWALLET:
 					tid[j] = CreateThread(NULL, 0, thread_process_brainwallet, (void*)tt, 0, &s);
 				break;
-				case MODE_PUB2ADDR:
-					tid[j] = CreateThread(NULL, 0, thread_process_pub2addr, (void*)tt, 0, &s);
-				break;
+					case MODE_PUB2ADDR:
+						tid[j] = CreateThread(NULL, 0, thread_process_pub2addr, (void*)tt, 0, &s);
+					break;
+				case MODE_KANGAROO:
+					/* Handled synchronously before thread spawn. */
+					free(tt);
+					continue;
 #else
 				case MODE_ADDRESS:
 				case MODE_RMD160:
@@ -3447,6 +3645,9 @@ int main(int argc, char **argv)	{
 				case MODE_PUB2ADDR:
 					s = pthread_create(&tid[j],NULL,thread_process_pub2addr,(void *)tt);
 				break;
+				case MODE_KANGAROO:
+					free(tt);
+					continue;
 #endif
 			}
 #if defined(_MSC_VER)
@@ -3798,7 +3999,35 @@ void *thread_process_minikeys(void *vargp)	{
 					
 					for(k = 0; k < 4; k++)	{
 						key_mpz[k].Set32Bytes((uint8_t*)rawvalue[k]);
-						publickey[k] = secp->ComputePublicKey(&key_mpz[k]);
+					}
+					{
+						uint8_t mk_privs[4 * 32];
+						int gpu_mk = 0;
+						for(k = 0; k < 4; k++)
+							key_mpz[k].Get32Bytes(mk_privs + (size_t)k * 32);
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+						if(g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher)
+							&& !FLAGENDOMORPHISM) {
+							uint8_t mk_pubs[4 * 65];
+							if(gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, mk_privs, 4, 0, mk_pubs)) {
+								for(k = 0; k < 4; k++) {
+									const uint8_t *pub = mk_pubs + (size_t)k * 65;
+									if(pub[0] != 0x04) {
+										publickey[k] = secp->ComputePublicKey(&key_mpz[k]);
+									} else {
+										publickey[k].x.Set32Bytes((unsigned char*)(pub + 1));
+										publickey[k].y.Set32Bytes((unsigned char*)(pub + 33));
+										publickey[k].z.SetInt32(1);
+									}
+								}
+								gpu_mk = 1;
+							}
+						}
+#endif
+						if(!gpu_mk) {
+							for(k = 0; k < 4; k++)
+								publickey[k] = secp->ComputePublicKey(&key_mpz[k]);
+						}
 					}
 					
 					secp->GetHash160(P2PKH,false,publickey[0],publickey[1],publickey[2],publickey[3],(uint8_t*)publickeyhashrmd160_uncompress[0],(uint8_t*)publickeyhashrmd160_uncompress[1],(uint8_t*)publickeyhashrmd160_uncompress[2],(uint8_t*)publickeyhashrmd160_uncompress[3]);
@@ -3904,6 +4133,14 @@ void *thread_process_mnemonic(void *vargp) {
 		};
 		int addr_types[3] = {0, 1, 2};  // P2PKH, P2SH-P2WPKH, P2WPKH
 
+		/* Collect derived privkeys then GPU-batch EC+filter when CUDA is ready. */
+		int max_der = 3 * (FLAGDP > 0 ? FLAGDP : 1);
+		if(max_der < 1) max_der = 1;
+		uint8_t *batch_privs = (uint8_t*)malloc((size_t)max_der * 32);
+		int batch_n = 0;
+		int use_gpu = (g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher)
+			&& !FLAGENDOMORPHISM && FLAGCRYPTO != CRYPTO_SOL && N > 0);
+
 		for(int path_idx = 0; path_idx < 3; path_idx++) {
 		for(int addr_idx = 0; addr_idx < FLAGDP; addr_idx++) {
 			uint8_t derived_key[32], derived_chain[32];
@@ -3911,6 +4148,13 @@ void *thread_process_mnemonic(void *vargp) {
 			memcpy(full_path, base_paths[path_idx], 4 * sizeof(uint32_t));
 			full_path[4] = (uint32_t)addr_idx;
 			bip32_derive_path(master_key, master_chain, full_path, 5, derived_key, derived_chain);
+
+			if(use_gpu && batch_privs && addr_types[path_idx] == 0 && !FLAGMNEMONIC_ETH) {
+				/* GPU path accelerates P2PKH (hash160) derived keys. */
+				memcpy(batch_privs + (size_t)batch_n * 32, derived_key, 32);
+				batch_n++;
+				continue;
+			}
 
 			Int *key_int = new Int();
 			key_int->Set32Bytes(derived_key);
@@ -4004,6 +4248,17 @@ void *thread_process_mnemonic(void *vargp) {
 			delete key_int;
 		}
 		}
+
+		if(use_gpu && batch_privs && batch_n > 0) {
+			int gh = gpu_check_privkey_list(batch_privs, batch_n, 1, FLAGMNEMONIC_ETH ? 1 : 0);
+			if(gh > 0) {
+				free(batch_privs);
+				free(publickey);
+				ends[thread_number] = 1;
+				return NULL;
+			}
+		}
+		free(batch_privs);
 		
 		steps[thread_number]++;
 		if(FLAGQUIET == 0 && steps[thread_number] % 100 == 0) {
@@ -4336,7 +4591,7 @@ void *thread_process_troot(void *vargp) {
 		if(g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher) && !FLAGENDOMORPHISM) {
 			int batch = (int)g_backend_config.gpu_batch_size;
 			if(batch < 1) batch = 1;
-			if(batch > 256) batch = 256;
+			if(batch > 1048576) batch = 1048576;
 			uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
 			uint8_t *pubs = (uint8_t*)malloc((size_t)batch * 65);
 			if(privs && pubs) {
@@ -4625,6 +4880,14 @@ void *thread_process_sol(void *vargp) {
 	grp_stride.SetInt64(CPU_GRP_SIZE);
 	grp_stride.Mult(&stride);
 
+	int batch = (int)g_backend_config.gpu_batch_size;
+	if(batch < CPU_GRP_SIZE) batch = CPU_GRP_SIZE;
+	if(batch > 8192) batch = 8192; /* Solana host ge finish: keep batches modest */
+	uint8_t *seeds = (uint8_t*)malloc((size_t)batch * 32);
+	uint8_t *pubs = (uint8_t*)malloc((size_t)batch * 32);
+	int use_gpu = (g_gpu_dispatcher && gpu_dispatcher_ed25519_ready(g_gpu_dispatcher)
+		&& seeds && pubs);
+
 	while(continue_flag) {
 #if defined(_MSC_VER)
 		WaitForSingleObject(write_random, INFINITE);
@@ -4651,6 +4914,44 @@ void *thread_process_sol(void *vargp) {
 #else
 		pthread_mutex_unlock(&write_random);
 #endif
+
+		if(use_gpu) {
+			Int cur;
+			cur.Set(&key_mpz);
+			int n = 0;
+			for(int i = 0; i < batch; i++) {
+				if(cur.IsGreater(&n_range_end)) {
+					continue_flag = 0;
+					break;
+				}
+				cur.Get32Bytes(seeds + (size_t)n * 32);
+				n++;
+				cur.Add(&stride);
+			}
+			if(n > 0 && gpu_dispatcher_ed25519_pubkey_batch(g_gpu_dispatcher, seeds, (uint32_t)n, pubs)) {
+				for(int i = 0; i < n; i++) {
+					uint8_t *pubkey = pubs + (size_t)i * 32;
+					int r = bf_check(&sol_bf_filter, pubkey, 32);
+					if(r == -1 && sol_bf_filter.use_bloom_fallback)
+						r = bloom_check(&sol_bloom, pubkey, 32);
+					if(!r) continue;
+					r = sol_searchbinary(solTable, pubkey, N_SOL);
+					if(!r) continue;
+					Int hit;
+					hit.Set(&key_mpz);
+					Int off; off.SetInt32(i); off.Mult(&stride);
+					hit.Add(&off);
+					writekeysol(&hit);
+					notify_key_found(&hit);
+					ends[thread_number] = 1;
+					free(seeds); free(pubs);
+					return NULL;
+				}
+				steps[thread_number]++;
+				continue;
+			}
+			/* GPU batch failed → fall through to CPU for this group */
+		}
 
 		for(int i = 0; i < CPU_GRP_SIZE; i++) {
 			Int current_key;
@@ -4680,6 +4981,7 @@ void *thread_process_sol(void *vargp) {
 					writekeysol(&current_key);
 					notify_key_found(&current_key);
 					ends[thread_number] = 1;
+					free(seeds); free(pubs);
 					return NULL;
 				}
 			}
@@ -4694,6 +4996,7 @@ void *thread_process_sol(void *vargp) {
 		}
 	}
 	ends[thread_number] = 1;
+	free(seeds); free(pubs);
 	return NULL;
 }
 
@@ -4743,7 +5046,7 @@ void *thread_process_poetry(void *vargp) {
 			hex_len = 64;
 		}
 		
-		// Convert hex to private key
+			// Convert hex to private key
 		if(hex_len >= 64) {
 			hex_decoded[64] = '\0';
 			for(int i = 0; i < 32; i++) {
@@ -4751,6 +5054,21 @@ void *thread_process_poetry(void *vargp) {
 				sscanf(hex_decoded + i * 2, "%2x", &byte);
 				privkey[i] = (uint8_t)byte;
 			}
+
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+			if(N > 0) {
+				int gh = gpu_check_privkey_list(privkey, 1, 1, 0);
+				if(gh > 0) {
+					printf("\n[+] POETRY FOUND (GPU EC path)!\n[+] Poetry: %s\n", poetry);
+					ends[thread_number] = 1;
+					return NULL;
+				}
+				if(gh == 0) {
+					steps[thread_number]++;
+					continue;
+				}
+			}
+#endif
 			
 			// Compute public key and address
 			Int key_int;
@@ -4864,6 +5182,13 @@ static int brainwallet_check(const char *passphrase, uint8_t *privkey_data, int 
 
 	Int key_int;
 	key_int.Set32Bytes(privkey);
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+	if(N > 0) {
+		int gh = gpu_check_privkey_list(privkey, 1, 1, 0);
+		if(gh >= 0)
+			return gh > 0 ? 1 : 0;
+	}
+#endif
 	publickey = secp->ComputePublicKey(&key_int);
 	secp->GetPublicKeyHex(true, publickey, public_key_hex);
 
@@ -5024,9 +5349,27 @@ void *thread_process_pub2addr(void *vargp) {
 	free(tt);
 	unsigned int thread_seed = (unsigned int)(time(NULL) ^ (thread_number * 7919));
 	Int key_mpz;
+	Int stride_one;
+	stride_one.SetInt32(1);
+	Int keyfound;
+	char publickeyhashrmd160[20];
+	uint64_t count = 0;
 
 	while(continue_flag) {
 		key_mpz.Rand(&n_range_start, &n_range_end);
+
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+		/* GPU batch from random base with stride=1 across batch size. */
+		if(g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher) && !FLAGENDOMORPHISM
+			&& FLAGCRYPTO != CRYPTO_SOL) {
+			count = 0;
+			if(process_secp_gpu_privkey_batch(&key_mpz, &stride_one, &keyfound,
+					publickeyhashrmd160, &count)) {
+				steps[thread_number] += (count > 0) ? (count / DEBUGCOUNT) + 1 : 1;
+				continue;
+			}
+		}
+#endif
 
 		publickey = secp->ComputePublicKey(&key_mpz);
 
@@ -5667,8 +6010,8 @@ static int process_vanity_hash160_avx2_batch_8(
 
 #if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
 /*
- * Full device path: privkeys -> secp256k1 -> hash160/keccak -> bloom on host.
- * Host confirms bloom hits against the sorted address table.
+ * GPU secp EC for sequential batches (stride). Handles:
+ * address / rmd160 / pubkey2addr (bloom+table), vanity (prefix), xpoint (x-coord table).
  * Returns 1 if the batch was handled on GPU (caller should skip CPU EC).
  */
 static int process_secp_gpu_privkey_batch(
@@ -5678,13 +6021,16 @@ static int process_secp_gpu_privkey_batch(
 	if(!g_gpu_dispatcher || !gpu_dispatcher_secp_ready(g_gpu_dispatcher))
 		return 0;
 	if(FLAGENDOMORPHISM)
-		return 0; /* GPU endo: run without -e for max raw EC/hash rate; use CPU -e for 6x coverage */
-	if(!(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160 || FLAGMODE == MODE_VANITY))
 		return 0;
-	if(!gpu_secp_coin_supported() && FLAGMODE != MODE_VANITY)
+	if(FLAGCRYPTO == CRYPTO_SOL)
 		return 0;
-	/* ETH/ETC only in address mode (keccak), not rmd160. */
-	if((FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC) && FLAGMODE != MODE_ADDRESS)
+	if(!(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160 || FLAGMODE == MODE_VANITY
+		|| FLAGMODE == MODE_PUB2ADDR || FLAGMODE == MODE_XPOINT))
+		return 0;
+	if(!gpu_secp_coin_supported() && FLAGMODE != MODE_VANITY && FLAGMODE != MODE_XPOINT)
+		return 0;
+	if((FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC)
+		&& !(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_PUB2ADDR))
 		return 0;
 
 	int is_eth = (FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC);
@@ -5692,15 +6038,11 @@ static int process_secp_gpu_privkey_batch(
 
 	int batch = (int)g_backend_config.gpu_batch_size;
 	if(batch < 1) batch = 1;
-	/* Chunked CUDA launches; keep host batches bounded for TDR / memory. */
-	if(batch > 256) batch = 256;
+	if(batch > 1048576) batch = 1048576;
 	uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
-	uint32_t *matches = (uint32_t*)malloc((size_t)batch * sizeof(uint32_t));
-	if(!privs || !matches) {
-		free(privs);
-		free(matches);
-		return 0;
-	}
+	uint8_t *pubs = NULL;
+	uint32_t *matches = NULL;
+	if(!privs) return 0;
 
 	Int ktmp;
 	ktmp.Set(key_mpz);
@@ -5709,10 +6051,83 @@ static int process_secp_gpu_privkey_batch(
 		ktmp.Add(stride);
 	}
 
+	/* --- xpoint: GPU EC → compare X to target table --- */
+	if(FLAGMODE == MODE_XPOINT) {
+		pubs = (uint8_t*)malloc((size_t)batch * 65);
+		if(!pubs) { free(privs); return 0; }
+		if(!gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, 1, pubs)) {
+			free(privs); free(pubs); return 0;
+		}
+		for(int i = 0; i < batch; i++) {
+			const uint8_t *pub = pubs + (size_t)i * 65;
+			if(pub[0] != 0x02 && pub[0] != 0x03) continue;
+			char rawvalue[32];
+			memcpy(rawvalue, pub + 1, 32);
+			int r = address_check(rawvalue, MAXLENGTHADDRESS);
+			if(!r) continue;
+			r = searchbinary(addressTable, rawvalue, N);
+			if(!r) continue;
+			keyfound->Set(key_mpz);
+			Int offset; offset.SetInt32(i); offset.Mult(stride);
+			keyfound->Add(&offset);
+			writekey(false, keyfound);
+			notify_key_found(keyfound);
+		}
+		Int advance; advance.SetInt32(batch); advance.Mult(stride);
+		key_mpz->Add(&advance);
+		if(count_out) *count_out += (uint64_t)batch;
+		free(privs); free(pubs);
+		return 1;
+	}
+
+	/* --- vanity: GPU EC → host hash160 → vanityrmdmatch --- */
+	if(FLAGMODE == MODE_VANITY) {
+		pubs = (uint8_t*)malloc((size_t)batch * 65);
+		if(!pubs) { free(privs); return 0; }
+		int passes[2], npass = 0;
+		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) passes[npass++] = 1;
+		if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) passes[npass++] = 0;
+		if(npass == 0) passes[npass++] = 1;
+		for(int p = 0; p < npass; p++) {
+			if(!gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], pubs))
+				continue;
+			for(int i = 0; i < batch; i++) {
+				const uint8_t *pub = pubs + (size_t)i * 65;
+				if(pub[0] == 0) continue;
+				uint8_t h20[20], sha[32];
+				if(passes[p]) {
+					uint8_t cpub[33];
+					cpub[0] = pub[0];
+					memcpy(cpub + 1, pub + 1, 32);
+					sha256(cpub, 33, sha);
+				} else {
+					uint8_t upub[65];
+					memcpy(upub, pub, 65);
+					sha256(upub, 65, sha);
+				}
+				ripemd160(sha, 32, h20);
+				if(!vanityrmdmatch(h20)) continue;
+				keyfound->Set(key_mpz);
+				Int offset; offset.SetInt32(i); offset.Mult(stride);
+				keyfound->Add(&offset);
+				writevanitykey(passes[p] != 0, keyfound);
+				notify_key_found(keyfound);
+			}
+		}
+		Int advance; advance.SetInt32(batch); advance.Mult(stride);
+		key_mpz->Add(&advance);
+		if(count_out) *count_out += (uint64_t)batch;
+		free(privs); free(pubs);
+		return 1;
+	}
+
+	/* --- address / rmd160 / pubkey2addr: bloom search path --- */
+	matches = (uint32_t*)malloc((size_t)batch * sizeof(uint32_t));
+	if(!matches) { free(privs); return 0; }
+
 	int passes[2];
 	int npass = 0;
 	if(is_eth) {
-		/* Ethereum always uses uncompressed X||Y for keccak. */
 		passes[npass++] = 0;
 	} else {
 		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH)
@@ -5726,6 +6141,33 @@ static int process_secp_gpu_privkey_batch(
 		uint32_t hits = gpu_dispatcher_search_privkeys(
 			g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], encode,
 			matches, (uint32_t)batch);
+		/* If bloom not loaded (e.g. pubkey2addr before bloom), fall back to pubkey+host. */
+		if(hits == 0 && !gpu_dispatcher_secp_ready(g_gpu_dispatcher))
+			continue;
+		if(hits == 0 && FLAGMODE == MODE_PUB2ADDR) {
+			/* Ensure bloom path: if no hits, still OK; try host filter via pubs */
+			if(!pubs) pubs = (uint8_t*)malloc((size_t)batch * 65);
+			if(pubs && gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], pubs)) {
+				for(int i = 0; i < batch; i++) {
+					const uint8_t *pub = pubs + (size_t)i * 65;
+					if(pub[0] == 0) continue;
+					keyfound->Set(key_mpz);
+					Int offset; offset.SetInt32(i); offset.Mult(stride);
+					keyfound->Add(&offset);
+					publickey = secp->ComputePublicKey(keyfound);
+					if(is_eth) generate_binaddress_eth(publickey, (uint8_t*)publickeyhashrmd160);
+					else secp->GetHash160(P2PKH, passes[p] != 0, publickey, (uint8_t*)publickeyhashrmd160);
+					int r = address_check(publickeyhashrmd160, MAXLENGTHADDRESS);
+					if(!r) continue;
+					r = searchbinary(addressTable, publickeyhashrmd160, N);
+					if(!r) continue;
+					if(is_eth) writekeyeth(keyfound);
+					else writekey(passes[p] != 0, keyfound);
+					notify_key_found(keyfound);
+				}
+			}
+			continue;
+		}
 		for(uint32_t h = 0; h < hits; h++) {
 			uint32_t idx = matches[h];
 			if(idx >= (uint32_t)batch) continue;
@@ -5761,7 +6203,63 @@ static int process_secp_gpu_privkey_batch(
 
 	free(privs);
 	free(matches);
+	free(pubs);
 	return 1;
+}
+
+/* GPU-check a list of unrelated privkeys (mnemonic / poetry / brainwallet / minikeys).
+ * Returns -1 if GPU unavailable; otherwise number of hits written. */
+static int gpu_check_privkey_list(const uint8_t *privs, int count, int compressed, int is_eth) {
+	if(!g_gpu_dispatcher || !gpu_dispatcher_secp_ready(g_gpu_dispatcher) || count <= 0)
+		return -1;
+	if(FLAGENDOMORPHISM || FLAGCRYPTO == CRYPTO_SOL)
+		return -1;
+	uint8_t *pubs = (uint8_t*)malloc((size_t)count * 65);
+	if(!pubs) return -1;
+	int ok = gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)count,
+		is_eth ? 0 : compressed, pubs);
+	if(!ok) { free(pubs); return -1; }
+	int hits = 0;
+	for(int i = 0; i < count; i++) {
+		const uint8_t *pub = pubs + (size_t)i * 65;
+		if(pub[0] == 0) continue;
+		uint8_t h20[20], sha[32];
+		if(is_eth) {
+			if(pub[0] != 0x04) continue;
+			Int key;
+			key.Set32Bytes((unsigned char*)(privs + (size_t)i * 32));
+			Point publickey = secp->ComputePublicKey(&key);
+			generate_binaddress_eth(publickey, h20);
+		} else if(compressed) {
+			uint8_t cpub[33];
+			cpub[0] = pub[0];
+			memcpy(cpub + 1, pub + 1, 32);
+			sha256(cpub, 33, sha);
+			ripemd160(sha, 32, h20);
+		} else {
+			sha256((uint8_t*)pub, 65, sha);
+			ripemd160(sha, 32, h20);
+		}
+		Int key;
+		key.Set32Bytes((unsigned char*)(privs + (size_t)i * 32));
+		if(FLAGMODE == MODE_VANITY) {
+			if(!vanityrmdmatch(h20)) continue;
+			writevanitykey(compressed != 0, &key);
+			notify_key_found(&key);
+			hits++;
+			continue;
+		}
+		int r = address_check((char*)h20, MAXLENGTHADDRESS);
+		if(!r) continue;
+		r = searchbinary(addressTable, (char*)h20, N);
+		if(!r) continue;
+		if(is_eth) writekeyeth(&key);
+		else writekey(compressed != 0, &key);
+		notify_key_found(&key);
+		hits++;
+	}
+	free(pubs);
+	return hits;
 }
 #endif
 
@@ -6616,6 +7114,16 @@ void *thread_process_vanity(void *vargp)	{
 				}
 			}
 			do {
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+				if(process_secp_gpu_privkey_batch(&key_mpz, &stride, &keyfound,
+						publickeyhashrmd160, &count)) {
+					while(count >= DEBUGCOUNT) {
+						steps[thread_number]++;
+						count -= DEBUGCOUNT;
+					}
+					continue;
+				}
+#endif
 				temp_stride.SetInt32(CPU_GRP_SIZE / 2);
 				temp_stride.Mult(&stride);
 				key_mpz.Add(&temp_stride);
@@ -7318,12 +7826,38 @@ void *thread_process_bsgs(void *vargp)	{
 				THREADOUTPUT = 1;
 			}
 		}
-		base_point = secp->ComputePublicKey(&base_key);
 		km.Set(&base_key);
 		km.Neg();
 		km.Add(&secp->order);
 		km.Sub(&intaux);
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+		/* GPU EC for giant-step base scalars (Collider-bsgs style assist). */
+		{
+			int gpu_bsgs = 0;
+			if(g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher) && !FLAGENDOMORPHISM) {
+				uint8_t gp_privs[64], gp_pubs[130];
+				base_key.Get32Bytes(gp_privs);
+				km.Get32Bytes(gp_privs + 32);
+				if(gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, gp_privs, 2, 0, gp_pubs)
+					&& gp_pubs[0] == 0x04 && gp_pubs[65] == 0x04) {
+					base_point.x.Set32Bytes(gp_pubs + 1);
+					base_point.y.Set32Bytes(gp_pubs + 33);
+					base_point.z.SetInt32(1);
+					point_aux.x.Set32Bytes(gp_pubs + 66);
+					point_aux.y.Set32Bytes(gp_pubs + 98);
+					point_aux.z.SetInt32(1);
+					gpu_bsgs = 1;
+				}
+			}
+			if(!gpu_bsgs) {
+				base_point = secp->ComputePublicKey(&base_key);
+				point_aux = secp->ComputePublicKey(&km);
+			}
+		}
+#else
+		base_point = secp->ComputePublicKey(&base_key);
 		point_aux = secp->ComputePublicKey(&km);
+#endif
 		for(k = 0; k < bsgs_point_number ; k++)	{
 			if(bsgs_found[k] == 0)	{
 				startP  = secp->AddDirect(OriginalPointsBSGS[k],point_aux);
@@ -7881,10 +8415,165 @@ void *thread_bPload(void *vargp)	{
 	tt = (struct bPload *)vargp;
 	Int km((uint64_t)(tt->from + 1));
 	threadid = tt->threadid;
-	//if(FLAGDEBUG) printf("[D] thread %i from %" PRIu64 " to %" PRIu64 "\n",threadid,tt->from,tt->to);
-	
 	i_counter = tt->from;
+	to = tt->to;
 
+	/* CUDA assist: build baby x-coords via GPU EC batches (Collider-bsgs style throughput). */
+#if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
+	if(g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher) && !FLAGENDOMORPHISM) {
+		int batch = (int)g_backend_config.gpu_batch_size;
+		if(batch < 256) batch = 256;
+		if(batch > 65536) batch = 65536;
+		uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
+		uint8_t *pubs = (uint8_t*)malloc((size_t)batch * 65);
+		if(privs && pubs) {
+			int gpu_ok = 1;
+			while(i_counter < to && gpu_ok) {
+				int n = (int)((to - i_counter) > (uint64_t)batch ? batch : (to - i_counter));
+				Int kseq((uint64_t)(i_counter + 1));
+				for(int bi = 0; bi < n; bi++) {
+					kseq.Get32Bytes(privs + (size_t)bi * 32);
+					kseq.AddOne();
+				}
+				if(!gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)n, 1, pubs)) {
+					gpu_ok = 0;
+					break;
+				}
+				for(int bi = 0; bi < n; bi++) {
+					const uint8_t *pub = pubs + (size_t)bi * 65;
+					if(pub[0] != 0x02 && pub[0] != 0x03) {
+						Int kone((uint64_t)(i_counter + 1));
+						Point pt = secp->ComputePublicKey(&kone);
+						pt.x.Get32Bytes((unsigned char*)rawvalue);
+					} else {
+						memcpy(rawvalue, pub + 1, 32);
+					}
+					bloom_bP_index = (uint8_t)rawvalue[0];
+					if(i_counter < bsgs_m3) {
+						if(!FLAGREADEDFILE3) {
+							memcpy(bPtable[i_counter].value, rawvalue + 16, BSGS_XVALUE_RAM);
+							bPtable[i_counter].index = i_counter;
+						}
+						if(!FLAGREADEDFILE4) {
+#if defined(_MSC_VER)
+							WaitForSingleObject(bloom_bPx3rd_mutex[bloom_bP_index], INFINITE);
+							bloom_add(&bloom_bPx3rd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+							ReleaseMutex(bloom_bPx3rd_mutex[bloom_bP_index]);
+#else
+							pthread_mutex_lock(&bloom_bPx3rd_mutex[bloom_bP_index]);
+							bloom_add(&bloom_bPx3rd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+							pthread_mutex_unlock(&bloom_bPx3rd_mutex[bloom_bP_index]);
+#endif
+						}
+					}
+					if(i_counter < bsgs_m2 && !FLAGREADEDFILE2) {
+#if defined(_MSC_VER)
+						WaitForSingleObject(bloom_bPx2nd_mutex[bloom_bP_index], INFINITE);
+						bloom_add(&bloom_bPx2nd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+						ReleaseMutex(bloom_bPx2nd_mutex[bloom_bP_index]);
+#else
+						pthread_mutex_lock(&bloom_bPx2nd_mutex[bloom_bP_index]);
+						bloom_add(&bloom_bPx2nd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+						pthread_mutex_unlock(&bloom_bPx2nd_mutex[bloom_bP_index]);
+#endif
+					}
+					if(i_counter < to && !FLAGREADEDFILE1) {
+#if defined(_MSC_VER)
+						WaitForSingleObject(bloom_bP_mutex[bloom_bP_index], INFINITE);
+						bloom_add(&bloom_bP[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+						ReleaseMutex(bloom_bP_mutex[bloom_bP_index]);
+#else
+						pthread_mutex_lock(&bloom_bP_mutex[bloom_bP_index]);
+						bloom_add(&bloom_bP[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+						pthread_mutex_unlock(&bloom_bP_mutex[bloom_bP_index]);
+#endif
+					}
+					i_counter++;
+				}
+			}
+			free(privs); free(pubs);
+			if(gpu_ok && i_counter >= to) {
+				delete grp;
+#if defined(_MSC_VER)
+				WaitForSingleObject(bPload_mutex[threadid], INFINITE);
+				tt->finished = 1;
+				ReleaseMutex(bPload_mutex[threadid]);
+#else
+				pthread_mutex_lock(&bPload_mutex[threadid]);
+				tt->finished = 1;
+				pthread_mutex_unlock(&bPload_mutex[threadid]);
+#endif
+				return NULL;
+			}
+			/* Partial GPU progress: finish remainder on host, then done. */
+			if(i_counter > tt->from) {
+				while(i_counter < to) {
+					Int kone((uint64_t)(i_counter + 1));
+					Point pt = secp->ComputePublicKey(&kone);
+					pt.x.Get32Bytes((unsigned char*)rawvalue);
+					bloom_bP_index = (uint8_t)rawvalue[0];
+					if(i_counter < bsgs_m3) {
+						if(!FLAGREADEDFILE3) {
+							memcpy(bPtable[i_counter].value, rawvalue + 16, BSGS_XVALUE_RAM);
+							bPtable[i_counter].index = i_counter;
+						}
+						if(!FLAGREADEDFILE4) {
+#if defined(_MSC_VER)
+							WaitForSingleObject(bloom_bPx3rd_mutex[bloom_bP_index], INFINITE);
+							bloom_add(&bloom_bPx3rd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+							ReleaseMutex(bloom_bPx3rd_mutex[bloom_bP_index]);
+#else
+							pthread_mutex_lock(&bloom_bPx3rd_mutex[bloom_bP_index]);
+							bloom_add(&bloom_bPx3rd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+							pthread_mutex_unlock(&bloom_bPx3rd_mutex[bloom_bP_index]);
+#endif
+						}
+					}
+					if(i_counter < bsgs_m2 && !FLAGREADEDFILE2) {
+#if defined(_MSC_VER)
+						WaitForSingleObject(bloom_bPx2nd_mutex[bloom_bP_index], INFINITE);
+						bloom_add(&bloom_bPx2nd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+						ReleaseMutex(bloom_bPx2nd_mutex[bloom_bP_index]);
+#else
+						pthread_mutex_lock(&bloom_bPx2nd_mutex[bloom_bP_index]);
+						bloom_add(&bloom_bPx2nd[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+						pthread_mutex_unlock(&bloom_bPx2nd_mutex[bloom_bP_index]);
+#endif
+					}
+					if(i_counter < to && !FLAGREADEDFILE1) {
+#if defined(_MSC_VER)
+						WaitForSingleObject(bloom_bP_mutex[bloom_bP_index], INFINITE);
+						bloom_add(&bloom_bP[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+						ReleaseMutex(bloom_bP_mutex[bloom_bP_index]);
+#else
+						pthread_mutex_lock(&bloom_bP_mutex[bloom_bP_index]);
+						bloom_add(&bloom_bP[bloom_bP_index], rawvalue, BSGS_BUFFERXPOINTLENGTH);
+						pthread_mutex_unlock(&bloom_bP_mutex[bloom_bP_index]);
+#endif
+					}
+					i_counter++;
+				}
+				delete grp;
+#if defined(_MSC_VER)
+				WaitForSingleObject(bPload_mutex[threadid], INFINITE);
+				tt->finished = 1;
+				ReleaseMutex(bPload_mutex[threadid]);
+#else
+				pthread_mutex_lock(&bPload_mutex[threadid]);
+				tt->finished = 1;
+				pthread_mutex_unlock(&bPload_mutex[threadid]);
+#endif
+				return NULL;
+			}
+			/* GPU failed before any progress — fall through to CPU GRP. */
+		} else {
+			free(privs); free(pubs);
+		}
+	}
+#endif
+
+	/* CPU GRP path (also used when CUDA unavailable). */
+	i_counter = tt->from;
 	nbStep = (tt->to - tt->from) / CPU_GRP_SIZE;
 	
 	if( ((tt->to - tt->from) % CPU_GRP_SIZE )  != 0)	{
@@ -9611,6 +10300,13 @@ void menu() {
 	printf("      keyhunt -m bsgs -f pubkeys.txt -B sequential -n 0x1000000 -t 4\n");
 	printf("      keyhunt -m bsgs -f pubkeys.txt -x auto -t 8\n\n");
 
+	printf("  kangaroo\n");
+	printf("    Pollard's kangaroo (CPU) for a single pubkey in a known range.\n");
+	printf("    Ranges <= 2^24 use a sequential EC walk; larger ranges use DP kangaroo.\n");
+	printf("    Requires -f pubkey.txt and -r start:end (or -b bits).\n\n");
+	printf("    Example:\n");
+	printf("      keyhunt -m kangaroo -f pubkey.txt -r 1:100000\n\n");
+
 	printf("  vanity\n");
 	printf("    Searches for a private key whose address starts with a specific\n");
 	printf("    prefix pattern. Loads a vanity target via -v flag.\n");
@@ -9743,14 +10439,21 @@ void menu() {
 	printf("  -b bits      Bit range - only test keys with this many bits\n\n");
 
 	printf("BSGS OPTIONS (-m bsgs):\n");
-	printf("  -B mode      BSGS giant-step strategy:\n");
-	printf("                 sequential - walk forward linearly\n");
-	printf("               (see mode descriptions above for full details)\n");
-	printf("  -k value     K factor multiplies M (baby-step count). More speed,\n");
-	printf("               but uses proportionally more RAM\n");
-	printf("  -S           Save/load BSGS bloom filters and baby-step table to disk.\n");
-	printf("               Files: keyhunt_bsgs_*.blm, keyhunt_bsgs_*.tbl\n");
-	printf("  -z value     Bloom filter size multiplier (>= 1). Default: 1\n\n");
+	printf("  -B mode      BSGS giant-step strategy (sequential/backward/both/random/dance)\n");
+	printf("  -n number    Table span N (hex 0x... or decimal). MUST be >= 1048576 (2^20)\n");
+	printf("               and have an exact square root. Default: 0x100000000000\n");
+	printf("  -k value|auto  K factor (multiplies baby-step M). Prefer powers of 2:\n");
+	printf("               1,2,4,8,16,32,64,128,256,512,1024,...  -k auto picks from RAM/-M\n");
+	printf("  -S           Save/load BSGS bloom filters and baby-step table to disk\n");
+	printf("  -z value     Bloom size multiplier (>= 1). Default: 1\n");
+	printf("  -M MB|auto   Also budgets BSGS blooms/tables (and CUDA VRAM for other modes)\n\n");
+	printf("  Valid N and max K by bit class (Keyhunt classic):\n");
+	printf("    bits 20 n=0x100000 k<=1 | 24 0x1000000 k<=4 | 32 0x100000000 k<=64\n");
+	printf("    40 0x10000000000 k<=1024 | 44 0x100000000000 k<=4096 | 48 0x1000000000000 k<=16384\n");
+	printf("  RAM guide: 2G -k128 | 4G -k256 | 8G -k512 | 16G -k1024 | 32G -k2048\n");
+	printf("    64G -n 0x100000000000 -k4096 | 128G -n 0x400000000000 -k4096\n");
+	printf("    256G -n 0x400000000000 -k8192 | 512G -n 0x1000000000000 -k8192\n");
+	printf("    1TB -n 0x1000000000000 -k16384  (see README for full table)\n\n");
 
 	printf("MNEMONIC OPTIONS (-m mnemonic):\n");
 	printf("  -w count     Word count: 0=random, 12, 15, 18, 21, 24. Default: 0\n");
@@ -9808,15 +10511,22 @@ void menu() {
 	printf("  -U backend   GPU backend: none, cuda, opencl (default: none)\n");
 	printf("                 cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)\n");
 	printf("                 opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU\n");
-	printf("  -G N         GPU batch size hint (default 128; CUDA clamps to 1..256)\n");
-	printf("  -I stride    Stride value for address/rmd160/xpoint modes\n\n");
+	printf("  -G N         GPU batch size hint (keys). Default: auto from -M / VRAM\n");
+	printf("  -M MB|auto   GPU/search memory budget in megabytes (KeyHunt-Cuda style).\n");
+	printf("               Examples: -M 512  -M 2048  -M 2G  -M auto\n");
+	printf("               Under CUDA, default is auto (size from free VRAM).\n");
+	printf("               Larger budget => larger privkey/pubkey batches (TDR-safe chunks).\n");
+	printf("               Legacy: -M matrix enables the matrix screen effect.\n");
+	printf("  -I stride    Stride value for address/rmd160/xpoint modes\n");
+	printf("  -y           Dry-run: print resolved config (incl. memory plan) and exit\n\n");
 
 	printf("OUTPUT:\n");
 	printf("  -s seconds   Stats output interval in seconds. 0=off. Default: 30\n");
 	printf("  -q           Quiet mode - suppress per-thread output\n");
 	printf("  -V           Verbose mode - show full derivation path and chain code\n");
-	printf("  -M           Matrix screen effect (reduces performance)\n");
-	printf("  -6           Skip SHA-256 checksum validation on cached data files\n\n");
+	printf("  -6           Skip SHA-256 checksum validation on cached data files\n");
+	printf("               Hits also written to FOUND_BTC.txt / FOUND_ETH.txt / FOUND_SOL.txt\n");
+	printf("               (plus legacy KEYFOUNDKEYFOUND.txt)\n\n");
 
 	printf("===============================================================\n");
 	printf("  FILE FORMATS\n");
@@ -10196,10 +10906,220 @@ void checkpointer(void *ptr,const char *file,const char *function,const  char *n
 	}
 }
 
+static uint64_t host_total_ram_bytes(void) {
+#if defined(_MSC_VER) || defined(_WIN32)
+	MEMORYSTATUSEX st;
+	st.dwLength = sizeof(st);
+	if(GlobalMemoryStatusEx(&st))
+		return (uint64_t)st.ullTotalPhys;
+#endif
+	return 0;
+}
+
+/* Keyhunt classic: RAM → recommended -k and -n (for large RAM). */
+static void bsgs_recommend_from_ram(uint64_t ram_bytes, int *out_k, const char **out_n_hex) {
+	uint64_t gb = ram_bytes / (1024ULL * 1024ULL * 1024ULL);
+	int k = 128;
+	const char *n = "0x100000000000"; /* default 44-bit class */
+	if(gb >= 8192) { k = 32768; n = "0x10000000000000"; }
+	else if(gb >= 4096) { k = 32768; n = "0x4000000000000"; }
+	else if(gb >= 2048) { k = 16384; n = "0x4000000000000"; }
+	else if(gb >= 1024) { k = 16384; n = "0x1000000000000"; }
+	else if(gb >= 512) { k = 8192; n = "0x1000000000000"; }
+	else if(gb >= 256) { k = 8192; n = "0x400000000000"; }
+	else if(gb >= 128) { k = 4096; n = "0x400000000000"; }
+	else if(gb >= 64) { k = 4096; n = "0x100000000000"; }
+	else if(gb >= 32) { k = 2048; }
+	else if(gb >= 16) { k = 1024; }
+	else if(gb >= 8) { k = 512; }
+	else if(gb >= 4) { k = 256; }
+	else if(gb >= 2) { k = 128; }
+	else { k = 64; }
+	if(out_k) *out_k = k;
+	if(out_n_hex) *out_n_hex = n;
+}
+
+static void append_found_file(const char *tag, const char *body) {
+	char path[64];
+	snprintf(path, sizeof(path), "FOUND_%s.txt", tag);
+	FILE *f = fopen(path, "a+");
+	if(f) {
+		fputs(body, f);
+		fclose(f);
+	}
+}
+
+/*
+ * Pollard's kangaroo (CPU) for a single compressed/uncompressed pubkey in range.
+ * Small ranges (<=2^24): sequential EC walk. Larger: DP kangaroo.
+ */
+int run_kangaroo_search(const char *pubkey_file) {
+	if(!FLAGRANGE && !FLAGBITRANGE) {
+		fprintf(stderr,"[E] kangaroo mode needs -r start:end or -b bits\n");
+		return 1;
+	}
+	FILE *fd = fopen(pubkey_file, "rb");
+	if(!fd) {
+		fprintf(stderr,"[E] Can't open pubkey file %s\n", pubkey_file);
+		return 1;
+	}
+	char line[512];
+	Point target;
+	bool compressed = true;
+	int got = 0;
+	while(fgets(line, sizeof(line), fd)) {
+		trim(line, (char*)" \t\n\r");
+		size_t L = strlen(line);
+		if(L < 66) continue;
+		if(secp->ParsePublicKeyHex(line, target, compressed)) {
+			got = 1;
+			break;
+		}
+	}
+	fclose(fd);
+	if(!got) {
+		fprintf(stderr,"[E] No valid pubkey in %s\n", pubkey_file);
+		return 1;
+	}
+
+	Int range_size;
+	range_size.Set(&n_range_end);
+	range_size.Sub(&n_range_start);
+	range_size.AddOne();
+	int bits = range_size.GetBitLength();
+	char *hs = n_range_start.GetBase16();
+	char *he = n_range_end.GetBase16();
+	printf("[+] Kangaroo: range 0x%s .. 0x%s (~%d bits)\n", hs, he, bits);
+	free(hs); free(he);
+
+	/* Tiny ranges: sequential (exact, good for tests). */
+	if(bits <= 24) {
+		printf("[+] Using sequential EC walk (range <= 2^24)\n");
+		Int k;
+		k.Set(&n_range_start);
+		Point cur = secp->ComputePublicKey(&k);
+		Point G = secp->G;
+		uint64_t steps_local = 0;
+		while(k.IsLowerOrEqual(&n_range_end)) {
+			if(cur.equals(target)) {
+				writekey(compressed, &k);
+				printf("[+] Kangaroo solved in %" PRIu64 " steps\n", steps_local);
+				return 0;
+			}
+			cur = secp->AddDirect(cur, G);
+			k.AddOne();
+			steps_local++;
+			if((steps_local & 0xFFFFFull) == 0 && !FLAGQUIET)
+				printf("\r[+] kangaroo steps %" PRIu64, steps_local);
+		}
+		fprintf(stderr,"[E] Kangaroo: key not in range\n");
+		return 1;
+	}
+
+	/* Pollard's kangaroo with distinguished points. */
+	int dp_bits = bits / 2;
+	if(dp_bits > 18) dp_bits = 18;
+	if(dp_bits < 6) dp_bits = 6;
+	uint64_t dp_mask = (1ULL << dp_bits) - 1ULL;
+	printf("[+] Using Pollard's kangaroo (dp_bits=%d)\n", dp_bits);
+
+	Point jump_pts[32];
+	Int jump_len[32];
+	for(int i = 0; i < 32; i++) {
+		jump_len[i].SetInt32(1);
+		jump_len[i].ShiftL(i);
+		jump_pts[i] = secp->ComputePublicKey(&jump_len[i]);
+	}
+
+	auto jump_idx = [](Point &p) -> int {
+		unsigned char b[32];
+		p.x.Get32Bytes(b);
+		return (int)(b[31] & 31);
+	};
+	auto is_dp = [&](Point &p) -> bool {
+		unsigned char b[32];
+		p.x.Get32Bytes(b);
+		uint64_t lo = 0;
+		memcpy(&lo, b + 24, 8);
+		return (lo & dp_mask) == 0;
+	};
+	auto xkey = [](Point &p) -> uint64_t {
+		unsigned char b[32];
+		p.x.Get32Bytes(b);
+		uint64_t k = 0;
+		memcpy(&k, b, 8);
+		return k;
+	};
+
+	struct HerdEntry { Int dist; int herd; };
+	std::map<uint64_t, HerdEntry> table;
+
+	Int mid;
+	mid.Set(&n_range_start);
+	Int tmp;
+	tmp.Set(&n_range_end);
+	tmp.Sub(&n_range_start);
+	tmp.ShiftR(1);
+	mid.Add(&tmp);
+
+	Point tame_pos = secp->ComputePublicKey(&mid);
+	Int tame_dist;
+	tame_dist.Set(&mid);
+	Point wild_pos;
+	wild_pos.Set(target);
+	Int wild_dist;
+	wild_dist.SetInt32(0);
+
+	uint64_t ops = 0;
+	const uint64_t max_ops = 1ULL << (bits < 40 ? (bits + 2) : 42);
+	while(ops < max_ops) {
+		for(int herd = 0; herd < 2; herd++) {
+			Point *pos = (herd == 0) ? &wild_pos : &tame_pos;
+			Int *dist = (herd == 0) ? &wild_dist : &tame_dist;
+			int ji = jump_idx(*pos);
+			*pos = secp->AddDirect(*pos, jump_pts[ji]);
+			dist->Add(&jump_len[ji]);
+			ops++;
+			if(!is_dp(*pos)) continue;
+			uint64_t key = xkey(*pos);
+			auto it = table.find(key);
+			if(it == table.end()) {
+				HerdEntry e;
+				e.dist.Set(dist);
+				e.herd = herd;
+				table[key] = e;
+			} else if(it->second.herd != herd) {
+				Int kfound;
+				if(herd == 1) {
+					kfound.Set(dist);
+					kfound.Sub(&it->second.dist);
+				} else {
+					kfound.Set(&it->second.dist);
+					kfound.Sub(dist);
+				}
+				if(kfound.IsLower(&n_range_start) || kfound.IsGreater(&n_range_end))
+					continue;
+				Point check = secp->ComputePublicKey(&kfound);
+				if(check.equals(target)) {
+					writekey(compressed, &kfound);
+					printf("[+] Kangaroo solved in %" PRIu64 " ops (DP table %zu)\n",
+						ops, table.size());
+					return 0;
+				}
+			}
+		}
+		if(!FLAGQUIET && (ops & 0xFFFFFull) == 0)
+			printf("\r[+] kangaroo ops %" PRIu64 " DPs %zu", ops, table.size());
+	}
+	fprintf(stderr,"\n[E] Kangaroo: not found within op limit (try tighter -r)\n");
+	return 1;
+}
+
 void writekey(bool compressed,Int *key)	{
 	Point publickey;
 	FILE *keys;
 	char *hextemp,*hexrmd,public_key_hex[132],address[50],rmdhash[20];
+	char block[512];
 	memset(address,0,50);
 	memset(public_key_hex,0,132);
 	hextemp = key->GetBase16();
@@ -10208,6 +11128,9 @@ void writekey(bool compressed,Int *key)	{
 	secp->GetHash160(P2PKH,compressed,publickey,(uint8_t*)rmdhash);
 	hexrmd = tohex(rmdhash,20);
 	rmd160toaddress_dst(rmdhash,address);
+	snprintf(block, sizeof(block),
+		"Private Key: %s\npubkey: %s\nAddress %s\nrmd160 %s\n",
+		hextemp, public_key_hex, address, hexrmd);
 
 #if defined(_MSC_VER)
 	WaitForSingleObject(write_keys, INFINITE);
@@ -10216,9 +11139,10 @@ void writekey(bool compressed,Int *key)	{
 #endif
 	keys = fopen("KEYFOUNDKEYFOUND.txt","a+");
 	if(keys != NULL)	{
-		fprintf(keys,"Private Key: %s\npubkey: %s\nAddress %s\nrmd160 %s\n",hextemp,public_key_hex,address,hexrmd);
+		fputs(block, keys);
 		fclose(keys);
 	}
+	append_found_file("BTC", block);
 	printf("\nHit! Private Key: %s\npubkey: %s\nAddress %s\nrmd160 %s\n",hextemp,public_key_hex,address,hexrmd);
 	
 #if defined(_MSC_VER)
@@ -10234,12 +11158,14 @@ void writekeyeth(Int *key)	{
 	Point publickey;
 	FILE *keys;
 	char *hextemp,address[43],hash[20];
+	char block[256];
 	hextemp = key->GetBase16();
 	publickey = secp->ComputePublicKey(key);
 	generate_binaddress_eth(publickey,(unsigned char*)hash);
 	address[0] = '0';
 	address[1] = 'x';
 	tohex_dst(hash,20,address+2);
+	snprintf(block, sizeof(block), "Private Key: %s\naddress: %s\n", hextemp, address);
 
 #if defined(_MSC_VER)
 	WaitForSingleObject(write_keys, INFINITE);
@@ -10248,9 +11174,10 @@ void writekeyeth(Int *key)	{
 #endif
 	keys = fopen("KEYFOUNDKEYFOUND.txt","a+");
 	if(keys != NULL)	{
-		fprintf(keys,"Private Key: %s\naddress: %s\n",hextemp,address);
+		fputs(block, keys);
 		fclose(keys);
 	}
+	append_found_file("ETH", block);
 	printf("\n Hit!!!! Private Key: %s\naddress: %s\n",hextemp,address);
 #if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
@@ -10267,6 +11194,7 @@ void writekeysol(Int *key)	{
 	size_t address_len = sizeof(address);
 	char *hextemp;
 	char pubkey_hex[65];
+	char block[384];
 
 	hextemp = key->GetBase16();
 	key->Get32Bytes(seed);
@@ -10278,6 +11206,9 @@ void writekeysol(Int *key)	{
 	}
 	for(int b = 0; b < 32; b++) sprintf(pubkey_hex + b * 2, "%02x", pubkey[b]);
 	pubkey_hex[64] = '\0';
+	snprintf(block, sizeof(block),
+		"Mode: address (solana)\nPrivate Key (seed hex): %s\nPublic Key: %s\nAddress: %s\n\n",
+		hextemp, pubkey_hex, address);
 
 #if defined(_MSC_VER)
 	WaitForSingleObject(write_keys, INFINITE);
@@ -10286,10 +11217,10 @@ void writekeysol(Int *key)	{
 #endif
 	keys = fopen("KEYFOUNDKEYFOUND.txt","a+");
 	if(keys != NULL)	{
-		fprintf(keys,"Mode: address (solana)\nPrivate Key (seed hex): %s\nPublic Key: %s\nAddress: %s\n\n",
-			hextemp, pubkey_hex, address);
+		fputs(block, keys);
 		fclose(keys);
 	}
+	append_found_file("SOL", block);
 	printf("\nHit! Solana seed: %s\npubkey: %s\nAddress: %s\n", hextemp, pubkey_hex, address);
 #if defined(_MSC_VER)
 	ReleaseMutex(write_keys);

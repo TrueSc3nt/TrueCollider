@@ -48,26 +48,24 @@ Re-run: `powershell -ExecutionPolicy Bypass -File .\run_benchmarks.ps1`
 | rmd160 | `-U cuda -G 128 -t 1` | 165,068 keys/s | 117,691 keys/s |
 | address ETH | `-c eth -U cuda -G 128 -t 1` | 66,969 keys/s | 49,561 keys/s |
 
-Path: **GPU secp256k1 EC** + **host** hash/keccak + host bloom. Device hash160 self-test is not trusted yet.
+Path: **GPU secp256k1 EC** + **host** hash/keccak + host bloom. Prefer `-M auto` for larger batches (re-bench after). Device hash160 self-test is not trusted yet.
 
-## No GPU implementation (yet)
+## GPU EC wired (host filter) vs still CPU-only
 
-These stay on CPU — do not expect `-U cuda` to accelerate them:
+| Mode | GPU? |
+|------|------|
+| address / rmd160 / ETH / troot / vanity / xpoint / pubkey2addr / minikeys | **Yes** — GPU EC |
+| mnemonic / poetry / brainwallet | **Yes** — GPU EC after derive |
+| bsgs | **Partial** — GPU baby-table build; giant-step CPU |
+| address `-c sol` | **Yes** — GPU SHA512 + host ed25519 ge |
+| Full on-device hash160+bloom | **No** — host filter |
+| kangaroo | **No** — CPU only |
 
-| Mode | CPU rate on this host |
-|------|----------------------:|
-| mnemonic | 247 K mnemonics/s |
-| poetry | 58 M mnemonics/s |
-| brainwallet | 95 M mnemonics/s |
-| vanity | 8.1 M keys/s |
-| bsgs | ~26 G keys/s (table dependent) |
-| sol | 71 K keys/s |
-| xpoint / minikeys / pubkey2addr | see CPU table |
-
-Roadmap: GPU BSGS, Kangaroo, Solana ed25519, mnemonic/vanity GPU — [ROADMAP.md](ROADMAP.md).
+See hub [README.md](../README.md) for commands and BSGS `-n`/`-k` tables.
 
 ## Notes
 
 - AVX2/AVX-512 CPUs should beat these SSE-only CPU figures substantially for hash160 modes.
 - On this SSE host, CPU `-e` often beats the current CUDA EC+host-hash path for BTC address/rmd160.
 - Prefer `-t 1` with CUDA to avoid GPU lock contention.
+- Roadmap leftovers (full GPU BSGS giant-step, Kangaroo GPU, Solana CUDA): [ROADMAP.md](ROADMAP.md).

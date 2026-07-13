@@ -1,210 +1,70 @@
 # Command cookbook
 
-Copy, paste, and change file names / bit ranges. On Windows use `keyhunt.exe` instead of `./keyhunt`.
+Copy, paste, and change file names / bit ranges. On Windows use `keyhunt.exe` / `keyhunt_cuda.exe`.
 
 ---
 
-## Cheat sheet (most used flags)
+## Cheat sheet
 
 | Flag | Example | Meaning |
 |------|---------|---------|
 | `-m` | `-m address` | Mode |
-| `-f` | `-f targets.txt` | Target file |
-| `-c` | `-c btc` / `eth` / `sol` / `troot` / `auto` | Currency |
+| `-f` | `-f tests/66.txt` | Target file |
+| `-c` | `-c btc` / `eth` / `sol` / `troot` | Currency |
 | `-t` | `-t 8` | CPU threads |
-| `-b` | `-b 66` | Bit range (puzzle style) |
-| `-r` | `-r 1:ffff` | Hex range start:end |
+| `-b` / `-r` | `-b 66` / `-r 1:ffff` | Bit or hex range |
 | `-l` | `-l compress` | compress / uncompress / both |
-| `-e` | `-e` | GLV endomorphism (CPU secp only) |
+| `-e` | `-e` | GLV endomorphism (CPU secp) |
 | `-A` | `-A auto` | Vector: auto / sse / avx2 / avx512 |
 | `-U` | `-U cuda` | GPU: none / cuda / opencl |
-| `-R` | `-R` | Random walk in range |
-| `-q` | `-q` | Quiet |
-| `-s` | `-s 10` | Stats every N seconds |
-| `-x` | `-x spiral` | Key-picking pattern |
+| `-G` | `-G 8192` | GPU batch hint (keys) |
+| `-M` | `-M auto` / `-M 2048` / `-M 2G` | Memory budget (VRAM/RAM) |
+| `-k` | `-k 512` / `-k auto` | BSGS K factor |
+| `-n` | `-n 0x100000000000` | BSGS N (≥ 2^20, exact sqrt) |
+| `-y` | `-y` | Dry-run config and exit |
 | `-v` | `-v 1Cool` | Vanity prefix |
-| `-B` | `-B sequential` | BSGS submode |
+| `-S` | `-S` | Save/load BSGS tables |
+| `-q` `-s` | `-q -s 10` | Quiet / stats seconds |
 
 ---
 
-## Address mode (default)
-
-### Bitcoin puzzle-style (compressed)
+## CPU recipes
 
 ```bash
-./keyhunt -m address -f tests/66.txt -b 66 -l compress -R -q -s 10 -t 8 -e -A auto
+./keyhunt -m address -f tests/66.txt -b 66 -l compress -e -A auto -t 8 -q -s 10
+./keyhunt -m address -c eth -f eth.txt -t 8 -q -s 10
+./keyhunt -m address -c sol -f tests/sol_sample.txt -t 8
+./keyhunt -m vanity -v 1Cool -e -t 8
+./keyhunt -m kangaroo -f tests/125.txt -r 1:100000
+./keyhunt -m mnemonic -f tests/66.txt -w 12 -t 4
 ```
 
-### Custom hex range
+### BSGS (`-n` / `-k`)
 
 ```bash
-./keyhunt -m address -f targets.txt -r 100000:1fffff -l compress -t 8 -e
+./keyhunt -m bsgs -f tests/125.txt -b 125 -R -k 512 -t 8 -S -q -s 10
+./keyhunt -m bsgs -f tests/125.txt -b 125 -k auto -y
 ```
 
-### Ethereum
-
-```bash
-./keyhunt -m address -c eth -f eth.txt -b 40 -t 8 -q -s 10
-```
-
-### Solana (ed25519 seed → base58 address)
-
-```bash
-./keyhunt -m address -c sol -f sol.txt -t 8 -q -s 10
-./keyhunt -m address -c sol -f tests/sol_sample.txt -r 1:8 -t 1
-```
-
-Target file: one Solana address per line (or 64-char hex pubkey).
-
-### Taproot
-
-```bash
-./keyhunt -m address -c troot -f troot.txt -t 8
-```
-
-### Mixed file (auto-detect)
-
-```bash
-./keyhunt -m address -c auto -f mixed.txt -t 8
-```
-
-### Multi-currency secp set
-
-```bash
-./keyhunt -m address -c all -f mixed_secp.txt -t 8
-```
-
-(`all` is for secp coins — do **not** mix Solana into `all`.)
+- `-n` ≥ `1048576` (2^20), exact square root required  
+- Prefer `-k` power of 2; use `-k auto` for RAM-based pick  
+- Full bits→N→kmax and RAM→k tables: **[README.md](../README.md)** (BSGS section)
 
 ---
 
-## RMD160
-
-Targets are 40-character hex RIPEMD-160 digests (no Base58).
+## GPU recipes
 
 ```bash
-./keyhunt -m rmd160 -f hashes.rmd -l compress -t 8 -e -A auto
+keyhunt_cuda.exe -m address -f tests/66.txt -b 66 -l compress -U cuda -M auto -t 1 -q -s 5
+keyhunt_cuda.exe -m rmd160 -f tests/66.rmd -U cuda -M 2048 -t 1 -q -s 5
+keyhunt_cuda.exe -m address -c eth -f eth.txt -U cuda -M auto -t 1
+keyhunt_cuda.exe -m vanity -v 1Love -U cuda -M auto -t 1
+keyhunt_cuda.exe -m bsgs -f tests/125.txt -b 125 -k auto -U cuda -M auto -t 4 -S
+keyhunt_cuda.exe -m address -f tests/66.txt -U cuda -M auto -y
 ```
 
----
+**Solana:** `-U cuda -c sol` uses GPU SHA512 + host ed25519. BSGS giant-step GRP remains CPU; baby table + giant `ComputePublicKey` use GPU EC.
 
-## Vanity
+Hits → `FOUND_BTC.txt` / `FOUND_ETH.txt` / `FOUND_SOL.txt` + `KEYFOUNDKEYFOUND.txt`.
 
-```bash
-./keyhunt -m vanity -v 1Cool -l compress -R -b 256 -e -t 8 -s 10
-./keyhunt -m vanity -f vanity_prefixes.txt -l compress -R -b 256 -e -t 8
-```
-
----
-
-## BSGS (known public key, bit/range search)
-
-Input file: one public key per line (compressed or uncompressed).
-
-```bash
-./keyhunt -m bsgs -f pubkeys.txt -b 125 -B sequential -t 4 -q -s 10 -R
-./keyhunt -m bsgs -f pubkeys.txt -B random -n 0x1000000 -t 8
-./keyhunt -m bsgs -f pubkeys.txt -x auto -S -t 8
-```
-
-`-k` / bloom save flags: see `./keyhunt -h` and Alberto-style BSGS notes in older Keyhunt docs; TrueCollider keeps BSGS on **CPU**.
-
----
-
-## X-point
-
-Match X coordinates of public keys.
-
-```bash
-./keyhunt -m xpoint -f xpoints.txt -b 40 -t 8
-```
-
----
-
-## Minikeys / mnemonic / poetry / brainwallet / pubkey2addr
-
-```bash
-./keyhunt -m minikeys -f targets.txt -t 8
-./keyhunt -m mnemonic -f targets.txt -t 8
-./keyhunt -m poetry -f targets.txt -t 4
-./keyhunt -m brainwallet -f targets.txt -t 4
-./keyhunt -m pubkey2addr -f targets.txt -t 8
-```
-
-BIP39 language / word count flags: `./keyhunt -h`.
-
----
-
-## Patterns (`-x`) — how keys are picked
-
-These change **order**, not the math:
-
-```bash
--x sequential
--x random
--x chaos
--x gravity
--x spiral
--x reverse
--x auto
-```
-
-Example:
-
-```bash
-./keyhunt -m address -f targets.txt -b 66 -l compress -x spiral -e -t 8
-```
-
----
-
-## GPU
-
-```bash
-# NVIDIA CUDA — GPU secp EC + host hash160/bloom (BTC-family)
-./keyhunt -m address -f targets.txt -U cuda -G 128 -t 1 -l compress -q -s 5
-
-# NVIDIA CUDA — Ethereum (GPU EC + host keccak)
-./keyhunt -m address -c eth -f eth.txt -U cuda -G 128 -t 1 -q -s 5
-
-# NVIDIA CUDA — Taproot
-./keyhunt -m address -c troot -f troot.txt -U cuda -G 128 -t 1 -q -s 5
-
-# OpenCL — GPU hash160, EC on CPU (AMD/NVIDIA/Intel)
-./keyhunt -m address -f targets.txt -U opencl -t 8 -l compress
-```
-
-Windows CUDA binary: `keyhunt_cuda.exe` (from `build_cuda_vs2022.bat`) or `run_gpu_cuda_example.bat`.
-
-Vanity / BSGS / mnemonic / Solana stay **CPU** for now. Prefer low `-t` with `-U cuda`.
-
----
-
-## Speed knobs
-
-```bash
-./keyhunt -m address -f targets.txt -b 66 -l compress -e -A avx2 -t 16 -q -s 5
-./keyhunt -m address -f targets.txt -b 66 -l compress -e -A avx512 -t 16
-```
-
-| Knob | Effect |
-|------|--------|
-| `-t` | More CPU threads |
-| `-e` | ~3× address checks per base key (secp) |
-| `-A avx2` / `avx512` | Wider hash160 batches |
-| More RAM | Larger filters / BSGS tables |
-
----
-
-## Target file formats
-
-| Mode / `-c` | Each line |
-|-------------|-----------|
-| BTC legacy | `1…` / `3…` |
-| Bech32 | `bc1q…` |
-| ETH | `0x` + 40 hex |
-| SOL | base58 pubkey (~32–44 chars) or 64 hex |
-| TROOT | `bc1p…` or 64 hex x-only |
-| RMD160 | 40 hex |
-| BSGS | 66/130 hex pubkey |
-
-Empty lines are ignored. Keep one target per line.
+More context: [README.md](../README.md) · [gpu/README.md](../gpu/README.md) · [SPEEDS.md](SPEEDS.md).

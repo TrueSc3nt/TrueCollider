@@ -26,6 +26,16 @@ int tcuda_secp_pubkey_batch(const uint8_t *privkeys, int count, int compressed,
 
 int tcuda_secp_selftest(void);
 
+/* Free / total VRAM in bytes. Returns 1 on success. */
+int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes);
+
+/*
+ * Size GPU batch buffers from a memory budget (bytes).
+ * budget_bytes==0 means auto: ~60% of currently free VRAM.
+ * Returns recommended host batch size in keys (clamped).
+ */
+uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes);
+
 #ifdef __cplusplus
 }
 #endif

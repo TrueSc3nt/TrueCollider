@@ -31,8 +31,11 @@ Sources of practice in the wild: [albertobsd/keyhunt](https://github.com/alberto
 | Vanity / mnemonic / poetry / brainwallet / minikeys | Done (CPU) |
 | BSGS CPU | Done |
 | AVX2 + AVX-512 hash160 | Done |
-| CUDA secp EC (BTC-family + ETH/ETC + troot) | **Done** (host encode/bloom; batch up to 256) |
+| CUDA secp EC (BTC-family + ETH/ETC + troot) | **Done** (host encode/bloom; `-M` VRAM batch auto) |
 | OpenCL hash160 | Done (EC on CPU) |
+| Kangaroo CPU | **Done** (tiny sequential / larger DP) |
+| Memory budget `-M` | **Done** (CUDA VRAM + BSGS blooms) |
+| Dry-run / FOUND_*.txt / fixtures 66/125 | **Done** |
 | GPU BSGS / Kangaroo / SOL GPU | **Not yet** |
 | Beginner docs | Done |
 | One-click Windows installer | Not yet |

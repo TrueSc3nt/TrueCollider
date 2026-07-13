@@ -32,6 +32,13 @@ static int       g_cap_count = 0;
 static uint8_t  *g_d_pubs = NULL;
 static uint8_t  *g_h_bloom = NULL;
 static int       g_host_filter = 1; /* 1 = hash+bloom on host (correct); 0 = device hash */
+static int       g_launch_chunk = 16384; /* TDR-safe kernel chunk (keys) */
+static uint64_t  g_mem_budget_bytes = 0;
+static uint32_t  g_recommended_batch = 8192;
+static uint8_t  *g_h_pin_priv = NULL;
+static uint8_t  *g_h_pin_pub = NULL;
+static int       g_pin_cap = 0;
+static const int kCudaThreads = 256;
 
 /* =========================================================================
  * Device field arithmetic: 8 x uint32 little-endian limbs, mod secp256k1 p
@@ -926,6 +933,26 @@ static void host_bloom_set(uint8_t *bf, uint64_t bits, uint8_t hashes,
     }
 }
 
+static void free_pin_bufs(void) {
+    if (g_h_pin_priv) { cudaFreeHost(g_h_pin_priv); g_h_pin_priv = NULL; }
+    if (g_h_pin_pub) { cudaFreeHost(g_h_pin_pub); g_h_pin_pub = NULL; }
+    g_pin_cap = 0;
+}
+
+static int ensure_pin_bufs(int count) {
+    if (count <= g_pin_cap && g_h_pin_priv && g_h_pin_pub)
+        return 1;
+    free_pin_bufs();
+    if (cudaHostAlloc((void **)&g_h_pin_priv, (size_t)count * 32, cudaHostAllocDefault) != cudaSuccess)
+        return 0;
+    if (cudaHostAlloc((void **)&g_h_pin_pub, (size_t)count * 65, cudaHostAllocDefault) != cudaSuccess) {
+        free_pin_bufs();
+        return 0;
+    }
+    g_pin_cap = count;
+    return 1;
+}
+
 static int ensure_batch_bufs(int count) {
     if (count <= g_cap_count && g_d_privkeys && g_d_pubs && g_d_hitmask)
         return 1;
@@ -967,12 +994,82 @@ extern "C" void tcuda_secp_search_free(void) {
     if (g_d_privkeys) { cudaFree(g_d_privkeys); g_d_privkeys = NULL; }
     if (g_d_pubs) { cudaFree(g_d_pubs); g_d_pubs = NULL; }
     if (g_d_hitmask) { cudaFree(g_d_hitmask); g_d_hitmask = NULL; }
+    free_pin_bufs();
     free(g_h_bloom); g_h_bloom = NULL;
     g_bloom_bits = 0;
     g_bloom_bytes = 0;
     g_bloom_hashes = 0;
     g_bloom_ready = 0;
     g_cap_count = 0;
+}
+
+extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes) {
+    size_t free_b = 0, total_b = 0;
+    if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess)
+        return 0;
+    if (free_bytes) *free_bytes = (uint64_t)free_b;
+    if (total_bytes) *total_bytes = (uint64_t)total_b;
+    return 1;
+}
+
+extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes) {
+    uint64_t free_b = 0, total_b = 0;
+    tcuda_memory_info(&free_b, &total_b);
+
+    int auto_mode = (budget_bytes == 0);
+    if (auto_mode) {
+        /* Leave headroom for the driver / display; use most of free VRAM. */
+        budget_bytes = (free_b * 60ull) / 100ull;
+        if (budget_bytes < (64ull << 20))
+            budget_bytes = (free_b > (128ull << 20)) ? (64ull << 20) : (free_b / 2);
+    }
+
+    /* Never claim more than free - 256MB (or half free on small cards). */
+    uint64_t headroom = (256ull << 20);
+    if (free_b < headroom * 2)
+        headroom = free_b / 4;
+    if (free_b > headroom && budget_bytes > free_b - headroom)
+        budget_bytes = free_b - headroom;
+
+    g_mem_budget_bytes = budget_bytes;
+
+    /* Device: priv(32)+pub(65)+hit(1) ≈ 98B; pin staging ≈ 97B; round to 160B/key. */
+    const uint64_t bytes_per_key = 160ull;
+    uint64_t keys = budget_bytes / bytes_per_key;
+    if (keys < 1024ull) keys = 1024ull;
+    if (keys > 1048576ull) keys = 1048576ull; /* 1M host batch ceiling */
+
+    /* Launch chunk: large enough for occupancy, small enough for Windows TDR. */
+    int chunk = (int)keys;
+    if (chunk > 65536) chunk = 65536;
+    if (chunk < 1024) chunk = 1024;
+    /* Align to thread block size */
+    chunk = (chunk / kCudaThreads) * kCudaThreads;
+    if (chunk < kCudaThreads) chunk = kCudaThreads;
+    g_launch_chunk = chunk;
+
+    if (!ensure_batch_bufs(g_launch_chunk)) {
+        fprintf(stderr, "[W] CUDA: failed to allocate device buffers for %d-key chunk.\n",
+                g_launch_chunk);
+        g_launch_chunk = 1024;
+        ensure_batch_bufs(g_launch_chunk);
+    }
+    ensure_pin_bufs(g_launch_chunk);
+
+    g_recommended_batch = (uint32_t)keys;
+
+    fprintf(stderr,
+            "[+] GPU memory plan: budget %.1f MB (%s) | VRAM free %.1f / total %.1f MB | "
+            "batch up to %u keys | launch chunk %d | ~%.1f MB device buffers\n",
+            (double)budget_bytes / (1024.0 * 1024.0),
+            auto_mode ? "auto" : "user",
+            (double)free_b / (1024.0 * 1024.0),
+            (double)total_b / (1024.0 * 1024.0),
+            g_recommended_batch,
+            g_launch_chunk,
+            (double)g_launch_chunk * 98.0 / (1024.0 * 1024.0));
+    fflush(stderr);
+    return g_recommended_batch;
 }
 
 /* Host bloom probe only (hashing is done in MSVC dispatcher code). */
@@ -992,26 +1089,49 @@ extern "C" int tcuda_secp_pubkey_batch(const uint8_t *privkeys, int count, int c
                                        uint8_t *out_pubs65) {
     if (!privkeys || !out_pubs65 || count <= 0)
         return -1;
-    if (!ensure_batch_bufs(count))
-        return -1;
 
-    /* Chunked launches stay under Windows TDR / device stack limits. */
-    const int chunk = 128;
+    int chunk = g_launch_chunk > 0 ? g_launch_chunk : 16384;
+    if (chunk > count) chunk = count;
+    if (chunk < 1) chunk = 1;
+    /* Align chunk down to block size when possible */
+    if (chunk >= kCudaThreads)
+        chunk = (chunk / kCudaThreads) * kCudaThreads;
+    if (chunk < 1) chunk = count < kCudaThreads ? count : kCudaThreads;
+
+    if (!ensure_batch_bufs(chunk))
+        return -1;
+    int use_pin = ensure_pin_bufs(chunk);
+
     for (int off = 0; off < count; off += chunk) {
         int n = count - off;
         if (n > chunk) n = chunk;
         size_t key_bytes = (size_t)n * 32;
-        if (cudaMemcpy(g_d_privkeys, privkeys + (size_t)off * 32, key_bytes,
-                       cudaMemcpyHostToDevice) != cudaSuccess)
+        size_t pub_bytes = (size_t)n * 65;
+
+        const uint8_t *src = privkeys + (size_t)off * 32;
+        if (use_pin) {
+            memcpy(g_h_pin_priv, src, key_bytes);
+            src = g_h_pin_priv;
+        }
+        if (cudaMemcpy(g_d_privkeys, src, key_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
             return -1;
-        int threads = n;
-        int blocks = 1;
+
+        int threads = (n < kCudaThreads) ? n : kCudaThreads;
+        if (threads < 1) threads = 1;
+        int blocks = (n + threads - 1) / threads;
         secp_pubkey_kernel<<<blocks, threads>>>(g_d_privkeys, n, compressed ? 1 : 0, g_d_pubs);
         if (cudaGetLastError() != cudaSuccess) return -1;
         if (cudaDeviceSynchronize() != cudaSuccess) return -1;
-        if (cudaMemcpy(out_pubs65 + (size_t)off * 65, g_d_pubs, (size_t)n * 65,
-                       cudaMemcpyDeviceToHost) != cudaSuccess)
-            return -1;
+
+        uint8_t *dst = out_pubs65 + (size_t)off * 65;
+        if (use_pin) {
+            if (cudaMemcpy(g_h_pin_pub, g_d_pubs, pub_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
+                return -1;
+            memcpy(dst, g_h_pin_pub, pub_bytes);
+        } else {
+            if (cudaMemcpy(dst, g_d_pubs, pub_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
+                return -1;
+        }
     }
     return 0;
 }

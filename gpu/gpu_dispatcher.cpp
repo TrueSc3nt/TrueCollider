@@ -34,6 +34,12 @@ extern "C" int tcuda_secp_search_init(const uint8_t*, uint64_t, uint64_t, uint8_
 extern "C" void tcuda_secp_search_free(void) {}
 extern "C" int tcuda_secp_search_batch(const uint8_t*, int, int, uint32_t*, int, uint32_t*) { return 0; }
 extern "C" int tcuda_secp_pubkey_batch(const uint8_t*, int, int, uint8_t*) { return -1; }
+extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes) {
+    (void)free_bytes; (void)total_bytes; return 0;
+}
+extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes) {
+    (void)budget_bytes; return 0;
+}
 #else
 extern "C" int tcuda_device_count(void);
 extern "C" int tcuda_hello(void);
@@ -48,6 +54,16 @@ extern "C" int tcuda_secp_search_batch(const uint8_t *privkeys, int count, int c
                                        uint32_t *out_hit_count);
 extern "C" int tcuda_secp_pubkey_batch(const uint8_t *privkeys, int count, int compressed,
                                        uint8_t *out_pubs65);
+extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes);
+extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes);
+extern "C" int tcuda_ed25519_pubkey_batch(const uint8_t *seeds32, int count, uint8_t *pubs32);
+extern "C" int tcuda_ed25519_selftest(void);
+#endif
+
+#ifndef ENABLE_CUDA
+extern "C" int tcuda_ed25519_pubkey_batch(const uint8_t*, int, uint8_t*) { return 0; }
+extern "C" int tcuda_ed25519_selftest(void) { return 0; }
+extern "C" int tcuda_ed25519_sha512_clamp_batch(const uint8_t*, int, uint8_t*) { return 0; }
 #endif
 
 #ifndef ENABLE_OPENCL
@@ -67,6 +83,7 @@ struct GpuDispatcher {
     int initialized;
     int device_count;
     int secp_ready;
+    int ed25519_ready;
     int bloom_loaded;
     struct bloom host_bloom;
 #ifdef _WIN32
@@ -129,6 +146,7 @@ int gpu_dispatcher_init(struct GpuDispatcher* disp, const struct BackendConfig* 
     disp->initialized = 0;
     disp->device_count = 0;
     disp->secp_ready = 0;
+    disp->ed25519_ready = 0;
     disp->bloom_loaded = 0;
     memset(&disp->host_bloom, 0, sizeof(disp->host_bloom));
 
@@ -154,8 +172,41 @@ int gpu_dispatcher_init(struct GpuDispatcher* disp, const struct BackendConfig* 
             std::fprintf(stderr, "[+] CUDA secp256k1 path ready (GPU EC + host hash/bloom).\n");
             disp->secp_ready = 1;
         }
-        std::fprintf(stderr, "[+] CUDA backend selected (%d device%s).\n",
-                     disp->device_count, disp->device_count > 1 ? "s" : "");
+
+        if (tcuda_ed25519_selftest()) {
+            disp->ed25519_ready = 1;
+        } else {
+            std::fprintf(stderr, "[W] CUDA ed25519 self-test failed; Solana falls back to CPU.\n");
+            disp->ed25519_ready = 0;
+        }
+
+        /* Memory budget: -M MB|auto; default auto under CUDA. */
+        {
+            uint64_t budget = 0;
+            if (!cfg->memory_auto && cfg->memory_budget_bytes > 0)
+                budget = cfg->memory_budget_bytes;
+            uint32_t rec = tcuda_apply_memory_budget(budget);
+            if (rec > 0) {
+                if (cfg->gpu_batch_user_set) {
+                    uint32_t want = cfg->gpu_batch_size;
+                    if (want > rec) {
+                        std::fprintf(stderr, "[W] -G %u exceeds memory budget; clamping to %u.\n",
+                                     want, rec);
+                        want = rec;
+                    }
+                    if (want < 1) want = 1;
+                    disp->cfg.gpu_batch_size = want;
+                } else {
+                    disp->cfg.gpu_batch_size = rec;
+                }
+            }
+        }
+
+        std::fprintf(stderr, "[+] CUDA backend selected (%d device%s), effective batch %u keys.\n",
+                     disp->device_count, disp->device_count > 1 ? "s" : "",
+                     disp->cfg.gpu_batch_size);
+        /* Keep global config in sync for thread loops that read g_backend_config. */
+        g_backend_config.gpu_batch_size = disp->cfg.gpu_batch_size;
         disp->initialized = 1;
         return 1;
     }
@@ -191,11 +242,31 @@ int gpu_dispatcher_secp_ready(const struct GpuDispatcher* disp) {
     return disp && disp->secp_ready;
 }
 
+int gpu_dispatcher_ed25519_ready(const struct GpuDispatcher* disp) {
+    return disp && disp->ed25519_ready;
+}
+
 int gpu_dispatcher_supports_mode(const struct GpuDispatcher* disp, int mode) {
     if (!disp || !disp->initialized) return 0;
-    /* MODE_ADDRESS=1, MODE_RMD160=3 — CUDA secp and/or GPU hash160 offload.
-       Vanity (6) is CPU-only until its thread calls the GPU helpers. */
-    return (mode == 1 || mode == 3);
+    /* CUDA secp EC assists all secp-based search modes.
+       MODE_*: xpoint=0 address=1 bsgs=2 rmd160=3 minikeys=5 vanity=6
+       mnemonic=7 poetry=8 brainwallet=9 pubkey2addr=10 kangaroo=11.
+       address + -c sol uses ed25519 CUDA path when ready. */
+    switch (mode) {
+        case 0: /* xpoint */
+        case 1: /* address (BTC secp or SOL ed25519) */
+        case 2: /* bsgs baby + giant ComputePublicKey assist */
+        case 3: /* rmd160 */
+        case 5: /* minikeys */
+        case 6: /* vanity */
+        case 7: /* mnemonic */
+        case 8: /* poetry */
+        case 9: /* brainwallet */
+        case 10: /* pubkey2addr */
+            return disp->secp_ready || disp->ed25519_ready || disp->initialized;
+        default:
+            return 0;
+    }
 }
 
 int gpu_dispatcher_hash160_33(struct GpuDispatcher* disp,
@@ -340,6 +411,30 @@ int gpu_dispatcher_pubkey_batch(struct GpuDispatcher* disp,
     pthread_mutex_unlock(&disp->gpu_lock);
 #endif
     return rc == 0 ? 1 : 0;
+}
+
+int gpu_dispatcher_ed25519_pubkey_batch(struct GpuDispatcher* disp,
+                                        const uint8_t* seeds32,
+                                        uint32_t count,
+                                        uint8_t* out_pubs32) {
+    if (!disp || !disp->initialized || !disp->ed25519_ready)
+        return 0;
+    if (!seeds32 || !out_pubs32 || count == 0)
+        return 0;
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA)
+        return 0;
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+    int ok = tcuda_ed25519_pubkey_batch(seeds32, (int)count, out_pubs32);
+#ifdef _WIN32
+    LeaveCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+    return ok ? 1 : 0;
 }
 
 uint32_t gpu_dispatcher_search_address(struct GpuDispatcher* disp,

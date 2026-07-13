@@ -59,7 +59,8 @@ static inline int bf_add(struct binaryfuse_wrapper *bf, const void *buffer, int 
 }
 
 static inline int bf_build(struct binaryfuse_wrapper *bf) {
-    if (bf->count < 100) {
+    /* Tiny sets are a poor fit for binary fuse (slow/fail-prone); use bloom. */
+    if (bf->count < 256) {
         bf->use_bloom_fallback = 1;
         return -1;
     }

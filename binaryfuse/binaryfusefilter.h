@@ -244,9 +244,14 @@ static inline bool binary_fuse8_populate(uint64_t *keys, uint32_t size,
     for (uint32_t i = 0; i < size; i++) {
       uint64_t hash = binary_fuse_murmur64(keys[i] + filter->Seed);
       uint64_t segment_index = hash >> (64 - blockBits);
+      uint32_t _bf_guard = 0;
       while (reverseOrder[startPos[segment_index]] != 0) {
         segment_index++;
         segment_index &= maskblock;
+        if (++_bf_guard > capacity) {
+          free(alone); free(t2count); free(reverseH); free(t2hash); free(reverseOrder); free(startPos);
+          return false;
+        }
       }
       reverseOrder[startPos[segment_index]] = hash;
       startPos[segment_index]++;
@@ -457,9 +462,14 @@ static inline bool binary_fuse16_populate(uint64_t *keys, uint32_t size,
     for (uint32_t i = 0; i < size; i++) {
       uint64_t hash = binary_fuse_murmur64(keys[i] + filter->Seed);
       uint64_t segment_index = hash >> (64 - blockBits);
+      uint32_t _bf_guard = 0;
       while (reverseOrder[startPos[segment_index]] != 0) {
         segment_index++;
         segment_index &= maskblock;
+        if (++_bf_guard > capacity) {
+          free(alone); free(t2count); free(reverseH); free(t2hash); free(reverseOrder); free(startPos);
+          return false;
+        }
       }
       reverseOrder[startPos[segment_index]] = hash;
       startPos[segment_index]++;
