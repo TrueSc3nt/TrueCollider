@@ -109,7 +109,7 @@ Int.o: secp256k1/Int.cpp secp256k1/Int.h secp256k1/Random.h
 Point.o: secp256k1/Point.cpp secp256k1/Point.h secp256k1/Int.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-SECP256K1.o: secp256k1/SECP256K1.cpp secp256k1/SECP256K1.h secp256k1/Point.h secp256k1/Int.h
+SECP256K1.o: secp256k1/SECP256K1.cpp secp256k1/SECP256k1.h secp256k1/Point.h secp256k1/Int.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 IntMod.o: secp256k1/IntMod.cpp secp256k1/Int.h

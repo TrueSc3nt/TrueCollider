@@ -5528,7 +5528,9 @@ static void recover_endo_uncompress_hit(int l, int bk, Int *key_mpz, Int *stride
 		notify_key_found(keyfound);
 	}
 }
+#endif /* HASH160_AVX512_AVAILABLE || HASH160_AVX2_AVAILABLE */
 
+/* Shared by CPU SIMD, GPU, and scalar address paths — must exist on all arches. */
 static int hash160_coin_uses_batch(void) {
 	return FLAGCRYPTO == CRYPTO_BTC || FLAGCRYPTO == CRYPTO_LTC ||
 		FLAGCRYPTO == CRYPTO_BTG || FLAGCRYPTO == CRYPTO_BCH ||
@@ -6005,8 +6007,6 @@ static int process_vanity_hash160_avx2_batch_8(
 	return 1;
 }
 #endif /* HASH160_AVX2_AVAILABLE */
-
-#endif /* HASH160_AVX512_AVAILABLE || HASH160_AVX2_AVAILABLE */
 
 #if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
 /*
