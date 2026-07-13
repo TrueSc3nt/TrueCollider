@@ -1,31 +1,36 @@
 #!/bin/bash
-# TrueCollider Termux build script
-# Run this on Android/Termux: bash build_termux.sh
+# Build TrueCollider on Android/Termux aarch64.
+# Run this script on the Termux device.
 
-echo "TrueCollider - Termux/ARM Build"
-echo "================================"
+set -e
 
-# Install dependencies if needed
-if ! command -v g++ &> /dev/null; then
-    echo "Installing build tools..."
-    pkg install -y clang make
+echo "TrueCollider - Termux aarch64 build"
+echo "===================================="
+
+if ! command -v cmake &> /dev/null; then
+    echo "[+] CMake not found. Installing..."
+    pkg update
+    pkg install -y cmake make clang
 fi
 
-# Termux uses clang, not g++
-export CC=clang
-export CXX=clang++
+if [ ! -f "CMakeLists.txt" ]; then
+    echo "[E] Run this script from the TrueCollider source root."
+    exit 1
+fi
 
-# Termux is ARM — disable SSE
-echo "Building for ARM (no SSE)..."
-make clean 2>/dev/null
-make CC=clang CXX=clang++ CXXFLAGS_BASE="-Wall -Wextra -O2" CFLAGS_BASE="-Wall -Wextra -O2"
+rm -rf build-termux
+cmake -B build-termux \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/termux-aarch64.cmake \
+    -DCMAKE_BUILD_TYPE=Release
 
-if [ -f keyhunt ]; then
-    chmod +x keyhunt
+cmake --build build-termux -j$(nproc)
+
+if [ -f build-termux/keyhunt ]; then
     echo ""
     echo "Build successful!"
-    echo "Run: ./keyhunt -h"
+    echo "Output: build-termux/keyhunt"
+    file build-termux/keyhunt
 else
-    echo "Build failed!"
+    echo "[E] Build failed: build-termux/keyhunt not found"
     exit 1
 fi

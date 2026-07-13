@@ -160,7 +160,9 @@ char *minikeyN = NULL;
 	
 const char *version = "TrueCollider Search Modes + Binary Fuse Filters";
 
+#ifndef CPU_GRP_SIZE
 #define CPU_GRP_SIZE 1024
+#endif
 
 std::vector<Point> Gn;
 Point _2Gn;
@@ -1777,8 +1779,8 @@ int main(int argc, char **argv)	{
 	}
 	
 	if(  FLAGBSGSMODE == MODE_BSGS && FLAGENDOMORPHISM)	{
-		fprintf(stderr,"[E] Endomorphism doesn't work with BSGS\n");
-		exit(EXIT_FAILURE);
+		fprintf(stderr,"[W] Endomorphism is not used in BSGS mode; disabling it automatically.\n");
+		FLAGENDOMORPHISM = 0;
 	}
 	if(FLAGPATH && FLAGMODE != MODE_ADDRESS && FLAGMODE != MODE_RMD160) {
 		fprintf(stderr,"[E] -p (derivation path) only works with -m address or -m rmd160\n");

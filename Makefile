@@ -9,8 +9,10 @@ ARCH := $(shell uname -m 2>/dev/null || echo x86_64)
 
 CXX := g++
 CC  := gcc
-CXXFLAGS_BASE := -Wall -Wextra -Wno-deprecated-copy -O2
-CFLAGS_BASE   := -Wall -Wextra -Wno-unused-parameter -O2
+CPU_GRP_SIZE ?= 1024
+
+CXXFLAGS_BASE := -Wall -Wextra -Wno-deprecated-copy -O2 -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)
+CFLAGS_BASE   := -Wall -Wextra -Wno-unused-parameter -O2 -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)
 
 # Detect x86 vs ARM vs other
 IS_X86 := $(filter x86_64 i386 i686 amd64,$(ARCH))
@@ -85,7 +87,8 @@ windows:
 	$(MAKE) clean
 	$(MAKE) OS=MINGW64 ARCH=win64 CXX=x86_64-w64-mingw32-g++ CC=x86_64-w64-mingw32-gcc \
 		TARGET=keyhunt.exe "LIBS=-lm -lwinpthread -lws2_32 -static" \
-		"CXXFLAGS_BASE=-Wall -Wextra -O2" "CFLAGS_BASE=-Wall -Wextra -O2"
+		"CXXFLAGS_BASE=-Wall -Wextra -O2 -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)" \
+		"CFLAGS_BASE=-Wall -Wextra -O2 -DCPU_GRP_SIZE=$(CPU_GRP_SIZE)"
 
 default: $(TARGET)
 

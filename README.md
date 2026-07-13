@@ -1,5 +1,8 @@
 # TrueCollider based of Keyhunt By Alberto
 
+[![CI](https://github.com/TrueSc3nt/TrueCollider/actions/workflows/ci.yml/badge.svg)](https://github.com/TrueSc3nt/TrueCollider/actions/workflows/ci.yml)
+[![Release](https://github.com/TrueSc3nt/TrueCollider/actions/workflows/release.yml/badge.svg)](https://github.com/TrueSc3nt/TrueCollider/releases)
+
 **Multi-Currency Cryptocurrency Key Search Tool** — High-performance key search with Binary Fuse Filters, supporting 10+ cryptocurrencies, custom derivation paths, node balance checking, and multi-currency simultaneous search.
 
 Developed & Modified by **TrueScent**
@@ -70,12 +73,22 @@ sudo apt update && sudo apt upgrade
 sudo apt install git build-essential curl -y
 ```
 
-### Clone and Build
+### Clone and Build (Makefile)
 
 ```bash
 git clone https://github.com/TrueSc3nt/TrueCollider.git
 cd TrueCollider
 make
+```
+
+### Build with CMake (recommended)
+
+CMake gives a unified build on Linux, Windows (via MinGW), and Termux/Android.
+
+```bash
+cmake -B build
+cmake --build build -j$(nproc)
+# Binary: build/keyhunt
 ```
 
 ### Windows Users
@@ -86,6 +99,26 @@ wsl --install -d Ubuntu
 # Then open Ubuntu terminal and run the build commands above
 # Or, to build a standalone Windows .exe directly:
 bash build_windows.sh
+```
+
+Or build the `.exe` with CMake and MinGW:
+```bash
+sudo apt install mingw-w64 cmake
+cmake -B build-win \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake \
+  -DSTATIC_BUILD=ON
+cmake --build build-win -j$(nproc)
+# Binary: build-win/keyhunt.exe
+```
+
+### Termux (Android / aarch64)
+
+```bash
+pkg install cmake make clang
+cmake -B build \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/termux-aarch64.cmake
+cmake --build build -j$(nproc)
+# Binary: build/keyhunt
 ```
 
 ---
@@ -589,7 +622,7 @@ rpcport=8332
 ## Performance Options
 
 ```bash
-# Endomorphism (3x speedup for address/rmd160/vanity)
+# Endomorphism (3x speedup for address/rmd160/vanity; auto-disabled in BSGS)
 ./keyhunt -m address -f targets.txt -e -t 8
 
 # Compressed keys only
@@ -613,6 +646,43 @@ rpcport=8332
 # Save/load BSGS bloom filters
 ./keyhunt -m bsgs -f targets.txt -S -t 4
 ```
+
+### Batch Point Generation & `CPU_GRP_SIZE` Tuning
+
+Address/rmd160/vanity mode generate public keys in batches of `CPU_GRP_SIZE` (default 1024). Increasing it can reduce per-key overhead on CPU-friendly ranges, but it also raises memory usage and thread contention. It is configurable at build time:
+
+```bash
+# Makefile: larger batch (e.g. 4096)
+make CPU_GRP_SIZE=4096
+
+# CMake: larger batch
+cmake -B build -DCPU_GRP_SIZE=4096
+cmake --build build -j$(nproc)
+```
+
+Suggested values:
+| CPU / RAM | `CPU_GRP_SIZE` | Notes |
+|-----------|------------------|-------|
+| Low-end / 8 GB | 256 - 1024 | Lower memory, less contention |
+| Mid-range / 16 GB | 1024 - 4096 | Default sweet spot |
+| High-end / 32+ GB | 4096 - 16384 | Best throughput if L3/cache allows |
+
+A future GPU backend will use a separate `GPU_BATCH_SIZE` knob and keep `CPU_GRP_SIZE` for CPU-only work.
+
+### Binary Fuse Filter Verified Performance
+
+The binary fuse filter is used in address mode for fast membership testing. Verification results show no false negatives and a measured false-positive rate very close to the theoretical 1/256 (~0.39%) for the 8-bit fingerprint version. See [docs/FILTER_VERIFICATION.md](docs/FILTER_VERIFICATION.md) for details.
+
+### GPU Backend (Experimental)
+
+A CUDA/OpenCL backend is planned for future high-end rigs. CMake options are already wired as scaffolding:
+
+```bash
+cmake -B build -DENABLE_CUDA=ON    # requires CUDA toolkit
+cmake -B build -DENABLE_OPENCL=ON    # requires OpenCL headers/runtime
+```
+
+The current build only compiles device-detection stubs; the full EC math kernels will be added in a follow-up release.
 
 ---
 
@@ -818,7 +888,7 @@ a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
 |------|-------------|
 | `-R` | Random mode (alias for BSGS random) |
 | `-S` | Save/load bloom filters |
-| `-G value` | Unknown/unused |
+| `-G value` | CPU group/batch size (compile-time via `CPU_GRP_SIZE` CMake/Make option) |
 
 ---
 
