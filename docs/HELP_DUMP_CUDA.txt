@@ -1,0 +1,508 @@
+﻿[+] Version TrueCollider Search Modes + Binary Fuse Filters, developed & modified by TrueScent
+
+===============================================================
+  TrueCollider Search Modes + Binary Fuse Filters
+  Developed & Modified by TrueScent
+===============================================================
+
+USAGE:
+  keyhunt -m <mode> -f <target_file> [options]
+
+===============================================================
+  SEARCH MODES (-m)
+===============================================================
+
+  address
+    The default mode. Generates random private keys (or walks a range),
+    derives the public key and address, then checks against target file.
+    Supports: -c btc/eth/ltc/doge/xrp/bch/btg/etc/troot/all
+    Supports: -l compress/uncompress/both, -r range, -x modes
+    Supports: -p path -D count (BIP-32 derivation for each key)
+    Supports: -N[url] node balance check (own node or public API)
+    Input file: one address per line (format depends on currency)
+
+    How it works:
+      1. Load target addresses into binary fuse filter + sorted array
+      2. Each thread generates candidate private keys
+      3. Derives public key -> address (SHA256 + RIPEMD160 for BTC)
+      4. Checks address against filter (fast rejection) then binary search
+      5. Found key is written to KEYFOUNDKEYFOUND.txt
+
+    Example:
+      keyhunt -m address -f targets.txt -x chaos -t 8
+
+  pubkey2addr
+    Random key generation with address matching. Similar to address mode
+    but specifically designed for random-only key generation (no sequential
+    walking). Defaults to -x random. Always generates random keys regardless
+    of range flags.
+    Supports: -c btc/eth/ltc/doge/xrp/bch/btg/etc/troot/all
+    Supports: -l compress/uncompress/both, -x modes
+    Input file: one address per line (format depends on currency)
+
+    How it works:
+      1. Load target addresses into binary fuse filter
+      2. Each thread picks random private keys across full key space
+      3. Derives public key -> BTC or ETH address
+      4. Checks address against filter + binary search on match
+      5. Found key is written to KEYFOUNDKEYFOUND.txt
+
+    Example:
+      keyhunt -m pubkey2addr -f targets.txt -x auto -t 4
+      keyhunt -m pubkey2addr -c eth -f eth_targets.txt -t 8
+
+  rmd160
+    Searches for private keys whose RIPEMD-160 hash of the public key
+    matches entries in the target file. Useful when you have raw hash
+    values rather than addresses.
+    Supports: -c btc/eth/ltc/doge/xrp/bch/btg/etc/all
+    Supports: -l compress/uncompress/both, -r range, -x modes, -e
+    Supports: -p path -D count (BIP-32 derivation for each key)
+    Input file: one 40-char hex RIPEMD-160 hash per line
+
+    How it works:
+      1. Load target RIPEMD-160 hashes into binary fuse filter
+      2. Generates candidate keys and computes hash160 directly
+      3. Checks against filter without base58 encoding (faster)
+      4. On match, prints the full private key and address
+
+    Example:
+      keyhunt -m rmd160 -f hashes.rmd -l compress -x gravity -t 8
+
+  xpoint
+    Searches for private keys by matching the x-coordinate of the
+    derived public key against public key data in the target file.
+    Used when you have the full public key or just the x-coordinate.
+    Supports: -r range, -x modes
+    Input file: one hex public key per line (64-char x-only,
+               66-char compressed, or 130-char uncompressed with 04 prefix)
+
+    How it works:
+      1. Parse public keys from file, extract x-coordinates
+      2. Generate candidate keys and compute public keys
+      3. Compare x-coordinate against the sorted target array
+      4. On match, prints the full private key
+
+    Example:
+      keyhunt -m xpoint -f pubkeys.txt -t 8
+
+  bsgs
+    Baby-Step Giant-Step algorithm. Solves the elliptic curve discrete
+    log problem when a public key is known. Precomputes a table of baby
+    steps (public key points) then walks giant steps to find the match.
+    Best for puzzles where a public key is given and you need the
+    corresponding private key. Uses 3-tier bloom filter for lookups.
+    Supports: -B sequential/backward/both/random/dance, -x modes,
+              -k factor, -S save/load, -n table size
+    Input file: compressed (66-char) or uncompressed (130-char) public keys
+
+    How it works:
+      1. Build baby-step table from target public keys (x-coordinates)
+      2. Build 3-tier binary fuse/bloom filter from table
+      3. Walk giant steps through key space, checking each against table
+      4. On bloom hit, verify with second/third check for confirmation
+      5. Found key written to KEYFOUNDKEYFOUND.txt
+
+    BSGS search modes (-B):
+      sequential - walk forward from start
+      backward   - walk backward from end
+      both       - alternate top/bottom of range
+      random     - random giant steps (default)
+      dance      - triple: top/bottom/random alternation
+
+    Example:
+      keyhunt -m bsgs -f pubkeys.txt -B sequential -n 0x1000000 -t 4
+      keyhunt -m bsgs -f pubkeys.txt -x auto -t 8
+
+  kangaroo
+    Pollard's kangaroo (CPU) for a single pubkey in a known range.
+    Ranges <= 2^24 use a sequential EC walk; larger ranges use DP kangaroo.
+    Requires -f pubkey.txt and -r start:end (or -b bits).
+
+    Example:
+      keyhunt -m kangaroo -f pubkey.txt -r 1:100000
+
+  vanity
+    Searches for a private key whose address starts with a specific
+    prefix pattern. Loads a vanity target via -v flag.
+    Supports: -v target, -e endomorphism, -x modes
+
+    How it works:
+      1. Parse the target prefix and build matching rules
+      2. Generate candidate keys and derive addresses
+      3. Check if the address starts with the target prefix
+      4. On match, prints the private key and full address
+
+    Example:
+      keyhunt -m vanity -v 1Cool -e -t 8
+
+  minikeys
+    Generates and tests Bitcoin minikeys (short private keys starting
+    with 'S'). Each valid minikey starts with 'S' and its SHA256 hash
+    begins with 0x00. Useful for creating short, memorable keys.
+    Supports: -C base string, -8 custom alphabet, -f targets
+
+    How it works:
+      1. Generate candidate minikey strings
+      2. Validate: starts with S, SHA256 first byte is 0x00
+      3. Derive private key -> public key -> address
+      4. Check against target address file
+
+    Example:
+      keyhunt -m minikeys -f targets.txt -t 4
+      keyhunt -m minikeys -C SRPqx8QiwnW4WNWnTVa2W5 -f targets.txt
+
+  mnemonic
+    Generates random BIP-39 mnemonics, validates their checksum,
+    derives seed via PBKDF2-HMAC-SHA512 (2048 rounds), then derives
+    private keys via BIP-32 along three standard paths:
+      BIP-44  m/44'/0'/0'/0/N  Legacy P2PKH (1...)
+      BIP-49  m/49'/0'/0'/0/N  Wrapped SegWit (3...)
+      BIP-84  m/84'/0'/0'/0/N  Native SegWit (bc1...)
+    Supports all 10 BIP-39 languages and ETH via -W flag.
+    Supports: -w word count, -W ETH, -L language, -D index count
+
+    How it works:
+      1. Generate random entropy (128-256 bits)
+      2. SHA-256 checksum, encode as 12-24 BIP-39 words
+      3. Validate mnemonic checksum (rejects invalid)
+      4. PBKDF2 -> seed -> BIP-32 master key
+      5. Derive child keys along each path
+      6. Compute address for each derived key
+      7. Check against binary fuse filter of target addresses
+
+    Example:
+      keyhunt -m mnemonic -w 24 -L english -f targets.txt -t 4
+      keyhunt -m mnemonic -W -L all -f eth_targets.txt -t 8
+      keyhunt -m mnemonic -D 50 -f targets.txt -t 8
+
+  poetry
+    Generates random poetry words, encodes them as hex private keys,
+    then derives public keys and checks against target addresses.
+    Uses a custom word list (tests/poetry.txt, 547 words).
+    Supports: -f targets, -x modes
+
+    How it works:
+      1. Pick random poetry words (3 words per group)
+      2. Decode word indices into hex private key
+      3. Derive public key -> address
+      4. Check against binary fuse filter of targets
+
+    Example:
+      keyhunt -m poetry -f targets.txt -t 4
+
+  brainwallet
+    Generates passphrases from a word list (tests/brainwalletwords.txt,
+    352 words), then applies SHA-256 to derive private keys. Tests
+    multiple mutations of each passphrase: double-SHA256, number
+    suffixes (1,123,0,2024,69,420,7,13,99), leet speak substitutions,
+    capitalization, ALL CAPS, and various separators.
+    Supports: -w word count, -f targets, -x modes
+
+    How it works:
+      1. Pick 1-24 random words from wordlist (or use -w count)
+      2. Apply SHA256 and double-SHA256 to the passphrase
+      3. Try number suffixes, leet speak, caps, separators
+      4. Derive public key -> address for each variant
+      5. Check each against binary fuse filter of targets
+
+    Example:
+      keyhunt -m brainwallet -f targets.txt -t 8
+      keyhunt -m brainwallet -w 3 -f targets.txt -t 4
+
+===============================================================
+  OPTIONS
+===============================================================
+
+REQUIRED:
+  -m mode      Search mode (see above). Default: address
+  -f file      Input file with target data
+
+CRYPTO:
+  -c crypto    btc, eth, ltc, doge, xrp, sol, bch, btg, etc, troot, all, auto. Default: btc
+               auto  = Auto-detect currency from address file content
+               btc   = Bitcoin 1.../3.../bc1q... addresses
+               eth   = Ethereum 0x... addresses
+               ltc   = Litecoin L... addresses
+               doge  = Dogecoin D... addresses
+               xrp   = XRP (Ripple) r... addresses
+               sol   = Solana ed25519 base58 addresses (CPU address mode)
+               bch   = Bitcoin Cash addresses
+               btg   = Bitcoin Gold G... addresses
+               etc   = Ethereum Classic 0x... addresses
+               troot = Taproot (P2TR) bc1p... addresses
+               all   = All supported currencies simultaneously
+               Applies to: address, rmd160, vanity modes
+
+  -N[url]      Node balance check when key is found (requires curl)
+               Without URL: uses public APIs (blockstream.info, etherscan)
+               With URL: connects to your own Bitcoin Core node via RPC
+               Format: http://user:pass@host:port (default: http://127.0.0.1:8332)
+               Supports: BTC (own node or public API), ETH, LTC, ETC (public APIs)
+
+RANGE:
+  -r SR:EN     Hex range StartRange:EndRange
+               EndRange optional (defaults to curve order)
+  -T timestamp Unix timestamp (seconds since epoch). Sets search range
+               to ~4B keys centered around that timestamp value.
+               Useful for puzzles where key was generated at a known time.
+  -Z bytes     Strip N leading zero bytes from key (requires -b).
+               Reduces search space for padded keys.
+               Example: -b 72 -Z 6 strips 6 zero bytes, searches ~16M keys
+  -n number    Sequential keys per cycle / BSGS baby-step table size
+               Must be divisible by 1024 for BSGS mode
+  -b bits      Bit range - only test keys with this many bits
+
+BSGS OPTIONS (-m bsgs):
+  -B mode      BSGS giant-step strategy (sequential/backward/both/random/dance)
+  -n number    Table span N (hex 0x... or decimal). MUST be >= 1048576 (2^20)
+               and have an exact square root. Default: 0x100000000000
+  -k value|auto  K factor (multiplies baby-step M). Prefer powers of 2:
+               1,2,4,8,16,32,64,128,256,512,1024,...  -k auto picks from RAM/-M
+  -S           Save/load BSGS bloom filters and baby-step table to disk
+  -z value     Bloom size multiplier (>= 1). Default: 1
+  -M MB|auto   Also budgets BSGS blooms/tables (and CUDA VRAM for other modes)
+
+  Valid N and max K by bit class (Keyhunt classic):
+    bits 20 n=0x100000 k<=1 | 24 0x1000000 k<=4 | 32 0x100000000 k<=64
+    40 0x10000000000 k<=1024 | 44 0x100000000000 k<=4096 | 48 0x1000000000000 k<=16384
+  RAM guide: 2G -k128 | 4G -k256 | 8G -k512 | 16G -k1024 | 32G -k2048
+    64G -n 0x100000000000 -k4096 | 128G -n 0x400000000000 -k4096
+    256G -n 0x400000000000 -k8192 | 512G -n 0x1000000000000 -k8192
+    1TB -n 0x1000000000000 -k16384  (see README for full table)
+
+MNEMONIC OPTIONS (-m mnemonic):
+  -w count     Word count: 0=random, 12, 15, 18, 21, 24. Default: 0
+  -W           Check ETH addresses (keccak256) instead of BTC
+  -L lang      BIP39 language. Default: english
+               english, spanish, french, italian, czech, portuguese,
+               japanese, korean, chinese_simplified, chinese_traditional
+               Use 'all' to cycle through all 10 languages
+  -D count     Address indices per derivation path (1-100). Default: 1
+               Total checks per mnemonic = 3 paths x -D value
+
+VANITY OPTIONS (-m vanity):
+  -v value     Target vanity prefix (e.g. "1Cool", "bc1qabc")
+
+MINIKEY OPTIONS (-m minikeys):
+  -C string    Base minikey string (22 char). Starts with S
+  -8 alpha     Custom base58 alphabet (58 chars)
+
+BRAINWALLET OPTIONS (-m brainwallet):
+  -w count     0=random, 1,2,3,6,9,12,15,18,21,24. Default: 0
+  Mutations per passphrase: SHA256, double-SHA256, number suffixes,
+  leet speak, capitalize, ALL CAPS, separators (space/dash/dot/none)
+
+ADDRESS FILTER:
+  -l look      compress, uncompress, both. Default: both
+               Applies to: address, rmd160, pubkey2addr modes
+
+DERIVATION PATH (-m address / -m rmd160):
+  -p path      BIP-32 derivation path (e.g. m/44'/0'/0'/0, m/84'/0'/0'/0)
+               Each random key is used as a BIP-32 master key.
+               Child keys are derived along the path for indices 0 to -D-1.
+  -D count     Child key indices to check per base key (1-100). Default: 1
+               Example: -p m/84'/0'/0'/0 -D 10 checks indices 0-9
+               Supports hardened: ' or H or h suffix (e.g. 44')
+               Applies to: address, rmd160 modes
+
+THREADING & SEARCH PATTERNS:
+  -t tn        Number of threads. Default: 1
+  -x mode      Key generation / search pattern:
+                 sequential - Linear walk from start to end of range
+                 random     - Random key selection across full range
+                 chaos      - Logistic map chaotic sequence (r=3.99999)
+                 gravity    - Adaptive: clusters around previously found keys
+                 spiral     - Archimedean spiral from range midpoint
+                 reverse    - Inverted BSGS baby/giant step roles
+                 auto       - Cycles: spiral->chaos->gravity->reverse
+               Works with ALL modes including BSGS.
+
+PERFORMANCE:
+  -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)
+  -A mode      CPU vectorization (default: auto):
+                 auto   - Detect best: AVX-512 ÔåÆ AVX2 ÔåÆ SSE ÔåÆ scalar
+                 none, sse, avx, avx2, avx512
+               AVX2 = 8-wide hash160; AVX-512 = 16-wide; AVX1/SSE = 4-wide SSE.
+  -U backend   GPU backend: none, cuda, opencl (default: none)
+                 cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)
+                 opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU
+  -G N         GPU batch size hint (keys). Default: auto from -M / VRAM
+  -M MB|auto   GPU/search memory budget in megabytes (KeyHunt-Cuda style).
+               Examples: -M 512  -M 2048  -M 2G  -M auto
+               Under CUDA, default is auto (size from free VRAM).
+               Larger budget => larger privkey/pubkey batches (TDR-safe chunks).
+               Legacy: -M matrix enables the matrix screen effect.
+  -I stride    Stride value for address/rmd160/xpoint modes
+  -y           Dry-run: print resolved config (incl. memory plan) and exit
+
+OUTPUT:
+  -s seconds   Stats output interval in seconds. 0=off. Default: 30
+  -q           Quiet mode - suppress per-thread output
+  -V           Verbose mode - show full derivation path and chain code
+  -6           Skip SHA-256 checksum validation on cached data files
+               Hits also written to FOUND_BTC.txt / FOUND_ETH.txt / FOUND_SOL.txt
+               (plus legacy KEYFOUNDKEYFOUND.txt)
+
+===============================================================
+  FILE FORMATS
+===============================================================
+
+  Address targets:    One address per line (auto-detected format):
+                      BTC:   1..., 3..., bc1q..., bc1p...
+                      ETH:   0x...
+                      LTC:   L...
+                      DOGE:  D...
+                      XRP:   r...
+                      BTG:   G...
+  RMD160 targets:     One 40-char hex RIPEMD-160 hash per line
+  Public key targets: One hex public key per line (64/66/130 chars)
+  Taproot targets:    One 64-char hex x-only output key per line
+  Vanity targets:     Via -v flag, not file
+
+===============================================================
+  EXAMPLES
+===============================================================
+
+  keyhunt -m address -f targets.txt -t 8
+    Search for BTC address matches using 8 threads
+
+  keyhunt -m pubkey2addr -f targets.txt -x auto -t 4
+    Random key generation, BTC addresses, auto search pattern
+
+  keyhunt -m pubkey2addr -c eth -f eth_targets.txt -t 8
+    Random key generation, ETH addresses, 8 threads
+
+  keyhunt -m address -f targets.txt -x chaos -e -t 8
+    Address search with chaos pattern and endomorphism
+
+  keyhunt -m rmd160 -f hashes.rmd -l compress -x gravity -t 8
+    RMD160 hash search with compressed keys and gravity pattern
+
+  keyhunt -m xpoint -f pubkeys.txt -t 8
+    X-coordinate matching against public key file
+
+  keyhunt -m bsgs -f pubkeys.txt -B sequential -n 0x1000000 -t 4
+    BSGS puzzle solver, sequential giant steps, 1M baby steps
+
+  keyhunt -m bsgs -f pubkeys.txt -x auto -S -t 8
+    BSGS with auto search cycling, save bloom filters to disk
+
+  keyhunt -m mnemonic -w 24 -L english -f targets.txt -t 4
+    24-word English mnemonics, check BIP-44/49/84
+
+  keyhunt -m mnemonic -W -L all -f eth_targets.txt -t 8
+    Mnemonics in all 10 languages, ETH address matching
+
+  keyhunt -m mnemonic -D 50 -f targets.txt -t 8
+    Check 50 address indices per path (150 total per mnemonic)
+
+  keyhunt -m vanity -v 1Cool -e -t 8
+    Vanity search for 1Cool... with endomorphism
+
+  keyhunt -m address -c troot -f troot_targets.txt -t 8
+    Taproot (P2TR) bc1p... address search
+
+  keyhunt -m address -c ltc -f ltc_targets.txt -t 8
+    Litecoin L... address search
+
+  keyhunt -m address -c bch -f bch_targets.txt -t 8
+    Bitcoin Cash address search
+
+  keyhunt -m address -c btg -f btg_targets.txt -t 8
+    Bitcoin Gold G... address search
+
+  keyhunt -m address -c etc -f etc_targets.txt -t 8
+    Ethereum Classic 0x... address search
+
+  keyhunt -m address -c all -f all_targets.txt -t 8
+    Search BTC + ETH + LTC + BCH + BTG + ETC simultaneously
+
+  keyhunt -m rmd160 -c ltc -f ltc_hashes.rmd -t 8
+    Litecoin RMD160 hash search
+
+  keyhunt -m address -c troot -p "m/86'/0'/0'/0" -D 10 -f troot_targets.txt -V -t 8
+    Taproot search with BIP-86 derivation, verbose output
+
+  keyhunt -m address -p "m/84'/0'/0'/0" -D 20 -f targets.txt -V -t 8
+    BTC address search with BIP-84 derivation, 20 indices, verbose
+
+  keyhunt -m rmd160 -p "m/44'/0'/0'/0" -D 10 -f hashes.rmd -t 8
+    RMD160 search with BIP-44 derivation path
+
+  keyhunt -m brainwallet -w 3 -f targets.txt -t 8
+    Brainwallet with 3-word passphrases
+
+  keyhunt -m minikeys -C SRPqx8QiwnW4WNWnTVa2W5 -f targets.txt
+    Minikeys from custom base string
+
+  keyhunt -m address -f targets.txt -r 1:FFFF -t 8
+    Search first 65536 keys in range
+
+  keyhunt -m address -f targets.txt -b 40 -t 8
+    Only test keys with 40 bits (for short-key puzzles)
+
+  keyhunt -m address -f targets.txt -T 1609459200 -t 8
+    Search around Jan 1 2021 timestamp (~4B keys range)
+
+  keyhunt -m address -f targets.txt -T 1609459200 -b 32 -t 8
+    Timestamp + bit range for tighter search window
+
+  keyhunt -m address -f targets.txt -T 1421345234 -b 72 -t 8
+    Bitcoin puzzle search using funding timestamp (Jan 15 2015)
+
+  keyhunt -m address -f targets.txt -b 72 -t 8 -x auto
+    Puzzle 72 search with auto pattern cycling
+
+  keyhunt -m address -c all -f mixed_targets.txt -t 8
+    Search all currencies simultaneously
+
+  keyhunt -m address -c auto -f mixed_targets.txt -t 8
+    Auto-detect currencies from file content
+
+  keyhunt -m address -c btc -f targets.txt -N -t 8
+    Search with public API balance check
+
+  keyhunt -m address -c btc -f targets.txt -N http://user:pass@127.0.0.1:8332 -t 8
+    Search with own Bitcoin Core node balance check
+
+  keyhunt -m address -p "m/84'/0'/0'/0" -D 20 -f targets.txt -V -t 8
+    BIP-84 derivation with verbose output
+
+  keyhunt -m address -p "m/86'/0'/0'/0" -c troot -D 10 -f troot.txt -V -t 8
+    BIP-86 Taproot derivation with verbose output
+
+  keyhunt -m pubkey2addr -f targets.txt -q -s 10 -t 4
+    Quiet mode, stats every 10 seconds
+
+===============================================================
+  BITCOIN PUZZLE SEARCH (72-160)
+===============================================================
+
+  For puzzles 72-160, use timestamp 1421345234 (Jan 15 2015 18:07 UTC)
+  All puzzles funded in single tx: 08389f34c98c606322740c0be6a7125d9860bb8d5cb182c02f98461e5fa6cd15
+  Block: 339085, 256 outputs, puzzles 1-256
+
+  Search strategy:
+    1. Start with lower bit puzzles (72-80) - faster to search
+    2. Use -T 1421345234 to constrain by funding timestamp
+    3. Combine with -x auto for best coverage
+    4. If you find ONE key, derive all others via BIP-32
+
+  Example puzzle searches:
+    keyhunt -m address -f tests/unsolvedpuzzles.txt -b 72 -T 1421345234 -t 8 -x auto
+    keyhunt -m address -f tests/unsolvedpuzzles.txt -b 80 -T 1421345234 -t 8
+    keyhunt -m address -f tests/unsolvedpuzzles.txt -b 100 -T 1421345234 -t 8
+    keyhunt -m address -f tests/unsolvedpuzzles.txt -b 128 -T 1421345234 -t 8
+
+  Run all puzzles 72-160 batch:
+    bash run_puzzle_search.sh
+
+===============================================================
+  TrueCollider Search Modes + Binary Fuse Filters
+  Developed & Modified by TrueScent
+  Donations:
+    BTC:  1HmztBLDnwwaKAGbtALsYvCNBuoJYEic3h
+    Tips to Iceland: bc1q39meky2mn5qjq704zz0nnkl0v7kj4uz6r529at
+===============================================================
+

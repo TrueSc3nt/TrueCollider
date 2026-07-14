@@ -24,8 +24,8 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 | Batch size | **`-M auto`/`-M MB`** sizes from free VRAM (Rotor/Collider style); **`-G`** optional override. Device launches use 256-thread grids in TDR-safe chunks (up to 64K) |
 | Device hash160 bloom search | Implemented but **not** production (self-test historically failed) |
 | vanity / xpoint / pubkey2addr / minikeys / mnemonic / poetry / brainwallet | GPU EC + host filter (derivation stays CPU) |
-| BSGS | GPU EC for baby-table build; giant-step CPU |
-| SOL (`-c sol`) | **CUDA SHA512 + host ed25519** (`-U cuda`) |
+| BSGS | GPU EC for baby-table build + giant `ComputePublicKey`; GRP loop still CPU |
+| SOL (`-c sol`) | Prefers **full device** `ge_scalarmult_base`; falls back to CUDA SHA512 + host ge |
 | Kangaroo | CPU (`-m kangaroo`) |
 
 ### CUDA path (`-U cuda`)
@@ -36,7 +36,7 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 4. Host encode (`hash160` or `keccak`) + `bloom_check`.
 5. CPU confirms hits and writes keys.
 
-**Limits:** no `-e` on GPU EC; prefer low `-t` with CUDA; Solana stays CPU.
+**Limits:** no `-e` on GPU EC; prefer low `-t` with CUDA; Solana uses CUDA ed25519 (device ge preferred).
 
 ### OpenCL path (`-U opencl`)
 
