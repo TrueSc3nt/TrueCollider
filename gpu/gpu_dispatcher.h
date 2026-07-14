@@ -63,11 +63,19 @@ int gpu_dispatcher_pubkey_batch(struct GpuDispatcher* disp,
                                 int compressed,
                                 uint8_t* out_pubs65);
 
-/* Solana: seeds (count*32) → ed25519 pubs (count*32). CUDA SHA512 + host ge. */
+/* Solana: seeds (count*32) → ed25519 pubs (count*32). Full device ge when CUDA ready. */
 int gpu_dispatcher_ed25519_pubkey_batch(struct GpuDispatcher* disp,
                                         const uint8_t* seeds32,
                                         uint32_t count,
                                         uint8_t* out_pubs32);
+
+/* BSGS giant-step GRP on CUDA (GSn + _2GSn upload; cycle run returns x-coords). */
+int gpu_dispatcher_bsgs_grp_init(struct GpuDispatcher* disp,
+                                 const uint8_t* gsn_xy64, int half,
+                                 const uint8_t* twogsn_xy64);
+int gpu_dispatcher_bsgs_grp_ready(const struct GpuDispatcher* disp);
+int gpu_dispatcher_bsgs_grp_run(struct GpuDispatcher* disp,
+                                uint8_t* start_xy64, int n_cycles, uint8_t* out_x32);
 
 /*
  * Submit a batch of compressed pubkeys for address-mode hash+filter.

@@ -86,7 +86,7 @@ keyhunt_cuda.exe -m address -c sol -f tests/sol_sample.txt -r 1:8 -U cuda -M aut
 keyhunt_cuda.exe -m address -f tests/66.txt -U cuda -M auto -y
 ```
 
-**Solana:** prefers full device ed25519; falls back to CUDA SHA512 + host ge. BSGS GRP remains CPU; baby table + giant `ComputePublicKey` use GPU EC.
+**Solana:** full device ed25519 `ge_scalarmult_base` when self-test passes (else CUDA SHA512 + host ge). BSGS: device GRP giant-step + host bloom (serial cycles today); baby table still GPU-assisted.
 
 Hits → `FOUND_BTC.txt` / `FOUND_ETH.txt` / `FOUND_SOL.txt` + `KEYFOUNDKEYFOUND.txt`.
 

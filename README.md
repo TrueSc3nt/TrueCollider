@@ -266,8 +266,8 @@ Works with essentially all modes including BSGS. See also [`COLLIDER_MODES_READM
 | `-E` | Present in the `getopt` option string but **no handler** — do not use |
 | `-N` balance check | **Partial**: flag + `node_check_balance()` (curl → RPC/APIs) exist; **not yet called from the hit/write path**. Enabling `-N` currently only prints that checking is “enabled”. See [Balance checking](#online-balance-checking--n). |
 | `pub2rmd` mode | Removed; use `-m rmd160` |
-| Device CUDA hash160 + on-GPU bloom | Implemented but **not production** (self-test historically failed; host filter used) |
-| Full GPU GRP BSGS loop | Baby-table + giant `ComputePublicKey` assisted; GRP giant loop still CPU |
+| Device CUDA hash160 + on-GPU bloom | **Shipped** — self-test must pass; otherwise host-filter fallback |
+| Full GPU GRP BSGS loop | **Shipped** (device GRP + host bloom); not yet throughput-tuned |
 | Kangaroo on GPU | Not shipped |
 
 ---
@@ -441,15 +441,15 @@ Runtime: `-U none` (default) · `-U cuda` · `-U opencl`.
 
 | Path | Status |
 |------|--------|
-| BTC-family `address` / `rmd160` | GPU EC + **host** hash160 + **host** bloom |
+| BTC-family `address` / `rmd160` | GPU EC + **device** hash160 + **device** bloom (host fallback) |
 | ETH / ETC `address` | GPU EC + host keccak + host bloom |
 | Taproot `troot` | GPU EC + host tweak + filter |
-| vanity / xpoint / pubkey2addr / minikeys | GPU EC + host filter |
+| vanity / xpoint / pubkey2addr / minikeys | GPU EC + filter (device when hash160 ready) |
 | mnemonic / poetry / brainwallet | Derive on CPU; GPU EC afterward |
-| BSGS | GPU assists baby-table + giant `ComputePublicKey`; **GRP loop CPU** |
-| Solana `-c sol` | Prefers **full device** ed25519 `ge_scalarmult_base`; falls back to GPU SHA512 + **host** ge |
+| BSGS | GPU baby-table + **device GRP** giant-step (host bloom); serial cycles today |
+| Solana `-c sol` | **Full device** ed25519 `ge_scalarmult_base` (host-ge fallback) |
 | Kangaroo | **CPU only** |
-| Device hash160 bloom search | **Not production** (host filter) |
+| Device hash160 bloom search | **Shipped** when self-test passes |
 | `-e` endomorphism on GPU EC | **No** |
 | OpenCL | Host EC + GPU hash160 (`ENABLE_OPENCL` build; not default CUDA exe) |
 

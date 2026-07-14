@@ -48,17 +48,17 @@ Re-run: `powershell -ExecutionPolicy Bypass -File .\run_benchmarks.ps1`
 | rmd160 | `-U cuda -G 128 -t 1` | 165,068 keys/s | 117,691 keys/s |
 | address ETH | `-c eth -U cuda -G 128 -t 1` | 66,969 keys/s | 49,561 keys/s |
 
-Path: **GPU secp256k1 EC** + **host** hash/keccak + host bloom. Prefer `-M auto` for larger batches (re-bench after). Device hash160 self-test is not trusted yet.
+Path: **GPU secp256k1 EC** + **device** hash160/bloom when self-test passes (else host hash/keccak + host bloom). Prefer `-M auto` for larger batches (re-bench after).
 
-## GPU EC wired (host filter) vs still CPU-only
+## GPU EC wired vs still CPU-only
 
 | Mode | GPU? |
 |------|------|
-| address / rmd160 / ETH / troot / vanity / xpoint / pubkey2addr / minikeys | **Yes** — GPU EC |
+| address / rmd160 / ETH / troot / vanity / xpoint / pubkey2addr / minikeys | **Yes** — GPU EC; BTC-family uses device hash160+bloom when ready |
 | mnemonic / poetry / brainwallet | **Yes** — GPU EC after derive |
-| bsgs | **Partial** — GPU baby-table build; giant-step CPU |
-| address `-c sol` | **Yes** — GPU SHA512 + host ed25519 ge |
-| Full on-device hash160+bloom | **No** — host filter |
+| bsgs | **Yes** — GPU baby-table + device GRP (host bloom; serial cycles) |
+| address `-c sol` | **Yes** — full device ed25519 ge |
+| Full on-device hash160+bloom | **Yes** when self-test passes |
 | kangaroo | **No** — CPU only |
 
 See hub [README.md](../README.md) for commands and BSGS `-n`/`-k` tables.
@@ -68,4 +68,4 @@ See hub [README.md](../README.md) for commands and BSGS `-n`/`-k` tables.
 - AVX2/AVX-512 CPUs should beat these SSE-only CPU figures substantially for hash160 modes.
 - On this SSE host, CPU `-e` often beats the current CUDA EC+host-hash path for BTC address/rmd160.
 - Prefer `-t 1` with CUDA to avoid GPU lock contention.
-- Roadmap leftovers (full GPU BSGS giant-step, Kangaroo GPU, Solana CUDA): [ROADMAP.md](ROADMAP.md).
+- Roadmap leftovers (Kangaroo GPU, BSGS GRP throughput): [ROADMAP.md](ROADMAP.md).

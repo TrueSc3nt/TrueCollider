@@ -525,78 +525,225 @@ static __device__ void sha256_oneblock(const uint8_t block[64], uint8_t out[32])
         store_be32(out + i * 4, state[i]);
 }
 
-static __device__ __forceinline__ uint32_t rmd_f(int j, uint32_t x, uint32_t y, uint32_t z) {
-    if (j < 16) return x ^ y ^ z;
-    if (j < 32) return (x & y) | (~x & z);
-    if (j < 48) return (x | ~y) ^ z;
-    if (j < 64) return (x & z) | (y & ~z);
-    return x ^ (y | ~z);
-}
-
-static __device__ __forceinline__ uint32_t rol32(uint32_t x, int n) {
-    return (x << n) | (x >> (32 - n));
-}
-
-static __device__ void ripemd160_oneblock(const uint8_t block[64], uint8_t out[20]) {
-    static const int r[80] = {
-        0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,
-        7,4,13,1,10,6,15,3,12,0,9,5,2,14,11,8,
-        3,10,14,4,9,15,8,1,2,7,0,6,13,11,5,12,
-        1,9,11,10,0,8,12,4,13,3,7,15,14,5,6,2,
-        4,0,5,9,7,12,2,10,14,1,3,8,11,6,15,13
-    };
-    static const int rp[80] = {
-        5,14,7,0,9,2,11,4,13,6,15,8,1,10,3,12,
-        6,11,3,7,0,13,5,10,14,15,8,12,4,9,1,2,
-        15,5,1,3,7,14,6,9,11,8,12,2,10,0,4,13,
-        8,6,4,1,3,11,15,0,5,12,2,13,9,7,10,14,
-        12,15,10,4,1,5,8,7,9,14,2,13,0,3,11,6
-    };
-    static const int s[80] = {
-        11,14,15,12,5,8,7,9,11,13,14,15,6,7,9,8,
-        7,6,8,13,11,9,7,15,7,12,15,9,11,7,13,12,
-        11,13,6,7,14,9,13,15,14,8,13,6,5,12,7,5,
-        11,12,14,15,14,15,9,8,9,14,5,6,8,6,5,12,
-        9,15,5,11,6,8,13,12,5,12,13,14,11,8,5,6
-    };
-    static const int sp[80] = {
-        8,9,9,11,13,15,15,5,7,7,8,11,14,14,12,6,
-        9,13,15,7,12,8,9,11,7,7,12,7,6,15,13,11,
-        9,7,15,11,8,6,6,14,12,13,5,14,13,13,7,5,
-        15,5,8,11,14,14,6,14,6,9,12,9,12,5,15,8,
-        8,5,12,9,12,5,14,6,8,13,6,5,15,13,11,11
-    };
-    static const uint32_t K[5]  = {0, 0x5a827999, 0x6ed9eba1, 0x8f1bbcdc, 0xa953fd4e};
-    static const uint32_t Kp[5] = {0x50a28be6, 0x5c4dd124, 0x6d703ef3, 0x7a6d76e9, 0};
-
+static __device__ void ripemd160_transform(uint32_t s[5], const uint8_t chunk[64]) {
+    uint32_t a1 = s[0], b1 = s[1], c1 = s[2], d1 = s[3], e1 = s[4];
+    uint32_t a2 = a1, b2 = b1, c2 = c1, d2 = d1, e2 = e1;
     uint32_t w[16];
 #pragma unroll
     for (int i = 0; i < 16; i++)
-        w[i] = load_le32(block + i * 4);
+        w[i] = (uint32_t)chunk[i*4] | ((uint32_t)chunk[i*4+1]<<8) |
+               ((uint32_t)chunk[i*4+2]<<16) | ((uint32_t)chunk[i*4+3]<<24);
 
-    uint32_t a = 0x67452301, b = 0xefcdab89, c = 0x98badcfe, d = 0x10325476, e = 0xc3d2e1f0;
-    uint32_t ap = a, bp = b, cp = c, dp = d, ep = e;
+#define ROL(x,n) (((x)<<(n))|((x)>>(32-(n))))
+#define f1(x,y,z) ((x)^(y)^(z))
+#define f2(x,y,z) (((x)&(y))|(~(x)&(z)))
+#define f3(x,y,z) (((x)|~(y))^(z))
+#define f4(x,y,z) (((x)&(z))|(~(z)&(y)))
+#define f5(x,y,z) ((x)^((y)|~(z)))
+#define Round(a,b,c,d,e,f,x,k,r) do { a = ROL(a + (f) + (x) + (k), (r)) + (e); c = ROL(c, 10); } while(0)
+#define R11(a,b,c,d,e,x,r) Round(a,b,c,d,e,f1(b,c,d),x,0,r)
+#define R21(a,b,c,d,e,x,r) Round(a,b,c,d,e,f2(b,c,d),x,0x5A827999u,r)
+#define R31(a,b,c,d,e,x,r) Round(a,b,c,d,e,f3(b,c,d),x,0x6ED9EBA1u,r)
+#define R41(a,b,c,d,e,x,r) Round(a,b,c,d,e,f4(b,c,d),x,0x8F1BBCDCu,r)
+#define R51(a,b,c,d,e,x,r) Round(a,b,c,d,e,f5(b,c,d),x,0xA953FD4Eu,r)
+#define R12(a,b,c,d,e,x,r) Round(a,b,c,d,e,f5(b,c,d),x,0x50A28BE6u,r)
+#define R22(a,b,c,d,e,x,r) Round(a,b,c,d,e,f4(b,c,d),x,0x5C4DD124u,r)
+#define R32(a,b,c,d,e,x,r) Round(a,b,c,d,e,f3(b,c,d),x,0x6D703EF3u,r)
+#define R42(a,b,c,d,e,x,r) Round(a,b,c,d,e,f2(b,c,d),x,0x7A6D76E9u,r)
+#define R52(a,b,c,d,e,x,r) Round(a,b,c,d,e,f1(b,c,d),x,0,r)
 
-    for (int j = 0; j < 80; j++) {
-        int round = j / 16;
-        uint32_t t = rol32(a + rmd_f(j, b, c, d) + w[r[j]] + K[round], s[j]) + e;
-        a = e; e = d; d = rol32(c, 10); c = b; b = t;
+    R11(a1, b1, c1, d1, e1, w[0], 11);
+    R12(a2, b2, c2, d2, e2, w[5], 8);
+    R11(e1, a1, b1, c1, d1, w[1], 14);
+    R12(e2, a2, b2, c2, d2, w[14], 9);
+    R11(d1, e1, a1, b1, c1, w[2], 15);
+    R12(d2, e2, a2, b2, c2, w[7], 9);
+    R11(c1, d1, e1, a1, b1, w[3], 12);
+    R12(c2, d2, e2, a2, b2, w[0], 11);
+    R11(b1, c1, d1, e1, a1, w[4], 5);
+    R12(b2, c2, d2, e2, a2, w[9], 13);
+    R11(a1, b1, c1, d1, e1, w[5], 8);
+    R12(a2, b2, c2, d2, e2, w[2], 15);
+    R11(e1, a1, b1, c1, d1, w[6], 7);
+    R12(e2, a2, b2, c2, d2, w[11], 15);
+    R11(d1, e1, a1, b1, c1, w[7], 9);
+    R12(d2, e2, a2, b2, c2, w[4], 5);
+    R11(c1, d1, e1, a1, b1, w[8], 11);
+    R12(c2, d2, e2, a2, b2, w[13], 7);
+    R11(b1, c1, d1, e1, a1, w[9], 13);
+    R12(b2, c2, d2, e2, a2, w[6], 7);
+    R11(a1, b1, c1, d1, e1, w[10], 14);
+    R12(a2, b2, c2, d2, e2, w[15], 8);
+    R11(e1, a1, b1, c1, d1, w[11], 15);
+    R12(e2, a2, b2, c2, d2, w[8], 11);
+    R11(d1, e1, a1, b1, c1, w[12], 6);
+    R12(d2, e2, a2, b2, c2, w[1], 14);
+    R11(c1, d1, e1, a1, b1, w[13], 7);
+    R12(c2, d2, e2, a2, b2, w[10], 14);
+    R11(b1, c1, d1, e1, a1, w[14], 9);
+    R12(b2, c2, d2, e2, a2, w[3], 12);
+    R11(a1, b1, c1, d1, e1, w[15], 8);
+    R12(a2, b2, c2, d2, e2, w[12], 6);
+    R21(e1, a1, b1, c1, d1, w[7], 7);
+    R22(e2, a2, b2, c2, d2, w[6], 9);
+    R21(d1, e1, a1, b1, c1, w[4], 6);
+    R22(d2, e2, a2, b2, c2, w[11], 13);
+    R21(c1, d1, e1, a1, b1, w[13], 8);
+    R22(c2, d2, e2, a2, b2, w[3], 15);
+    R21(b1, c1, d1, e1, a1, w[1], 13);
+    R22(b2, c2, d2, e2, a2, w[7], 7);
+    R21(a1, b1, c1, d1, e1, w[10], 11);
+    R22(a2, b2, c2, d2, e2, w[0], 12);
+    R21(e1, a1, b1, c1, d1, w[6], 9);
+    R22(e2, a2, b2, c2, d2, w[13], 8);
+    R21(d1, e1, a1, b1, c1, w[15], 7);
+    R22(d2, e2, a2, b2, c2, w[5], 9);
+    R21(c1, d1, e1, a1, b1, w[3], 15);
+    R22(c2, d2, e2, a2, b2, w[10], 11);
+    R21(b1, c1, d1, e1, a1, w[12], 7);
+    R22(b2, c2, d2, e2, a2, w[14], 7);
+    R21(a1, b1, c1, d1, e1, w[0], 12);
+    R22(a2, b2, c2, d2, e2, w[15], 7);
+    R21(e1, a1, b1, c1, d1, w[9], 15);
+    R22(e2, a2, b2, c2, d2, w[8], 12);
+    R21(d1, e1, a1, b1, c1, w[5], 9);
+    R22(d2, e2, a2, b2, c2, w[12], 7);
+    R21(c1, d1, e1, a1, b1, w[2], 11);
+    R22(c2, d2, e2, a2, b2, w[4], 6);
+    R21(b1, c1, d1, e1, a1, w[14], 7);
+    R22(b2, c2, d2, e2, a2, w[9], 15);
+    R21(a1, b1, c1, d1, e1, w[11], 13);
+    R22(a2, b2, c2, d2, e2, w[1], 13);
+    R21(e1, a1, b1, c1, d1, w[8], 12);
+    R22(e2, a2, b2, c2, d2, w[2], 11);
+    R31(d1, e1, a1, b1, c1, w[3], 11);
+    R32(d2, e2, a2, b2, c2, w[15], 9);
+    R31(c1, d1, e1, a1, b1, w[10], 13);
+    R32(c2, d2, e2, a2, b2, w[5], 7);
+    R31(b1, c1, d1, e1, a1, w[14], 6);
+    R32(b2, c2, d2, e2, a2, w[1], 15);
+    R31(a1, b1, c1, d1, e1, w[4], 7);
+    R32(a2, b2, c2, d2, e2, w[3], 11);
+    R31(e1, a1, b1, c1, d1, w[9], 14);
+    R32(e2, a2, b2, c2, d2, w[7], 8);
+    R31(d1, e1, a1, b1, c1, w[15], 9);
+    R32(d2, e2, a2, b2, c2, w[14], 6);
+    R31(c1, d1, e1, a1, b1, w[8], 13);
+    R32(c2, d2, e2, a2, b2, w[6], 6);
+    R31(b1, c1, d1, e1, a1, w[1], 15);
+    R32(b2, c2, d2, e2, a2, w[9], 14);
+    R31(a1, b1, c1, d1, e1, w[2], 14);
+    R32(a2, b2, c2, d2, e2, w[11], 12);
+    R31(e1, a1, b1, c1, d1, w[7], 8);
+    R32(e2, a2, b2, c2, d2, w[8], 13);
+    R31(d1, e1, a1, b1, c1, w[0], 13);
+    R32(d2, e2, a2, b2, c2, w[12], 5);
+    R31(c1, d1, e1, a1, b1, w[6], 6);
+    R32(c2, d2, e2, a2, b2, w[2], 14);
+    R31(b1, c1, d1, e1, a1, w[13], 5);
+    R32(b2, c2, d2, e2, a2, w[10], 13);
+    R31(a1, b1, c1, d1, e1, w[11], 12);
+    R32(a2, b2, c2, d2, e2, w[0], 13);
+    R31(e1, a1, b1, c1, d1, w[5], 7);
+    R32(e2, a2, b2, c2, d2, w[4], 7);
+    R31(d1, e1, a1, b1, c1, w[12], 5);
+    R32(d2, e2, a2, b2, c2, w[13], 5);
+    R41(c1, d1, e1, a1, b1, w[1], 11);
+    R42(c2, d2, e2, a2, b2, w[8], 15);
+    R41(b1, c1, d1, e1, a1, w[9], 12);
+    R42(b2, c2, d2, e2, a2, w[6], 5);
+    R41(a1, b1, c1, d1, e1, w[11], 14);
+    R42(a2, b2, c2, d2, e2, w[4], 8);
+    R41(e1, a1, b1, c1, d1, w[10], 15);
+    R42(e2, a2, b2, c2, d2, w[1], 11);
+    R41(d1, e1, a1, b1, c1, w[0], 14);
+    R42(d2, e2, a2, b2, c2, w[3], 14);
+    R41(c1, d1, e1, a1, b1, w[8], 15);
+    R42(c2, d2, e2, a2, b2, w[11], 14);
+    R41(b1, c1, d1, e1, a1, w[12], 9);
+    R42(b2, c2, d2, e2, a2, w[15], 6);
+    R41(a1, b1, c1, d1, e1, w[4], 8);
+    R42(a2, b2, c2, d2, e2, w[0], 14);
+    R41(e1, a1, b1, c1, d1, w[13], 9);
+    R42(e2, a2, b2, c2, d2, w[5], 6);
+    R41(d1, e1, a1, b1, c1, w[3], 14);
+    R42(d2, e2, a2, b2, c2, w[12], 9);
+    R41(c1, d1, e1, a1, b1, w[7], 5);
+    R42(c2, d2, e2, a2, b2, w[2], 12);
+    R41(b1, c1, d1, e1, a1, w[15], 6);
+    R42(b2, c2, d2, e2, a2, w[13], 9);
+    R41(a1, b1, c1, d1, e1, w[14], 8);
+    R42(a2, b2, c2, d2, e2, w[9], 12);
+    R41(e1, a1, b1, c1, d1, w[5], 6);
+    R42(e2, a2, b2, c2, d2, w[7], 5);
+    R41(d1, e1, a1, b1, c1, w[6], 5);
+    R42(d2, e2, a2, b2, c2, w[10], 15);
+    R41(c1, d1, e1, a1, b1, w[2], 12);
+    R42(c2, d2, e2, a2, b2, w[14], 8);
+    R51(b1, c1, d1, e1, a1, w[4], 9);
+    R52(b2, c2, d2, e2, a2, w[12], 8);
+    R51(a1, b1, c1, d1, e1, w[0], 15);
+    R52(a2, b2, c2, d2, e2, w[15], 5);
+    R51(e1, a1, b1, c1, d1, w[5], 5);
+    R52(e2, a2, b2, c2, d2, w[10], 12);
+    R51(d1, e1, a1, b1, c1, w[9], 11);
+    R52(d2, e2, a2, b2, c2, w[4], 9);
+    R51(c1, d1, e1, a1, b1, w[7], 6);
+    R52(c2, d2, e2, a2, b2, w[1], 12);
+    R51(b1, c1, d1, e1, a1, w[12], 8);
+    R52(b2, c2, d2, e2, a2, w[5], 5);
+    R51(a1, b1, c1, d1, e1, w[2], 13);
+    R52(a2, b2, c2, d2, e2, w[8], 14);
+    R51(e1, a1, b1, c1, d1, w[10], 12);
+    R52(e2, a2, b2, c2, d2, w[7], 6);
+    R51(d1, e1, a1, b1, c1, w[14], 5);
+    R52(d2, e2, a2, b2, c2, w[6], 8);
+    R51(c1, d1, e1, a1, b1, w[1], 12);
+    R52(c2, d2, e2, a2, b2, w[2], 13);
+    R51(b1, c1, d1, e1, a1, w[3], 13);
+    R52(b2, c2, d2, e2, a2, w[13], 6);
+    R51(a1, b1, c1, d1, e1, w[8], 14);
+    R52(a2, b2, c2, d2, e2, w[14], 5);
+    R51(e1, a1, b1, c1, d1, w[11], 11);
+    R52(e2, a2, b2, c2, d2, w[0], 15);
+    R51(d1, e1, a1, b1, c1, w[6], 8);
+    R52(d2, e2, a2, b2, c2, w[3], 13);
+    R51(c1, d1, e1, a1, b1, w[15], 5);
+    R52(c2, d2, e2, a2, b2, w[9], 11);
+    R51(b1, c1, d1, e1, a1, w[13], 6);
+    R52(b2, c2, d2, e2, a2, w[11], 11);
 
-        t = rol32(ap + rmd_f(79 - j, bp, cp, dp) + w[rp[j]] + Kp[round], sp[j]) + ep;
-        ap = ep; ep = dp; dp = rol32(cp, 10); cp = bp; bp = t;
-    }
+    uint32_t t = s[0];
+    s[0] = s[1] + c1 + d2;
+    s[1] = s[2] + d1 + e2;
+    s[2] = s[3] + e1 + a2;
+    s[3] = s[4] + a1 + b2;
+    s[4] = t + b1 + c2;
+#undef ROL
+#undef f1
+#undef f2
+#undef f3
+#undef f4
+#undef f5
+#undef Round
+#undef R11
+#undef R21
+#undef R31
+#undef R41
+#undef R51
+#undef R12
+#undef R22
+#undef R32
+#undef R42
+#undef R52
+}
 
-    uint32_t na = 0x67452301 + c + dp;
-    uint32_t nb = 0xefcdab89 + d + ep;
-    uint32_t nc = 0x98badcfe + e + ap;
-    uint32_t nd = 0x10325476 + a + bp;
-    uint32_t ne = 0xc3d2e1f0 + b + cp;
-
-    store_le32(out + 0, na);
-    store_le32(out + 4, nb);
-    store_le32(out + 8, nc);
-    store_le32(out + 12, nd);
-    store_le32(out + 16, ne);
+static __device__ void ripemd160_oneblock(const uint8_t block[64], uint8_t out[20]) {
+    uint32_t s[5] = {0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u};
+    ripemd160_transform(s, block);
+#pragma unroll
+    for (int i = 0; i < 5; i++)
+        store_le32(out + i * 4, s[i]);
 }
 
 static __device__ void hash160_compressed33(const uint8_t *key33, uint8_t out20[20]) {
@@ -971,13 +1118,16 @@ static int ensure_batch_bufs(int count) {
  * Public C API
  * ========================================================================= */
 
+extern "C" int tcuda_secp_device_filter(void) {
+    return g_bloom_ready && !g_host_filter && g_d_bloom != NULL;
+}
+
 extern "C" int tcuda_secp_search_init(const uint8_t *bloom_bf, uint64_t bloom_bits,
                                       uint64_t bloom_bytes, uint8_t bloom_hashes) {
     if (!bloom_bf || bloom_bits == 0 || bloom_bytes == 0 || bloom_hashes == 0)
         return 0;
     tcuda_secp_search_free();
-    /* Host-filter mode: keep bloom on host only (device hash160 is currently wrong). */
-    g_host_filter = 1;
+    /* Keep host bloom always (fallback + ETH path). Upload device copy when hash160 ok. */
     free(g_h_bloom);
     g_h_bloom = (uint8_t*)malloc(bloom_bytes);
     if (!g_h_bloom) return 0;
@@ -985,6 +1135,19 @@ extern "C" int tcuda_secp_search_init(const uint8_t *bloom_bf, uint64_t bloom_bi
     g_bloom_bits = bloom_bits;
     g_bloom_bytes = bloom_bytes;
     g_bloom_hashes = bloom_hashes;
+
+    if (!g_host_filter) {
+        if (cudaMalloc(&g_d_bloom, bloom_bytes) != cudaSuccess) {
+            fprintf(stderr, "[W] CUDA device bloom alloc failed; falling back to host filter.\n");
+            g_d_bloom = NULL;
+            g_host_filter = 1;
+        } else if (cudaMemcpy(g_d_bloom, bloom_bf, bloom_bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+            fprintf(stderr, "[W] CUDA device bloom upload failed; falling back to host filter.\n");
+            cudaFree(g_d_bloom);
+            g_d_bloom = NULL;
+            g_host_filter = 1;
+        }
+    }
     g_bloom_ready = 1;
     return 1;
 }
@@ -1204,6 +1367,11 @@ extern "C" int tcuda_secp_selftest(void) {
     cudaFree(d_pub);
     cudaFree(d_h);
 
+    static const uint8_t expect_h160[20] = {
+        0x75, 0x1e, 0x76, 0xe8, 0x19, 0x91, 0x96, 0xd4, 0x54, 0x94,
+        0x1c, 0x45, 0xd1, 0xb3, 0xa3, 0x23, 0xf1, 0x43, 0x3b, 0xd6
+    };
+
     if (memcmp(pub, expect_pub, 33) != 0) {
         fprintf(stderr, "[E] tcuda_secp_selftest: pubkey mismatch.\n  got: ");
         for (int i = 0; i < 33; i++) fprintf(stderr, "%02x", pub[i]);
@@ -1214,9 +1382,183 @@ extern "C" int tcuda_secp_selftest(void) {
         return 0;
     }
 
-    /* Device hash160 is known-bad; host hashing runs in MSVC code (dispatcher). */
-    g_host_filter = 1;
-    fprintf(stderr, "[+] CUDA secp256k1 self-test passed (GPU EC ok; host filter mode).\n");
+    if (memcmp(h160_dev, expect_h160, 20) != 0) {
+        fprintf(stderr, "[E] tcuda_secp_selftest: device hash160 mismatch.\n  got: ");
+        for (int i = 0; i < 20; i++) fprintf(stderr, "%02x", h160_dev[i]);
+        fprintf(stderr, "\n  exp: ");
+        for (int i = 0; i < 20; i++) fprintf(stderr, "%02x", expect_h160[i]);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+        g_host_filter = 1;
+        fprintf(stderr, "[+] CUDA secp256k1 self-test: GPU EC ok; host filter mode (hash160 fail).\n");
+        fflush(stderr);
+        return 1; /* EC still usable */
+    }
+
+    g_host_filter = 0;
+    fprintf(stderr, "[+] CUDA secp256k1 self-test passed (GPU EC + device hash160).\n");
     fflush(stderr);
+    return 1;
+}
+
+/* =========================================================================
+ * BSGS giant-step GRP (device affine EC; host does bloom)
+ * ========================================================================= */
+
+static uint8_t *g_d_gsn = NULL;
+static uint8_t *g_d_twogsn = NULL;
+static Fe      *g_d_bsgs_ws = NULL; /* scratch: half Fe dx + half Fe gsn_x + half Fe gsn_y */
+static int      g_bsgs_half = 0;
+static int      g_bsgs_ready = 0;
+
+static __device__ void affine_add_xy(Fe *rx, Fe *ry,
+                                     const Fe *ax, const Fe *ay,
+                                     const Fe *bx, const Fe *by,
+                                     const Fe *inv_dx) {
+    Fe dy, s, p, t;
+    fe_sub(&dy, by, ay);
+    fe_mul(&s, &dy, inv_dx);
+    fe_sqr(&p, &s);
+    fe_sub(rx, &p, ax);
+    fe_sub(rx, rx, bx);
+    fe_sub(&t, bx, rx);
+    fe_mul(ry, &s, &t);
+    fe_sub(ry, ry, by);
+}
+
+/*
+ * One GRP cycle per launch (serial on thread 0). Matches keyhunt thread_process_bsgs
+ * point layout: out_x[i] = pts[i].x for i in [0, 2*half).
+ */
+__global__ void bsgs_grp_one_cycle_kernel(const uint8_t *gsn64, const uint8_t *twogsn64,
+                                          int half, Fe *ws, uint8_t *start_xy,
+                                          uint8_t *out_x) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+
+    Fe *dx = ws;
+    Fe *gsn_x = ws + (half + 2);
+    Fe *gsn_y = gsn_x + half;
+
+    Fe spx, spy;
+    fe_from_bytes_be(&spx, start_xy);
+    fe_from_bytes_be(&spy, start_xy + 32);
+
+    for (int i = 0; i < half; i++) {
+        fe_from_bytes_be(&gsn_x[i], gsn64 + (size_t)i * 64);
+        fe_from_bytes_be(&gsn_y[i], gsn64 + (size_t)i * 64 + 32);
+    }
+    Fe t2x, t2y;
+    fe_from_bytes_be(&t2x, twogsn64);
+    fe_from_bytes_be(&t2y, twogsn64 + 32);
+
+    int hLength = half - 1;
+    for (int i = 0; i < hLength; i++)
+        fe_sub(&dx[i], &gsn_x[i], &spx);
+    fe_sub(&dx[hLength], &gsn_x[hLength], &spx);
+    fe_sub(&dx[hLength + 1], &t2x, &spx);
+
+    for (int i = 0; i < hLength + 2; i++) {
+        Fe t; fe_set(&t, &dx[i]);
+        fe_inv(&dx[i], &t);
+    }
+
+    /* center at index half */
+    fe_to_bytes_be(&spx, out_x + (size_t)half * 32);
+
+    for (int i = 0; i < hLength; i++) {
+        Fe ppx, ppy, pnx, pny, ngsn_y;
+        affine_add_xy(&ppx, &ppy, &spx, &spy, &gsn_x[i], &gsn_y[i], &dx[i]);
+        fe_set(&ngsn_y, &gsn_y[i]);
+        Fe z; fe_clear(&z);
+        fe_sub(&ngsn_y, &z, &ngsn_y);
+        affine_add_xy(&pnx, &pny, &spx, &spy, &gsn_x[i], &ngsn_y, &dx[i]);
+        fe_to_bytes_be(&ppx, out_x + (size_t)(half + (i + 1)) * 32);
+        fe_to_bytes_be(&pnx, out_x + (size_t)(half - (i + 1)) * 32);
+    }
+    /* pts[0] = startP - GSn[hLength] */
+    {
+        Fe pnx, pny, ngsn_y, z;
+        fe_clear(&z);
+        fe_set(&ngsn_y, &gsn_y[hLength]);
+        fe_sub(&ngsn_y, &z, &ngsn_y);
+        affine_add_xy(&pnx, &pny, &spx, &spy, &gsn_x[hLength], &ngsn_y, &dx[hLength]);
+        fe_to_bytes_be(&pnx, out_x);
+    }
+    /* startP += _2GSn */
+    {
+        Fe nx, ny;
+        affine_add_xy(&nx, &ny, &spx, &spy, &t2x, &t2y, &dx[hLength + 1]);
+        fe_to_bytes_be(&nx, start_xy);
+        fe_to_bytes_be(&ny, start_xy + 32);
+    }
+}
+
+extern "C" void tcuda_bsgs_grp_free(void) {
+    if (g_d_gsn) { cudaFree(g_d_gsn); g_d_gsn = NULL; }
+    if (g_d_twogsn) { cudaFree(g_d_twogsn); g_d_twogsn = NULL; }
+    if (g_d_bsgs_ws) { cudaFree(g_d_bsgs_ws); g_d_bsgs_ws = NULL; }
+    g_bsgs_half = 0;
+    g_bsgs_ready = 0;
+}
+
+extern "C" int tcuda_bsgs_grp_ready(void) {
+    return g_bsgs_ready;
+}
+
+extern "C" int tcuda_bsgs_grp_init(const uint8_t *gsn_xy64, int half,
+                                   const uint8_t *twogsn_xy64) {
+    if (!gsn_xy64 || !twogsn_xy64 || half < 2 || half > 4096)
+        return 0;
+    tcuda_bsgs_grp_free();
+    size_t gsn_bytes = (size_t)half * 64;
+    size_t ws_count = (size_t)(half + 2) + (size_t)half * 2;
+    if (cudaMalloc(&g_d_gsn, gsn_bytes) != cudaSuccess ||
+        cudaMalloc(&g_d_twogsn, 64) != cudaSuccess ||
+        cudaMalloc(&g_d_bsgs_ws, ws_count * sizeof(Fe)) != cudaSuccess) {
+        tcuda_bsgs_grp_free();
+        return 0;
+    }
+    if (cudaMemcpy(g_d_gsn, gsn_xy64, gsn_bytes, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(g_d_twogsn, twogsn_xy64, 64, cudaMemcpyHostToDevice) != cudaSuccess) {
+        tcuda_bsgs_grp_free();
+        return 0;
+    }
+    g_bsgs_half = half;
+    g_bsgs_ready = 1;
+    fprintf(stderr, "[+] CUDA BSGS GRP ready (half=%d, GSn on device).\n", half);
+    fflush(stderr);
+    return 1;
+}
+
+extern "C" int tcuda_bsgs_grp_run(uint8_t *start_xy64, int n_cycles, uint8_t *out_x32) {
+    if (!g_bsgs_ready || !start_xy64 || !out_x32 || n_cycles <= 0)
+        return 0;
+    int half = g_bsgs_half;
+    int grp = half * 2;
+    uint8_t *d_start = NULL, *d_out = NULL;
+    size_t out_bytes = (size_t)n_cycles * (size_t)grp * 32;
+    if (cudaMalloc(&d_start, 64) != cudaSuccess ||
+        cudaMalloc(&d_out, out_bytes) != cudaSuccess) {
+        if (d_start) cudaFree(d_start);
+        if (d_out) cudaFree(d_out);
+        return 0;
+    }
+    if (cudaMemcpy(d_start, start_xy64, 64, cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaFree(d_start); cudaFree(d_out); return 0;
+    }
+    for (int c = 0; c < n_cycles; c++) {
+        uint8_t *ox = d_out + (size_t)c * (size_t)grp * 32;
+        bsgs_grp_one_cycle_kernel<<<1, 1>>>(g_d_gsn, g_d_twogsn, half, g_d_bsgs_ws,
+                                            d_start, ox);
+        if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+            cudaFree(d_start); cudaFree(d_out); return 0;
+        }
+    }
+    if (cudaMemcpy(out_x32, d_out, out_bytes, cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(start_xy64, d_start, 64, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaFree(d_start); cudaFree(d_out); return 0;
+    }
+    cudaFree(d_start);
+    cudaFree(d_out);
     return 1;
 }

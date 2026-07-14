@@ -30,10 +30,15 @@ extern "C" int tcuda_hello(void) { return 0; }
 extern "C" int tcuda_hash160_33_selftest(void) { return 0; }
 extern "C" int tcuda_hash160_33_batch(const uint8_t*, int, uint8_t*) { return 0; }
 extern "C" int tcuda_secp_selftest(void) { return 0; }
+extern "C" int tcuda_secp_device_filter(void) { return 0; }
 extern "C" int tcuda_secp_search_init(const uint8_t*, uint64_t, uint64_t, uint8_t) { return 0; }
 extern "C" void tcuda_secp_search_free(void) {}
 extern "C" int tcuda_secp_search_batch(const uint8_t*, int, int, uint32_t*, int, uint32_t*) { return 0; }
 extern "C" int tcuda_secp_pubkey_batch(const uint8_t*, int, int, uint8_t*) { return -1; }
+extern "C" int tcuda_bsgs_grp_init(const uint8_t*, int, const uint8_t*) { return 0; }
+extern "C" void tcuda_bsgs_grp_free(void) {}
+extern "C" int tcuda_bsgs_grp_run(uint8_t*, int, uint8_t*) { return 0; }
+extern "C" int tcuda_bsgs_grp_ready(void) { return 0; }
 extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes) {
     (void)free_bytes; (void)total_bytes; return 0;
 }
@@ -46,6 +51,7 @@ extern "C" int tcuda_hello(void);
 extern "C" int tcuda_hash160_33_selftest(void);
 extern "C" int tcuda_hash160_33_batch(const uint8_t *host_keys, int count, uint8_t *host_out);
 extern "C" int tcuda_secp_selftest(void);
+extern "C" int tcuda_secp_device_filter(void);
 extern "C" int tcuda_secp_search_init(const uint8_t *bloom_bf, uint64_t bloom_bits,
                                       uint64_t bloom_bytes, uint8_t bloom_hashes);
 extern "C" void tcuda_secp_search_free(void);
@@ -54,6 +60,10 @@ extern "C" int tcuda_secp_search_batch(const uint8_t *privkeys, int count, int c
                                        uint32_t *out_hit_count);
 extern "C" int tcuda_secp_pubkey_batch(const uint8_t *privkeys, int count, int compressed,
                                        uint8_t *out_pubs65);
+extern "C" int tcuda_bsgs_grp_init(const uint8_t *gsn_xy64, int half, const uint8_t *twogsn_xy64);
+extern "C" void tcuda_bsgs_grp_free(void);
+extern "C" int tcuda_bsgs_grp_run(uint8_t *start_xy64, int n_cycles, uint8_t *out_x32);
+extern "C" int tcuda_bsgs_grp_ready(void);
 extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes);
 extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes);
 extern "C" int tcuda_ed25519_pubkey_batch(const uint8_t *seeds32, int count, uint8_t *pubs32);
@@ -169,7 +179,10 @@ int gpu_dispatcher_init(struct GpuDispatcher* disp, const struct BackendConfig* 
                 return 0;
             }
         } else {
-            std::fprintf(stderr, "[+] CUDA secp256k1 path ready (GPU EC + host hash/bloom).\n");
+            if (hash_ok)
+                std::fprintf(stderr, "[+] CUDA secp256k1 path ready (GPU EC + device hash160/bloom).\n");
+            else
+                std::fprintf(stderr, "[+] CUDA secp256k1 path ready (GPU EC + host hash/bloom).\n");
             disp->secp_ready = 1;
         }
 
@@ -305,8 +318,12 @@ int gpu_dispatcher_load_bloom(struct GpuDispatcher* disp,
         return 0;
     }
     disp->bloom_loaded = 1;
-    std::fprintf(stderr, "[+] Bloom ready for GPU-EC path (%" PRIu64 " bytes, %u hashes, host filter).\n",
-                 bytes, (unsigned)hashes);
+    if (tcuda_secp_device_filter())
+        std::fprintf(stderr, "[+] Bloom ready for GPU-EC path (%" PRIu64 " bytes, %u hashes, device filter).\n",
+                     bytes, (unsigned)hashes);
+    else
+        std::fprintf(stderr, "[+] Bloom ready for GPU-EC path (%" PRIu64 " bytes, %u hashes, host filter).\n",
+                     bytes, (unsigned)hashes);
     return 1;
 }
 
@@ -326,17 +343,33 @@ uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
     if (encode == GPU_ENCODE_ETH && compressed)
         return 0; /* ETH needs uncompressed X||Y */
 
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+
+    if (encode == GPU_ENCODE_HASH160 && tcuda_secp_device_filter()) {
+        uint32_t hits = 0;
+        int src = tcuda_secp_search_batch(privkeys, (int)count, compressed,
+                                          match_indices, (int)max_matches, &hits);
+        if (src >= 0) {
+#ifdef _WIN32
+            LeaveCriticalSection(&disp->gpu_lock);
+#else
+            pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+            return hits;
+        }
+        /* src == -2 or error: fall through to host hash/bloom */
+    }
+
     /* Stack buffer for the stable single-key path; VirtualAlloc grow-only for larger. */
     uint8_t stack_pubs[65];
     uint8_t *pubs = stack_pubs;
     static uint8_t *heap_pubs = NULL;
     static size_t heap_cap = 0;
 
-#ifdef _WIN32
-    EnterCriticalSection(&disp->gpu_lock);
-#else
-    pthread_mutex_lock(&disp->gpu_lock);
-#endif
     if (count != 1) {
         size_t need = (size_t)count * 65;
         if (need > heap_cap) {
@@ -435,6 +468,50 @@ int gpu_dispatcher_ed25519_pubkey_batch(struct GpuDispatcher* disp,
     pthread_mutex_unlock(&disp->gpu_lock);
 #endif
     return ok ? 1 : 0;
+}
+
+int gpu_dispatcher_bsgs_grp_init(struct GpuDispatcher* disp,
+                                 const uint8_t* gsn_xy64, int half,
+                                 const uint8_t* twogsn_xy64) {
+    if (!disp || !disp->initialized || !disp->secp_ready) return 0;
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA) return 0;
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+    int ok = tcuda_bsgs_grp_init(gsn_xy64, half, twogsn_xy64);
+#ifdef _WIN32
+    LeaveCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+    return ok;
+}
+
+int gpu_dispatcher_bsgs_grp_ready(const struct GpuDispatcher* disp) {
+    if (!disp || !disp->initialized || !disp->secp_ready) return 0;
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA) return 0;
+    return tcuda_bsgs_grp_ready();
+}
+
+int gpu_dispatcher_bsgs_grp_run(struct GpuDispatcher* disp,
+                                uint8_t* start_xy64, int n_cycles, uint8_t* out_x32) {
+    if (!disp || !disp->initialized || !start_xy64 || !out_x32 || n_cycles <= 0)
+        return 0;
+    if (!tcuda_bsgs_grp_ready()) return 0;
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+    int ok = tcuda_bsgs_grp_run(start_xy64, n_cycles, out_x32);
+#ifdef _WIN32
+    LeaveCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+    return ok;
 }
 
 uint32_t gpu_dispatcher_search_address(struct GpuDispatcher* disp,

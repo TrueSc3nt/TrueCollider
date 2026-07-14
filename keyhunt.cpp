@@ -2041,13 +2041,13 @@ int main(int argc, char **argv)	{
 			  FLAGMODE == MODE_BRAINWALLET || FLAGMODE == MODE_BSGS) {
 			if(FLAGCRYPTO == CRYPTO_SOL) {
 				if(gpu_dispatcher_ed25519_ready(g_gpu_dispatcher)) {
-					fprintf(stderr,"[+] GPU Solana path enabled (CUDA SHA512 + host ed25519 ge; batch %u).\n",
+					fprintf(stderr,"[+] GPU Solana path enabled (full device ed25519 ge; batch %u).\n",
 						g_backend_config.gpu_batch_size);
 				} else {
 					fprintf(stderr,"[W] Solana CUDA ed25519 not ready; using CPU ed25519.\n");
 				}
 			} else if(FLAGMODE == MODE_BSGS) {
-				fprintf(stderr,"[+] GPU BSGS EC enabled (baby-table build + giant-step ComputePublicKey; batch %u).\n",
+				fprintf(stderr,"[+] GPU BSGS EC enabled (baby-table + GRP giant-step; batch %u).\n",
 					g_backend_config.gpu_batch_size);
 			} else {
 				fprintf(stderr,"[+] GPU EC enabled for mode (batch %u keys; -G / -M to tune).\n",
@@ -2759,6 +2759,26 @@ int main(int argc, char **argv)	{
 		
 		/* For next center point */
 		_2GSn = secp->DoubleDirect(GSn[CPU_GRP_SIZE / 2 - 1]);
+
+		/* Upload GSn / _2GSn for CUDA giant-step GRP. */
+		if(g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher)) {
+			int half = CPU_GRP_SIZE / 2;
+			uint8_t *gsn_blob = (uint8_t*)malloc((size_t)half * 64);
+			uint8_t twog[64];
+			if(gsn_blob) {
+				for(int gi = 0; gi < half; gi++) {
+					GSn[gi].x.Get32Bytes(gsn_blob + (size_t)gi * 64);
+					GSn[gi].y.Get32Bytes(gsn_blob + (size_t)gi * 64 + 32);
+				}
+				_2GSn.x.Get32Bytes(twog);
+				_2GSn.y.Get32Bytes(twog + 32);
+				if(gpu_dispatcher_bsgs_grp_init(g_gpu_dispatcher, gsn_blob, half, twog))
+					fprintf(stderr,"[+] CUDA BSGS GRP giant-step path armed (GRP=%d).\n", CPU_GRP_SIZE);
+				else
+					fprintf(stderr,"[W] CUDA BSGS GRP init failed; using CPU GRP loop.\n");
+				free(gsn_blob);
+			}
+		}
 				
 		i = 0;
 		point_temp.Set(BSGS_MP2);
@@ -7740,6 +7760,79 @@ int bsgs_searchbinary(struct bsgs_xvalue *buffer,char *data,int64_t array_length
 	return r;
 }
 
+/* CUDA giant-step GRP: fill x-coords for up to 8 cycles and bloom-check on host.
+ * Returns 1 if it ran (caller should skip CPU GRP for those cycles). */
+static int bsgs_try_gpu_grp(
+	Point *startP, Int *base_key, uint32_t *j_inout, uint32_t cycles,
+	uint32_t k, Int *keyfound)
+{
+	if(!g_gpu_dispatcher || !gpu_dispatcher_bsgs_grp_ready(g_gpu_dispatcher))
+		return 0;
+	uint32_t j = *j_inout;
+	if(j >= cycles) return 0;
+	int batch_cy = (int)(cycles - j);
+	if(batch_cy > 8) batch_cy = 8;
+	uint8_t start_xy[64];
+	startP->x.Get32Bytes(start_xy);
+	startP->y.Get32Bytes(start_xy + 32);
+	size_t ox_bytes = (size_t)batch_cy * (size_t)CPU_GRP_SIZE * 32;
+	uint8_t *out_x = (uint8_t*)malloc(ox_bytes);
+	if(!out_x) return 0;
+	if(!gpu_dispatcher_bsgs_grp_run(g_gpu_dispatcher, start_xy, batch_cy, out_x)) {
+		free(out_x);
+		return 0;
+	}
+	for(int cy = 0; cy < batch_cy && bsgs_found[k] == 0; cy++) {
+		uint8_t *ox = out_x + (size_t)cy * (size_t)CPU_GRP_SIZE * 32;
+		for(int ii = 0; ii < CPU_GRP_SIZE && bsgs_found[k] == 0; ii++) {
+			char xpoint_raw[32];
+			memcpy(xpoint_raw, ox + (size_t)ii * 32, 32);
+			int r = bloom_check(&bloom_bP[((unsigned char)xpoint_raw[0])], xpoint_raw, 32);
+			if(!r) continue;
+			r = bsgs_secondcheck(base_key, ((j * 1024) + ii), k, keyfound);
+			if(!r) continue;
+			char *hextemp = keyfound->GetBase16();
+			printf("[+] Thread Key found privkey %s   \n", hextemp);
+			Point point_found = secp->ComputePublicKey(keyfound);
+			char *aux_c = secp->GetPublicKeyHex(OriginalPointsBSGScompressed[k], point_found);
+			printf("[+] Publickey %s\n", aux_c);
+#if defined(_MSC_VER)
+			WaitForSingleObject(write_keys, INFINITE);
+#else
+			pthread_mutex_lock(&write_keys);
+#endif
+			FILE *filekey = fopen("KEYFOUNDKEYFOUND.txt", "a");
+			if(filekey != NULL) {
+				fprintf(filekey, "Key found privkey %s\nPublickey %s\n", hextemp, aux_c);
+				fclose(filekey);
+			}
+			free(hextemp);
+			free(aux_c);
+#if defined(_MSC_VER)
+			ReleaseMutex(write_keys);
+#else
+			pthread_mutex_unlock(&write_keys);
+#endif
+			bsgs_found[k] = 1;
+			notify_key_found(keyfound);
+			int salir = 1;
+			for(uint32_t l = 0; l < bsgs_point_number && salir; l++)
+				salir &= bsgs_found[l];
+			if(salir) {
+				printf("All points were found\n");
+				exit(EXIT_FAILURE);
+			}
+		}
+		j++;
+	}
+	startP->x.Set32Bytes(start_xy);
+	startP->y.Set32Bytes(start_xy + 32);
+	startP->z.SetInt32(1);
+	*j_inout = j;
+	free(out_x);
+	return 1;
+}
+
 #if defined(_MSC_VER)
 DWORD WINAPI thread_process_bsgs(LPVOID vargp) {
 #else
@@ -7865,6 +7958,8 @@ void *thread_process_bsgs(void *vargp)	{
 				uint32_t j = 0;
 				while( j < cycles && bsgs_found[k]== 0 )	{
 					int i;
+					if(bsgs_try_gpu_grp(&startP, &base_key, &j, cycles, k, &keyfound))
+						continue;
 					for(i = 0; i < hLength; i++) {
 						dx[i].ModSub(&GSn[i].x,&startP.x);
 					}

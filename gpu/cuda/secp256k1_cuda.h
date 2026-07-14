@@ -26,6 +26,25 @@ int tcuda_secp_pubkey_batch(const uint8_t *privkeys, int count, int compressed,
 
 int tcuda_secp_selftest(void);
 
+/* 1 if device hash160+bloom search path is active (after successful self-test + bloom upload). */
+int tcuda_secp_device_filter(void);
+
+/*
+ * BSGS giant-step GRP: upload GSn[0..half-1] and _2GSn (each 64B = x||y BE).
+ * half = CPU_GRP_SIZE/2. Returns 1 on success.
+ */
+int tcuda_bsgs_grp_init(const uint8_t *gsn_xy64, int half, const uint8_t *twogsn_xy64);
+void tcuda_bsgs_grp_free(void);
+
+/*
+ * Run n_cycles of BSGS GRP from start_xy (64B x||y BE, updated in-place to next center).
+ * Writes n_cycles * (2*half) * 32 bytes of x-coords (BE) to out_x32.
+ * Returns 1 on success.
+ */
+int tcuda_bsgs_grp_run(uint8_t *start_xy64, int n_cycles, uint8_t *out_x32);
+
+int tcuda_bsgs_grp_ready(void);
+
 /* Free / total VRAM in bytes. Returns 1 on success. */
 int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes);
 

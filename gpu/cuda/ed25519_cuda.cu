@@ -1,12 +1,13 @@
 /*
- * CUDA Solana path — device SHA-512 of 32-byte seeds + ed25519 clamp.
- * Host ge_scalarmult_base lives in ed25519_cuda_host.cpp (MSVC, not nvcc).
+ * CUDA Solana path — device SHA-512 + clamp + full Edwards ge_scalarmult_base.
  */
 #include "ed25519_cuda.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include "ed25519_ref10_device.cuh"
 
 static __device__ __forceinline__ uint64_t rotr64(uint64_t x, int n) {
     return (x >> n) | (x << (64 - n));
@@ -105,6 +106,19 @@ __global__ void k_ed25519_sha512_clamp(const uint8_t *seeds, uint8_t *scalars, i
         scalars[(size_t)i * 32 + j] = dig[j];
 }
 
+__global__ void k_ed25519_pubkey(const uint8_t *seeds, uint8_t *pubs, int count) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    uint8_t dig[64];
+    sha512_32(seeds + (size_t)i * 32, dig);
+    dig[0] &= 248;
+    dig[31] &= 63;
+    dig[31] |= 64;
+    ge_p3 A;
+    ge_scalarmult_base(&A, dig);
+    ge_p3_tobytes(pubs + (size_t)i * 32, &A);
+}
+
 extern "C" int tcuda_ed25519_sha512_clamp_batch(const uint8_t *seeds32, int count, uint8_t *scalars32) {
     if (!seeds32 || !scalars32 || count <= 0) return 0;
     if (count > 1048576) count = 1048576;
@@ -128,5 +142,32 @@ extern "C" int tcuda_ed25519_sha512_clamp_batch(const uint8_t *seeds32, int coun
     }
     cudaFree(d_seeds);
     cudaFree(d_scalars);
+    return 1;
+}
+
+extern "C" int tcuda_ed25519_pubkey_device_batch(const uint8_t *seeds32, int count, uint8_t *pubs32) {
+    if (!seeds32 || !pubs32 || count <= 0) return 0;
+    if (count > 65536) count = 65536; /* ge is heavy per-thread */
+    uint8_t *d_seeds = NULL, *d_pubs = NULL;
+    size_t bytes = (size_t)count * 32;
+    if (cudaMalloc(&d_seeds, bytes) != cudaSuccess ||
+        cudaMalloc(&d_pubs, bytes) != cudaSuccess) {
+        if (d_seeds) cudaFree(d_seeds);
+        if (d_pubs) cudaFree(d_pubs);
+        return 0;
+    }
+    if (cudaMemcpy(d_seeds, seeds32, bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaFree(d_seeds); cudaFree(d_pubs); return 0;
+    }
+    /* Low occupancy on purpose — each thread does full ref10 scalarmult. */
+    int threads = 64;
+    int blocks = (count + threads - 1) / threads;
+    k_ed25519_pubkey<<<blocks, threads>>>(d_seeds, d_pubs, count);
+    if (cudaDeviceSynchronize() != cudaSuccess ||
+        cudaMemcpy(pubs32, d_pubs, bytes, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaFree(d_seeds); cudaFree(d_pubs); return 0;
+    }
+    cudaFree(d_seeds);
+    cudaFree(d_pubs);
     return 1;
 }

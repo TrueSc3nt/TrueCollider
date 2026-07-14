@@ -10,7 +10,7 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 
 | Backend | EC (secp256k1) | Address encode | Bloom / filter | Vendors |
 |---------|----------------|----------------|----------------|---------|
-| **CUDA** | On GPU (`secp256k1_cuda.cu`) | Host hash160 **or** host keccak (ETH) | Host bloom | NVIDIA |
+| **CUDA** | On GPU (`secp256k1_cuda.cu`) | **Device** hash160 (BTC-family) or host keccak (ETH) | **Device** bloom when hash160 self-test passes; host fallback | NVIDIA |
 | **OpenCL** | Host CPU | On GPU hash160 (`hash160_opencl`) | Host | NVIDIA, AMD, Intel |
 | **CPU** | Host | SSE / AVX2 / AVX-512 | Fuse or bloom | All |
 
@@ -18,25 +18,24 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 
 | Path | Status |
 |------|--------|
-| BTC / LTC / DOGE / XRP / BCH / BTG / `all` — `address` / `rmd160` | GPU EC + host hash160 + host bloom |
+| BTC / LTC / DOGE / XRP / BCH / BTG / `all` — `address` / `rmd160` | GPU EC + **device** hash160 + **device** bloom (host fallback if self-test fails) |
 | ETH / ETC — `address` | GPU EC (uncompressed) + host keccak + host bloom |
 | Taproot (`troot`) — `address` | GPU EC + host taproot tweak + filter |
 | Batch size | **`-M auto`/`-M MB`** sizes from free VRAM (Rotor/Collider style); **`-G`** optional override. Device launches use 256-thread grids in TDR-safe chunks (up to 64K) |
-| Device hash160 bloom search | Implemented but **not** production (self-test historically failed) |
-| vanity / xpoint / pubkey2addr / minikeys / mnemonic / poetry / brainwallet | GPU EC + host filter (derivation stays CPU) |
-| BSGS | GPU EC for baby-table build + giant `ComputePublicKey`; GRP loop still CPU |
-| SOL (`-c sol`) | Prefers **full device** `ge_scalarmult_base`; falls back to CUDA SHA512 + host ge |
+| Device hash160 bloom search | **Shipped** (`secp_search_kernel` when self-test passes; `g_host_filter=0`) |
+| vanity / xpoint / pubkey2addr / minikeys / mnemonic / poetry / brainwallet | GPU EC + filter (device hash160+bloom when ready; else host) |
+| BSGS | Baby-table GPU EC + **device GRP giant-step** (`tcuda_bsgs_grp_*`; host bloom). Currently serial per-cycle launches (correct, not yet throughput-tuned) |
+| SOL (`-c sol`) | **Full device** ed25519 `ge_scalarmult_base` (SHA512+clamp+ge); host-ge fallback |
 | Kangaroo | CPU (`-m kangaroo`) |
 
 ### CUDA path (`-U cuda`)
 
-1. Init: secp self-test → `secp_ready`.
-2. Upload bloom metadata for host-filter mode.
-3. Batch privkeys → `tcuda_secp_pubkey_batch` (device EC, chunked).
-4. Host encode (`hash160` or `keccak`) + `bloom_check`.
-5. CPU confirms hits and writes keys.
+1. Init: hash160 + secp self-tests → set device vs host filter; `secp_ready`.
+2. Upload bloom to device when hash160 OK (else host-only copy).
+3. Batch privkeys → device EC (+ device hash160/bloom when enabled).
+4. ETH still host keccak; host confirms hits and writes keys.
 
-**Limits:** no `-e` on GPU EC; prefer low `-t` with CUDA; Solana uses CUDA ed25519 (device ge preferred).
+**Limits:** no `-e` on GPU EC; prefer low `-t` with CUDA; BSGS GRP on GPU is correctness-first (serial cycles).
 
 ### OpenCL path (`-U opencl`)
 
@@ -110,10 +109,10 @@ Or double-click / run: `run_gpu_cuda_example.bat`.
 
 ## Roadmap (GPU)
 
-1. Trusted device hash160 → full on-device bloom path.
-2. GPU BSGS giant-step kernels (baby tables stay RAM-heavy).
+1. Trusted device hash160 → full on-device bloom path. **Done.**
+2. GPU BSGS giant-step GRP kernels (baby tables stay RAM-heavy). **Done** (serial; optimize next).
 3. GPU Kangaroo (SOTA for large pubkey puzzles).
-4. GPU Solana ed25519 grind.
+4. Throughput-tune device Solana ed25519 grind + base58 prefilter.
 5. OpenCL secp EC twin for AMD.
 
 See also: [docs/ROADMAP.md](../docs/ROADMAP.md).
