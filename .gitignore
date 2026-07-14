@@ -31,6 +31,9 @@ _upstream_check/
 *.log
 KEYFOUNDKEYFOUND.txt
 VANITYKEYFOUND.txt
+FOUND_*.txt
+smoke_*.txt
+build_cuda_log*.txt
 *.bloom
 *.bsgs
 targets.txt
@@ -52,12 +55,9 @@ out.txt
 output.txt
 stderr.txt
 stdout.txt
-tests/_btc*.txt
-tests/_eth*.txt
-tests/_rmd*.txt
-tests/_pubkey*.txt
-tests/_xpoint*.txt
+# Generated pad/scratch only — keep tracking demo fixtures (_btc_1to2, _eth_1, _pubkey_g, _xpoint_g)
 tests/_btc_pad.txt
+tests/_rmd*.txt
 
 
 # OS

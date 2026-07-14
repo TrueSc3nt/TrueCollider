@@ -144,7 +144,7 @@ keccak.o: sha3/keccak.c sha3/sha3.h
 xxhash.o: xxhash/xxhash.c xxhash/xxhash.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
-util.o: util.c util.h
+util.o: util.cpp util.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 backend_config.o: backend_config.cpp backend_config.h
