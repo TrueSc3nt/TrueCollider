@@ -642,5 +642,4 @@ See repository license. Upstream: Alberto Keyhunt, Jean Luc Pons lineage (Vanity
 
 **Donations (project tip jars from built-in help):**
 
-- BTC: `1HmztBLDnwwaKAGbtALsYvCNBuoJYEic3h`
-- Tips to Iceland: `bc1q39meky2mn5qjq704zz0nnkl0v7kj4uz6r529at`
+- BTC:1HmztBLDnwwaKAGbtALsYvCNBuoJYEic3h
