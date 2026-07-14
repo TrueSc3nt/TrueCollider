@@ -19,7 +19,7 @@ Repo: **[github.com/TrueSc3nt/TrueCollider](https://github.com/TrueSc3nt/TrueCol
 
 ---
 
-## About (paste-ready)
+## A Little Intro
 
 **KeyCollider / TrueCollider** by TrueScent is an open-source multi-coin key-search toolkit: Bitcoin-family addresses, Ethereum, Solana, vanity, brainwallets, BSGS, and Pollard's kangaroo — on CPU SIMD with optional NVIDIA CUDA. It searches ranges and patterns you supply; it is not a wallet scraper or a “find free BTC” oracle.
 
