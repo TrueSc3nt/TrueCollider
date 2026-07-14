@@ -36,7 +36,7 @@ Full exhaustive reference: **[README.md](../README.md)**. Raw built-in help: [`H
 | `-C` / `-8` | minikeys | Base string / custom alphabet |
 | `-w` / `-L` / `-W` / `-D` | mnemonic | Words / language / ETH / indices |
 | `-p` / `-D` | BIP-32 | Path + child index count |
-| `-N` / `-Nurl` | balance | **Partial** — see README (flag not wired to hits yet) |
+| `-N` / `-Nurl` | balance | **Wired** — curl balance check on hits (see README) |
 | `-q` `-s` | `-q -s 10` | Quiet / stats seconds |
 | `-V` | `-V` | Verbose derivation |
 | `-6` | `-6` | Skip cache checksum |
@@ -51,7 +51,8 @@ Full exhaustive reference: **[README.md](../README.md)**. Raw built-in help: [`H
 ./keyhunt -m address -c eth -f tests/_eth_1.txt -t 8 -q -s 10
 ./keyhunt -m address -c sol -f tests/sol_sample.txt -t 8
 ./keyhunt -m vanity -v 1Cool -e -t 8
-./keyhunt -m kangaroo -f tests/125.txt -r 1:100000
+./keyhunt -m kangaroo -f tests/_pubkey_g.txt -r 1:1000
+./keyhunt_cuda -m kangaroo -f tests/_pubkey_g.txt -r 1:1000 -U cuda
 ./keyhunt -m mnemonic -f tests/66.txt -w 12 -t 4
 ./keyhunt -m poetry -f tests/66.txt -t 4
 ./keyhunt -m brainwallet -w 3 -f tests/66.txt -t 4

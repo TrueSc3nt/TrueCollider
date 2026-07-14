@@ -7,6 +7,10 @@ int optind = 1;
 int opterr = 1;
 int optopt = 0;
 
+/*
+ * Minimal getopt with GNU-style optional arguments (optchar followed by "::").
+ * For optional args, the value must be attached (-Nhttp://...), never a separate argv.
+ */
 int getopt(int argc, char * const argv[], const char *optstring) {
     static int sp = 1;
     int c;
@@ -31,16 +35,25 @@ int getopt(int argc, char * const argv[], const char *optstring) {
         return '?';
     }
     if (*++cp == ':') {
-        if (argv[optind][sp + 1] != '\0')
+        int optional = (*(cp + 1) == ':');
+        if (argv[optind][sp + 1] != '\0') {
+            /* Attached argument: -Nhttp://... or -fFILE */
             optarg = &argv[optind++][sp + 1];
-        else if (++optind >= argc) {
+            sp = 1;
+        } else if (optional) {
+            /* Bare -N: no argument (do not consume next argv / next flag). */
+            optarg = NULL;
+            sp = 1;
+            optind++;
+        } else if (++optind >= argc) {
             if (opterr)
                 fprintf(stderr, "%s: option requires an argument -- %c\n", argv[0], c);
             sp = 1;
             return '?';
-        } else
+        } else {
             optarg = argv[optind++];
-        sp = 1;
+            sp = 1;
+        }
     } else {
         if (argv[optind][++sp] == '\0') {
             sp = 1;

@@ -45,6 +45,10 @@ extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes) {
 extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes) {
     (void)budget_bytes; return 0;
 }
+extern "C" int tcuda_kangaroo_scan_match(const uint8_t*, int, int, const uint8_t*, int*) { return 0; }
+extern "C" int tcuda_kangaroo_dp_run(uint8_t*, uint8_t*, const int*, int,
+    const uint8_t*, const uint8_t*, uint64_t, int,
+    uint8_t*, uint8_t*, int*, int, int*) { return 0; }
 #else
 extern "C" int tcuda_device_count(void);
 extern "C" int tcuda_hello(void);
@@ -68,6 +72,14 @@ extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes);
 extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes);
 extern "C" int tcuda_ed25519_pubkey_batch(const uint8_t *seeds32, int count, uint8_t *pubs32);
 extern "C" int tcuda_ed25519_selftest(void);
+extern "C" int tcuda_kangaroo_scan_match(const uint8_t *privkeys, int count, int compressed,
+                                         const uint8_t *target_xy64, int *match_index);
+extern "C" int tcuda_kangaroo_dp_run(uint8_t *pos_xy64, uint8_t *dist32, const int *herd,
+                                     int n_walkers, const uint8_t *jump_xy64,
+                                     const uint8_t *jump_len32, uint64_t dp_mask,
+                                     int steps_per_launch, uint8_t *out_dp_xy64,
+                                     uint8_t *out_dp_dist32, int *out_dp_herd,
+                                     int max_dps, int *n_dps_out);
 #endif
 
 #ifndef ENABLE_CUDA
@@ -276,6 +288,7 @@ int gpu_dispatcher_supports_mode(const struct GpuDispatcher* disp, int mode) {
         case 8: /* poetry */
         case 9: /* brainwallet */
         case 10: /* pubkey2addr */
+        case 11: /* kangaroo — CUDA scan / DP walkers when secp ready */
             return disp->secp_ready || disp->ed25519_ready || disp->initialized;
         default:
             return 0;
@@ -506,6 +519,55 @@ int gpu_dispatcher_bsgs_grp_run(struct GpuDispatcher* disp,
     pthread_mutex_lock(&disp->gpu_lock);
 #endif
     int ok = tcuda_bsgs_grp_run(start_xy64, n_cycles, out_x32);
+#ifdef _WIN32
+    LeaveCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+    return ok;
+}
+
+int gpu_dispatcher_kangaroo_scan(struct GpuDispatcher* disp,
+                                 const uint8_t* privkeys, uint32_t count, int compressed,
+                                 const uint8_t* target_xy64, int* match_index) {
+    if (!disp || !disp->initialized || !disp->secp_ready || !privkeys || !target_xy64 ||
+        !match_index || count == 0)
+        return 0;
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA)
+        return 0;
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+    int ok = tcuda_kangaroo_scan_match(privkeys, (int)count, compressed, target_xy64, match_index);
+#ifdef _WIN32
+    LeaveCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+    return ok;
+}
+
+int gpu_dispatcher_kangaroo_dp_run(struct GpuDispatcher* disp,
+                                   uint8_t* pos_xy64, uint8_t* dist32, const int* herd,
+                                   int n_walkers, const uint8_t* jump_xy64,
+                                   const uint8_t* jump_len32, uint64_t dp_mask,
+                                   int steps_per_launch, uint8_t* out_dp_xy64,
+                                   uint8_t* out_dp_dist32, int* out_dp_herd,
+                                   int max_dps, int* n_dps_out) {
+    if (!disp || !disp->initialized || !disp->secp_ready)
+        return 0;
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA)
+        return 0;
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+    int ok = tcuda_kangaroo_dp_run(pos_xy64, dist32, herd, n_walkers, jump_xy64, jump_len32,
+                                   dp_mask, steps_per_launch, out_dp_xy64, out_dp_dist32,
+                                   out_dp_herd, max_dps, n_dps_out);
 #ifdef _WIN32
     LeaveCriticalSection(&disp->gpu_lock);
 #else

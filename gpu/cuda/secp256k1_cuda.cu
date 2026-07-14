@@ -1562,3 +1562,268 @@ extern "C" int tcuda_bsgs_grp_run(uint8_t *start_xy64, int n_cycles, uint8_t *ou
     cudaFree(d_out);
     return 1;
 }
+
+/* =========================================================================
+ * Kangaroo CUDA: pubkey scan + multi-walker DP jumps
+ * ========================================================================= */
+
+static __device__ void scalar_add_be32(uint8_t *dist, const uint8_t *add) {
+    int carry = 0;
+    for (int i = 31; i >= 0; i--) {
+        int s = (int)dist[i] + (int)add[i] + carry;
+        dist[i] = (uint8_t)(s & 0xff);
+        carry = s >> 8;
+    }
+}
+
+static __device__ void affine_add_points(Fe *rx, Fe *ry,
+                                        const Fe *ax, const Fe *ay,
+                                        const Fe *bx, const Fe *by) {
+    Fe dx, inv, dy, s, p, t;
+    fe_sub(&dx, bx, ax);
+    if (fe_is_zero(&dx)) {
+        Fe tdy;
+        fe_sub(&tdy, by, ay);
+        if (fe_is_zero(&tdy)) {
+            /* Double: lambda = (3x^2) / (2y) */
+            Fe x2, num, den, den2;
+            fe_sqr(&x2, ax);
+            fe_add(&num, &x2, &x2);
+            fe_add(&num, &num, &x2);
+            fe_add(&den, ay, ay);
+            fe_inv(&den2, &den);
+            fe_mul(&s, &num, &den2);
+            fe_sqr(&p, &s);
+            fe_sub(rx, &p, ax);
+            fe_sub(rx, rx, ax);
+            fe_sub(&t, ax, rx);
+            fe_mul(ry, &s, &t);
+            fe_sub(ry, ry, ay);
+            return;
+        }
+        fe_clear(rx);
+        fe_clear(ry);
+        return;
+    }
+    fe_inv(&inv, &dx);
+    fe_sub(&dy, by, ay);
+    fe_mul(&s, &dy, &inv);
+    fe_sqr(&p, &s);
+    fe_sub(rx, &p, ax);
+    fe_sub(rx, rx, bx);
+    fe_sub(&t, ax, rx);
+    fe_mul(ry, &s, &t);
+    fe_sub(ry, ry, ay);
+}
+
+__global__ void kangaroo_scan_kernel(const uint8_t *privkeys, int count, int compressed,
+                                     const uint8_t *target_xy, int *match_index) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    if (*match_index >= 0) return;
+
+    const uint8_t *k = privkeys + (size_t)i * 32;
+    int nz = 0;
+#pragma unroll
+    for (int j = 0; j < 32; j++) nz |= k[j];
+    if (!nz) return;
+
+    Fe x, y, tx, ty;
+    scalar_mul_g(&x, &y, k);
+    fe_from_bytes_be(&tx, target_xy);
+    fe_from_bytes_be(&ty, target_xy + 32);
+
+    if (fe_cmp(&x, &tx) != 0) return;
+    if (compressed) {
+        /* Match X + Y parity vs target Y */
+        int odd = fe_is_odd(&y);
+        int todd = fe_is_odd(&ty);
+        if (odd != todd) return;
+    } else {
+        if (fe_cmp(&y, &ty) != 0) return;
+    }
+    atomicCAS(match_index, -1, i);
+}
+
+__global__ void kangaroo_dp_kernel(
+    uint8_t *pos_xy, uint8_t *dist, const int *herd, int n_walkers,
+    const uint8_t *jump_xy, const uint8_t *jump_len,
+    uint64_t dp_mask, int steps,
+    uint8_t *out_xy, uint8_t *out_dist, int *out_herd,
+    int *dp_count, int max_dps)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_walkers) return;
+
+    Fe px, py;
+    fe_from_bytes_be(&px, pos_xy + (size_t)tid * 64);
+    fe_from_bytes_be(&py, pos_xy + (size_t)tid * 64 + 32);
+    uint8_t dloc[32];
+#pragma unroll
+    for (int i = 0; i < 32; i++)
+        dloc[i] = dist[(size_t)tid * 32 + i];
+    int h = herd[tid];
+
+    for (int s = 0; s < steps; s++) {
+        uint8_t xb[32];
+        fe_to_bytes_be(&px, xb);
+        int ji = (int)(xb[31] & 31);
+
+        Fe jx, jy;
+        fe_from_bytes_be(&jx, jump_xy + (size_t)ji * 64);
+        fe_from_bytes_be(&jy, jump_xy + (size_t)ji * 64 + 32);
+        Fe nx, ny;
+        affine_add_points(&nx, &ny, &px, &py, &jx, &jy);
+        fe_set(&px, &nx);
+        fe_set(&py, &ny);
+        scalar_add_be32(dloc, jump_len + (size_t)ji * 32);
+
+        fe_to_bytes_be(&px, xb);
+        uint64_t lo = 0;
+#pragma unroll
+        for (int b = 0; b < 8; b++)
+            lo |= ((uint64_t)xb[24 + b]) << (8 * b);
+        if ((lo & dp_mask) != 0)
+            continue;
+
+        int slot = atomicAdd(dp_count, 1);
+        if (slot < max_dps) {
+            fe_to_bytes_be(&px, out_xy + (size_t)slot * 64);
+            fe_to_bytes_be(&py, out_xy + (size_t)slot * 64 + 32);
+#pragma unroll
+            for (int i = 0; i < 32; i++)
+                out_dist[(size_t)slot * 32 + i] = dloc[i];
+            out_herd[slot] = h;
+        }
+    }
+
+    fe_to_bytes_be(&px, pos_xy + (size_t)tid * 64);
+    fe_to_bytes_be(&py, pos_xy + (size_t)tid * 64 + 32);
+#pragma unroll
+    for (int i = 0; i < 32; i++)
+        dist[(size_t)tid * 32 + i] = dloc[i];
+}
+
+extern "C" int tcuda_kangaroo_scan_match(const uint8_t *privkeys, int count, int compressed,
+                                         const uint8_t *target_xy64, int *match_index) {
+    if (!privkeys || !target_xy64 || !match_index || count <= 0)
+        return 0;
+    uint8_t *d_priv = NULL, *d_tgt = NULL;
+    int *d_match = NULL;
+    int h_match = -1;
+    if (cudaMalloc(&d_priv, (size_t)count * 32) != cudaSuccess ||
+        cudaMalloc(&d_tgt, 64) != cudaSuccess ||
+        cudaMalloc(&d_match, sizeof(int)) != cudaSuccess) {
+        if (d_priv) cudaFree(d_priv);
+        if (d_tgt) cudaFree(d_tgt);
+        if (d_match) cudaFree(d_match);
+        return 0;
+    }
+    if (cudaMemcpy(d_priv, privkeys, (size_t)count * 32, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_tgt, target_xy64, 64, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_match, &h_match, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaFree(d_priv); cudaFree(d_tgt); cudaFree(d_match);
+        return 0;
+    }
+    int grid = (count + kCudaThreads - 1) / kCudaThreads;
+    kangaroo_scan_kernel<<<grid, kCudaThreads>>>(d_priv, count, compressed, d_tgt, d_match);
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+        cudaFree(d_priv); cudaFree(d_tgt); cudaFree(d_match);
+        return 0;
+    }
+    if (cudaMemcpy(&h_match, d_match, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaFree(d_priv); cudaFree(d_tgt); cudaFree(d_match);
+        return 0;
+    }
+    cudaFree(d_priv); cudaFree(d_tgt); cudaFree(d_match);
+    *match_index = h_match;
+    return 1;
+}
+
+extern "C" int tcuda_kangaroo_dp_run(
+    uint8_t *pos_xy64, uint8_t *dist32, const int *herd, int n_walkers,
+    const uint8_t *jump_xy64, const uint8_t *jump_len32, uint64_t dp_mask,
+    int steps_per_launch,
+    uint8_t *out_dp_xy64, uint8_t *out_dp_dist32, int *out_dp_herd,
+    int max_dps, int *n_dps_out)
+{
+    if (!pos_xy64 || !dist32 || !herd || n_walkers <= 0 || !jump_xy64 || !jump_len32 ||
+        !out_dp_xy64 || !out_dp_dist32 || !out_dp_herd || !n_dps_out ||
+        max_dps <= 0 || steps_per_launch <= 0)
+        return 0;
+
+    uint8_t *d_pos = NULL, *d_dist = NULL, *d_jxy = NULL, *d_jlen = NULL;
+    uint8_t *d_oxy = NULL, *d_odist = NULL;
+    int *d_herd = NULL, *d_oherd = NULL, *d_count = NULL;
+    int zero = 0;
+
+    if (cudaMalloc(&d_pos, (size_t)n_walkers * 64) != cudaSuccess ||
+        cudaMalloc(&d_dist, (size_t)n_walkers * 32) != cudaSuccess ||
+        cudaMalloc(&d_herd, (size_t)n_walkers * sizeof(int)) != cudaSuccess ||
+        cudaMalloc(&d_jxy, 32 * 64) != cudaSuccess ||
+        cudaMalloc(&d_jlen, 32 * 32) != cudaSuccess ||
+        cudaMalloc(&d_oxy, (size_t)max_dps * 64) != cudaSuccess ||
+        cudaMalloc(&d_odist, (size_t)max_dps * 32) != cudaSuccess ||
+        cudaMalloc(&d_oherd, (size_t)max_dps * sizeof(int)) != cudaSuccess ||
+        cudaMalloc(&d_count, sizeof(int)) != cudaSuccess) {
+        if (d_pos) cudaFree(d_pos);
+        if (d_dist) cudaFree(d_dist);
+        if (d_herd) cudaFree(d_herd);
+        if (d_jxy) cudaFree(d_jxy);
+        if (d_jlen) cudaFree(d_jlen);
+        if (d_oxy) cudaFree(d_oxy);
+        if (d_odist) cudaFree(d_odist);
+        if (d_oherd) cudaFree(d_oherd);
+        if (d_count) cudaFree(d_count);
+        return 0;
+    }
+
+    if (cudaMemcpy(d_pos, pos_xy64, (size_t)n_walkers * 64, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_dist, dist32, (size_t)n_walkers * 32, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_herd, herd, (size_t)n_walkers * sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_jxy, jump_xy64, 32 * 64, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_jlen, jump_len32, 32 * 32, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_count, &zero, sizeof(int), cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaFree(d_pos); cudaFree(d_dist); cudaFree(d_herd);
+        cudaFree(d_jxy); cudaFree(d_jlen);
+        cudaFree(d_oxy); cudaFree(d_odist); cudaFree(d_oherd); cudaFree(d_count);
+        return 0;
+    }
+
+    int grid = (n_walkers + kCudaThreads - 1) / kCudaThreads;
+    kangaroo_dp_kernel<<<grid, kCudaThreads>>>(
+        d_pos, d_dist, d_herd, n_walkers, d_jxy, d_jlen, dp_mask, steps_per_launch,
+        d_oxy, d_odist, d_oherd, d_count, max_dps);
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+        cudaFree(d_pos); cudaFree(d_dist); cudaFree(d_herd);
+        cudaFree(d_jxy); cudaFree(d_jlen);
+        cudaFree(d_oxy); cudaFree(d_odist); cudaFree(d_oherd); cudaFree(d_count);
+        return 0;
+    }
+
+    int n_dps = 0;
+    if (cudaMemcpy(&n_dps, d_count, sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(pos_xy64, d_pos, (size_t)n_walkers * 64, cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(dist32, d_dist, (size_t)n_walkers * 32, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaFree(d_pos); cudaFree(d_dist); cudaFree(d_herd);
+        cudaFree(d_jxy); cudaFree(d_jlen);
+        cudaFree(d_oxy); cudaFree(d_odist); cudaFree(d_oherd); cudaFree(d_count);
+        return 0;
+    }
+    if (n_dps > max_dps) n_dps = max_dps;
+    if (n_dps > 0) {
+        if (cudaMemcpy(out_dp_xy64, d_oxy, (size_t)n_dps * 64, cudaMemcpyDeviceToHost) != cudaSuccess ||
+            cudaMemcpy(out_dp_dist32, d_odist, (size_t)n_dps * 32, cudaMemcpyDeviceToHost) != cudaSuccess ||
+            cudaMemcpy(out_dp_herd, d_oherd, (size_t)n_dps * sizeof(int), cudaMemcpyDeviceToHost) != cudaSuccess) {
+            cudaFree(d_pos); cudaFree(d_dist); cudaFree(d_herd);
+            cudaFree(d_jxy); cudaFree(d_jlen);
+            cudaFree(d_oxy); cudaFree(d_odist); cudaFree(d_oherd); cudaFree(d_count);
+            return 0;
+        }
+    }
+    *n_dps_out = n_dps;
+    cudaFree(d_pos); cudaFree(d_dist); cudaFree(d_herd);
+    cudaFree(d_jxy); cudaFree(d_jlen);
+    cudaFree(d_oxy); cudaFree(d_odist); cudaFree(d_oherd); cudaFree(d_count);
+    return 1;
+}

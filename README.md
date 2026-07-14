@@ -19,6 +19,12 @@ Repo: **[github.com/TrueSc3nt/TrueCollider](https://github.com/TrueSc3nt/TrueCol
 
 ---
 
+## About (paste-ready)
+
+**KeyCollider / TrueCollider** by TrueScent is an open-source multi-coin key-search toolkit: Bitcoin-family addresses, Ethereum, Solana, vanity, brainwallets, BSGS, and Pollard's kangaroo — on CPU SIMD with optional NVIDIA CUDA. It searches ranges and patterns you supply; it is not a wallet scraper or a “find free BTC” oracle.
+
+---
+
 ## Table of contents
 
 1. [Brand / what it is](#brand--what-it-is)
@@ -264,11 +270,11 @@ Works with essentially all modes including BSGS. See also [`COLLIDER_MODES_READM
 | Item | Reality |
 |------|---------|
 | `-E` | Present in the `getopt` option string but **no handler** — do not use |
-| `-N` balance check | **Partial**: flag + `node_check_balance()` (curl → RPC/APIs) exist; **not yet called from the hit/write path**. Enabling `-N` currently only prints that checking is “enabled”. See [Balance checking](#online-balance-checking--n). |
+| `-N` balance check | **Wired**: on each hit, `writekey` / `writekeyeth` / `writekeysol` call `node_check_balance` (curl → public APIs or BTC Core RPC). Needs `curl` on PATH; live RPC for `-Nhttp://...`. See [Balance checking](#online-balance-checking--n). |
 | `pub2rmd` mode | Removed; use `-m rmd160` |
 | Device CUDA hash160 + on-GPU bloom | **Shipped** — self-test must pass; otherwise host-filter fallback |
 | Full GPU GRP BSGS loop | **Shipped** (device GRP + host bloom); not yet throughput-tuned |
-| Kangaroo on GPU | Not shipped |
+| Kangaroo on GPU | **Shipped** (`-U cuda`): small ranges GPU batch EC scan; larger ranges multi-walker DP (device jumps, host DP table). CPU fallback always. |
 
 ---
 
@@ -318,14 +324,15 @@ keyhunt.exe -m bsgs -f tests\125.txt -b 125 -M 8192 -k auto -t 4
 keyhunt.exe -m bsgs -f tests\125.txt -x auto -S -t 8
 ```
 
-### kangaroo (CPU)
+### kangaroo (CPU / CUDA)
 
 ```bat
-keyhunt.exe -m kangaroo -f tests\125.txt -r 1:100000
+keyhunt.exe -m kangaroo -f tests\_pubkey_g.txt -r 1:1000
 keyhunt.exe -m kangaroo -f tests\125.txt -b 40 -t 4
+keyhunt_cuda.exe -m kangaroo -f tests\_pubkey_g.txt -r 1:1000 -U cuda
 ```
 
-Ranges ≤ 2²⁴ use a sequential EC walk; larger ranges use DP kangaroo.
+Ranges ≤ 2²⁴: sequential EC walk (CUDA batch scan with `-U cuda`). Larger ranges: DP kangaroo (CUDA multi-walker jumps + host DP table).
 
 ### vanity
 
@@ -390,24 +397,23 @@ Also see `run_puzzle66_example.bat` and [`PUZZLE_SEARCH_README.md`](PUZZLE_SEARC
 
 ## Online balance checking (`-N`)
 
-### What the code does today (honest)
+### Status: **wired**
 
 | Piece | Status |
 |-------|--------|
-| CLI `-N` / `-Nhttp://user:pass@host:port` | **Parsed** — sets `FLAGNODECHECK` and optional `NODE_RPC_URL` |
-| `node_check_balance(address, crypto)` | **Implemented** — shells out to `curl` |
-| Call from `writekey` / hit path when a key is found | **Not wired** — `FLAGNODECHECK` is never read after parse; `node_check_balance` is never called |
-
-So: documentation and the helper function match the *intended* design below, but **enabling `-N` does not yet query balances on hits**. Keys are still written to `FOUND_*.txt` / `KEYFOUNDKEYFOUND.txt` regardless. Treat `-N` as **preview / upcoming** until it is hooked into the write path.
-
-### Intended usage (when wired)
+| CLI `-N` / `-Nhttp://user:pass@host:port` | Parsed — sets `FLAGNODECHECK` and optional `NODE_RPC_URL` |
+| `node_check_balance(address, crypto)` | Implemented — shells out to `curl` |
+| Call from `writekey` / `writekeyeth` / `writekeysol` on hit | **Wired** — results printed and appended to `FOUND_*.txt` |
 
 ```bat
 REM Public APIs (no URL) — BTC blockstream.info, ETH/ETC etherscan, LTC blockcypher
 keyhunt.exe -m address -c btc -f tests\66.txt -N -t 8
 
-REM Own Bitcoin Core RPC (scantxoutset)
+REM Own Bitcoin Core RPC (scantxoutset start + addr(...))
 keyhunt.exe -m address -c btc -f tests\66.txt -Nhttp://user:pass@127.0.0.1:8332 -t 8
+
+REM Fixture hit + public API smoke (needs network + curl; expects ZERO on puzzle dust addr)
+keyhunt.exe -m address -f tests\_btc_1to2.txt -r 1:2 -l compress -N -t 1
 ```
 
 ### Public API mapping (in `node_check_balance`)
@@ -417,21 +423,21 @@ keyhunt.exe -m address -c btc -f tests\66.txt -Nhttp://user:pass@127.0.0.1:8332 
 | BTC | `https://blockstream.info/api/address/{addr}` |
 | ETH / ETC | `https://api.etherscan.io/api?...&address={addr}` |
 | LTC | `https://api.blockcypher.com/v1/ltc/main/addrs/{addr}/balance` |
-| Other (`sol`, `doge`, …) | Returns unsupported (`-1`) |
+| Other (`sol`, `doge`, …) | Printed as UNSUPPORTED |
 
 With `NODE_RPC_URL` set, **BTC only** uses JSON-RPC `scantxoutset` via:
 
-`http://user:pass@host:port` (default parse host `127.0.0.1:8332`).
+`http://user:pass@host:port` (default parse host `127.0.0.1:8332`). Real RPC needs a **live** Bitcoin Core (or compatible) node — dry-run alone does not query.
 
 ### Safety notes
 
-- Requires **`curl`** on `PATH` (Windows: install curl or use Win10+ built-in).
+- Requires **`curl`** on `PATH` (Windows: Win10+ built-in or install curl).
 - Public APIs have **rate limits**; do not enable on high-rate vanity grinds expecting one HTTP call per hit.
 - RPC URL embeds credentials in the command line (visible to other users / shell history) — prefer a local node ACL.
 - APIs/third parties learn which addresses you asked about.
-- Response parsing is heuristic (string-search for `"balance"` / `"final_balance"` etc.) — not a production wallet audit tool.
+- Response parsing is heuristic (string-search for `"balance"` / `"funded_txo_sum"` / `"final_balance"` etc.) — not a production wallet audit tool.
 
-Example helper: [`examples/balance_check.bat`](examples/balance_check.bat) (documents the flag; run after the call site is wired for real checks).
+Example helper: [`examples/balance_check.bat`](examples/balance_check.bat).
 
 ---
 
@@ -448,7 +454,7 @@ Runtime: `-U none` (default) · `-U cuda` · `-U opencl`.
 | mnemonic / poetry / brainwallet | Derive on CPU; GPU EC afterward |
 | BSGS | GPU baby-table + **device GRP** giant-step (host bloom); serial cycles today |
 | Solana `-c sol` | **Full device** ed25519 `ge_scalarmult_base` (host-ge fallback) |
-| Kangaroo | **CPU only** |
+| Kangaroo | **CUDA** (`-U cuda`): ≤2²⁴ GPU batch EC scan; larger multi-walker DP (device jumps, host table). CPU fallback |
 | Device hash160 bloom search | **Shipped** when self-test passes |
 | `-e` endomorphism on GPU EC | **No** |
 | OpenCL | Host EC + GPU hash160 (`ENABLE_OPENCL` build; not default CUDA exe) |

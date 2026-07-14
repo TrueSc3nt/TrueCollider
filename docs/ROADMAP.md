@@ -34,9 +34,11 @@ Sources of practice in the wild: [albertobsd/keyhunt](https://github.com/alberto
 | CUDA secp EC (BTC-family + ETH/ETC + troot) | **Done** (host encode/bloom; `-M` VRAM batch auto) |
 | OpenCL hash160 | Done (EC on CPU) |
 | Kangaroo CPU | **Done** (tiny sequential / larger DP) |
+| Kangaroo CUDA | **Done** (batch scan ≤2²⁴ + multi-walker DP; not RCKangaroo SOTA yet) |
 | Memory budget `-M` | **Done** (CUDA VRAM + BSGS blooms) |
 | Dry-run / FOUND_*.txt / fixtures 66/125 | **Done** |
-| GPU BSGS / Kangaroo / SOL GPU | **Not yet** |
+| Online balance `-N` | **Done** (wired on writekey hit path) |
+| GPU BSGS / SOL GPU | BSGS GRP + SOL ed25519 **Done** (tune next) |
 | Beginner docs | Done |
 | One-click Windows installer | Not yet |
 

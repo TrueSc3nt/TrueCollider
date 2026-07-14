@@ -4,6 +4,14 @@ Developed & Modified by TrueScent
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <math.h>
@@ -240,6 +248,9 @@ int minimum_same_bytes(unsigned char* A,unsigned char* B, int length);
 void writekey(bool compressed,Int *key);
 void writekeyeth(Int *key);
 void writekeysol(Int *key);
+static void append_found_file(const char *tag, const char *body);
+static void report_hit_balance(const char *address, int crypto_type, const char *found_tag);
+int node_check_balance(const char *address, int crypto_type);
 int run_kangaroo_search(const char *pubkey_file);
 static void append_found_file(const char *tag, const char *body);
 static int gpu_check_privkey_list(const uint8_t *privs, int count, int compressed, int is_eth);
@@ -1676,7 +1687,7 @@ int main(int argc, char **argv)	{
 					break;
 					case MODE_KANGAROO:
 						FLAGMODE = MODE_KANGAROO;
-						printf("[+] Mode kangaroo (Pollard's kangaroo CPU; use -r / -b + pubkey file)\n");
+						printf("[+] Mode kangaroo (Pollard's kangaroo; CPU or -U cuda; use -r / -b + pubkey file)\n");
 					break;
 					default:
 						fprintf(stderr,"[E] Unknow mode value %s\n",optarg);
@@ -1923,10 +1934,18 @@ int main(int argc, char **argv)	{
 			break;
 			case 'N':
 				FLAGNODECHECK = 1;
-				if(optarg) {
+				if(optarg && (strncmp(optarg, "http://", 7) == 0 ||
+				              strncmp(optarg, "https://", 8) == 0)) {
 					NODE_RPC_URL = optarg;
 					printf("[+] Node balance checking enabled via: %s\n", NODE_RPC_URL);
 				} else {
+					if(optarg && optarg[0]) {
+						/* Optional-arg getopt sometimes steals the next flag (e.g. -t). */
+						fprintf(stderr,
+							"[W] Ignoring -N argument '%s' (expected http://user:pass@host:port). Using public APIs.\n",
+							optarg);
+					}
+					NODE_RPC_URL = NULL;
 					printf("[+] Node balance checking enabled (using public APIs)\n");
 				}
 			break;
@@ -2033,12 +2052,14 @@ int main(int argc, char **argv)	{
 				FLAGMODE == MODE_ADDRESS ? "address" :
 				FLAGMODE == MODE_RMD160 ? "rmd160" :
 				FLAGMODE == MODE_VANITY ? "vanity" :
-				FLAGMODE == MODE_BSGS ? "bsgs" : "other");
+				FLAGMODE == MODE_BSGS ? "bsgs" :
+				FLAGMODE == MODE_KANGAROO ? "kangaroo" : "other");
 		} else if(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160 ||
 			  FLAGMODE == MODE_VANITY || FLAGMODE == MODE_XPOINT ||
 			  FLAGMODE == MODE_PUB2ADDR || FLAGMODE == MODE_MINIKEYS ||
 			  FLAGMODE == MODE_MNEMONIC || FLAGMODE == MODE_POETRY ||
-			  FLAGMODE == MODE_BRAINWALLET || FLAGMODE == MODE_BSGS) {
+			  FLAGMODE == MODE_BRAINWALLET || FLAGMODE == MODE_BSGS ||
+			  FLAGMODE == MODE_KANGAROO) {
 			if(FLAGCRYPTO == CRYPTO_SOL) {
 				if(gpu_dispatcher_ed25519_ready(g_gpu_dispatcher)) {
 					fprintf(stderr,"[+] GPU Solana path enabled (full device ed25519 ge; batch %u).\n",
@@ -2048,6 +2069,9 @@ int main(int argc, char **argv)	{
 				}
 			} else if(FLAGMODE == MODE_BSGS) {
 				fprintf(stderr,"[+] GPU BSGS EC enabled (baby-table + GRP giant-step; batch %u).\n",
+					g_backend_config.gpu_batch_size);
+			} else if(FLAGMODE == MODE_KANGAROO) {
+				fprintf(stderr,"[+] GPU kangaroo enabled (scan / multi-walker DP; batch %u).\n",
 					g_backend_config.gpu_batch_size);
 			} else {
 				fprintf(stderr,"[+] GPU EC enabled for mode (batch %u keys; -G / -M to tune).\n",
@@ -9250,6 +9274,14 @@ int node_check_balance(const char *address, int crypto_type) {
 	char cmd[2048];
 	char result[4096];
 	FILE *fp;
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+	const char *devnull = "2>nul";
+#else
+	const char *devnull = "2>/dev/null";
+#endif
+
+	if(!address || !address[0])
+		return -1;
 
 	if(NODE_RPC_URL && crypto_type == CRYPTO_BTC) {
 		char rpc_user[256] = "";
@@ -9260,32 +9292,95 @@ int node_check_balance(const char *address, int crypto_type) {
 		sscanf(NODE_RPC_URL, "http://%[^:]:%[^@]@%[^:]:%d", rpc_user, rpc_pass, rpc_host, &rpc_port);
 
 		char json_payload[512];
+		/* Bitcoin Core: scantxoutset "start" ["addr(...)"] */
 		snprintf(json_payload, sizeof(json_payload),
-			"{\"jsonrpc\":\"1.0\",\"id\":\"keyhunt\",\"method\":\"scantxoutset\",\"params\":[[\"raw(%s)\"]]}", address);
+			"{\"jsonrpc\":\"1.0\",\"id\":\"keyhunt\",\"method\":\"scantxoutset\","
+			"\"params\":[\"start\",[\"addr(%s)\"]]}", address);
+
+		/* Write JSON to a temp file so quoting works on Windows cmd and Unix shells. */
+		char tmp_path[512];
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+		{
+			char tmp_dir[MAX_PATH];
+			DWORD n = GetTempPathA(sizeof(tmp_dir), tmp_dir);
+			if(n == 0 || n >= sizeof(tmp_dir))
+				snprintf(tmp_dir, sizeof(tmp_dir), ".");
+			snprintf(tmp_path, sizeof(tmp_path), "%skeyhunt_rpc_%u.json", tmp_dir, (unsigned)GetCurrentProcessId());
+		}
+#else
+		snprintf(tmp_path, sizeof(tmp_path), "/tmp/keyhunt_rpc_%d.json", (int)getpid());
+#endif
+		FILE *tf = fopen(tmp_path, "wb");
+		if(!tf) return -1;
+		fputs(json_payload, tf);
+		fclose(tf);
 
 		snprintf(cmd, sizeof(cmd),
-			"curl -s -u %s:%s -H \"Content-Type: application/json\" -d '%s' http://%s:%d/ 2>/dev/null",
-			rpc_user, rpc_pass, json_payload, rpc_host, rpc_port);
+			"curl -s --max-time 15 -u %s:%s -H \"Content-Type: application/json\" "
+			"--data-binary @\"%s\" http://%s:%d/ %s",
+			rpc_user, rpc_pass, tmp_path, rpc_host, rpc_port, devnull);
+
+		fp = popen(cmd, "r");
+		if(!fp) {
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+			_unlink(tmp_path);
+#else
+			unlink(tmp_path);
+#endif
+			return -1;
+		}
+
+		int bytes_read_rpc = fread(result, 1, sizeof(result) - 1, fp);
+		result[bytes_read_rpc] = '\0';
+		pclose(fp);
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+		_unlink(tmp_path);
+#else
+		unlink(tmp_path);
+#endif
+		if(bytes_read_rpc == 0) return -1;
+
+		if(strstr(result, "\"final_balance\":0") ||
+		   strstr(result, "\"balance\":0") ||
+		   strstr(result, "\"balance\":\"0\"") ||
+		   strstr(result, "\"total_amount\":0") ||
+		   strstr(result, "\"total_amount\": 0") ||
+		   strstr(result, "\"funded_txo_sum\":0")) {
+			return 0;
+		}
+		if(strstr(result, "\"final_balance\"") ||
+		   strstr(result, "\"total_amount\"") ||
+		   strstr(result, "\"balance\"") ||
+		   strstr(result, "\"funded_txo_sum\"") ||
+		   strstr(result, "\"amount\"")) {
+			return 1;
+		}
+		return -1;
 	}
 	else {
 		switch(crypto_type) {
 			case CRYPTO_BTC:
-				snprintf(cmd, sizeof(cmd), "curl -s \"https://blockstream.info/api/address/%s\" 2>/dev/null", address);
+				snprintf(cmd, sizeof(cmd),
+					"curl -s --max-time 15 \"https://blockstream.info/api/address/%s\" %s",
+					address, devnull);
 				break;
 			case CRYPTO_ETH:
 			case CRYPTO_ETC:
-				snprintf(cmd, sizeof(cmd), "curl -s \"https://api.etherscan.io/api?module=account&action=balance&address=%s&tag=latest\" 2>/dev/null", address);
+				snprintf(cmd, sizeof(cmd),
+					"curl -s --max-time 15 \"https://api.etherscan.io/api?module=account&action=balance&address=%s&tag=latest\" %s",
+					address, devnull);
 				break;
 			case CRYPTO_LTC:
-				snprintf(cmd, sizeof(cmd), "curl -s \"https://api.blockcypher.com/v1/ltc/main/addrs/%s/balance\" 2>/dev/null", address);
+				snprintf(cmd, sizeof(cmd),
+					"curl -s --max-time 15 \"https://api.blockcypher.com/v1/ltc/main/addrs/%s/balance\" %s",
+					address, devnull);
 				break;
 			default:
 				return -1;
 		}
+		fp = popen(cmd, "r");
+		if(!fp) return -1;
 	}
-
-	fp = popen(cmd, "r");
-	if(!fp) return -1;
 
 	int bytes_read = fread(result, 1, sizeof(result) - 1, fp);
 	result[bytes_read] = '\0';
@@ -9293,15 +9388,71 @@ int node_check_balance(const char *address, int crypto_type) {
 
 	if(bytes_read == 0) return -1;
 
-	if(strstr(result, "\"final_balance\":0") || strstr(result, "\"balance\":\"0\"") || strstr(result, "\"amount\":\"0\"")) {
+	/* Zero-balance heuristics (public APIs + RPC). */
+	if(strstr(result, "\"final_balance\":0") ||
+	   strstr(result, "\"balance\":0") ||
+	   strstr(result, "\"balance\":\"0\"") ||
+	   strstr(result, "\"amount\":\"0\"") ||
+	   strstr(result, "\"funded_txo_sum\":0") ||
+	   strstr(result, "\"result\":\"0\"") ||
+	   strstr(result, "\"total_amount\":0") ||
+	   strstr(result, "\"total_amount\": 0")) {
 		return 0;
 	}
 
-	if(strstr(result, "\"final_balance\"") || strstr(result, "\"balance\"") || strstr(result, "\"amount\"")) {
+	if(strstr(result, "\"final_balance\"") ||
+	   strstr(result, "\"funded_txo_sum\"") ||
+	   strstr(result, "\"total_amount\"") ||
+	   strstr(result, "\"balance\"") ||
+	   strstr(result, "\"amount\"") ||
+	   strstr(result, "\"result\"")) {
 		return 1;
 	}
 
 	return -1;
+}
+
+/*
+ * Called from writekey / writekeyeth / writekeysol when FLAGNODECHECK is set.
+ * Requires curl on PATH. Public APIs need network; RPC needs a live node.
+ */
+static void report_hit_balance(const char *address, int crypto_type, const char *found_tag) {
+	char line[320];
+	const char *status;
+
+	if(!FLAGNODECHECK)
+		return;
+	if(!address || !address[0]) {
+		printf("[N] Balance check skipped (empty address)\n");
+		fflush(stdout);
+		return;
+	}
+	if(crypto_type != CRYPTO_BTC && crypto_type != CRYPTO_ETH &&
+	   crypto_type != CRYPTO_ETC && crypto_type != CRYPTO_LTC) {
+		status = "UNSUPPORTED (only BTC / ETH / ETC / LTC in node_check_balance)";
+		printf("[N] Balance check: %s — address %s\n", status, address);
+		fflush(stdout);
+		snprintf(line, sizeof(line), "BalanceCheck: %s\n", status);
+		if(found_tag) append_found_file(found_tag, line);
+		return;
+	}
+
+	printf("[N] Checking online balance for %s (crypto=%d%s)...\n",
+		address, crypto_type, NODE_RPC_URL ? ", custom RPC" : ", public API");
+	fflush(stdout);
+
+	int rc = node_check_balance(address, crypto_type);
+	if(rc == 0)
+		status = "ZERO (no funded balance detected)";
+	else if(rc == 1)
+		status = "NON-ZERO (funded — verify manually)";
+	else
+		status = "ERROR (curl missing, network/RPC down, rate limit, or parse fail)";
+
+	printf("[N] Balance check: %s\n", status);
+	fflush(stdout);
+	snprintf(line, sizeof(line), "BalanceCheck: %s\nAddress: %s\n", status, address);
+	if(found_tag) append_found_file(found_tag, line);
 }
 
 #if defined(_MSC_VER)
@@ -10397,11 +10548,13 @@ void menu() {
 	printf("      keyhunt -m bsgs -f pubkeys.txt -x auto -t 8\n\n");
 
 	printf("  kangaroo\n");
-	printf("    Pollard's kangaroo (CPU) for a single pubkey in a known range.\n");
-	printf("    Ranges <= 2^24 use a sequential EC walk; larger ranges use DP kangaroo.\n");
+	printf("    Pollard's kangaroo for a single pubkey in a known range.\n");
+	printf("    Ranges <= 2^24: sequential walk (GPU batch scan with -U cuda).\n");
+	printf("    Larger ranges: DP kangaroo (GPU multi-walker jumps with -U cuda).\n");
 	printf("    Requires -f pubkey.txt and -r start:end (or -b bits).\n\n");
 	printf("    Example:\n");
-	printf("      keyhunt -m kangaroo -f pubkey.txt -r 1:100000\n\n");
+	printf("      keyhunt -m kangaroo -f pubkey.txt -r 1:100000\n");
+	printf("      keyhunt_cuda -m kangaroo -f pubkey.txt -r 1:100000 -U cuda\n\n");
 
 	printf("  vanity\n");
 	printf("    Searches for a private key whose address starts with a specific\n");
@@ -11046,8 +11199,11 @@ static void append_found_file(const char *tag, const char *body) {
 }
 
 /*
- * Pollard's kangaroo (CPU) for a single compressed/uncompressed pubkey in range.
- * Small ranges (<=2^24): sequential EC walk. Larger: DP kangaroo.
+ * Pollard's kangaroo for a single compressed/uncompressed pubkey in range.
+ * -U cuda + secp ready:
+ *   bits <= 24: GPU batch scalar*G scan against target
+ *   bits > 24:  multi-walker DP kangaroo (EC jumps on device; DP table on host)
+ * CPU fallback always available (sequential walk / single-pair DP).
  */
 int run_kangaroo_search(const char *pubkey_file) {
 	if(!FLAGRANGE && !FLAGBITRANGE) {
@@ -11088,28 +11244,92 @@ int run_kangaroo_search(const char *pubkey_file) {
 	printf("[+] Kangaroo: range 0x%s .. 0x%s (~%d bits)\n", hs, he, bits);
 	free(hs); free(he);
 
-	/* Tiny ranges: sequential (exact, good for tests). */
+	uint8_t target_xy[64];
+	target.x.Get32Bytes(target_xy);
+	target.y.Get32Bytes(target_xy + 32);
+
+	int use_gpu = (g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher)
+		&& g_backend_config.gpu_backend == GPU_BACKEND_CUDA);
+
+	/* Tiny ranges: sequential / GPU batch scan (exact). */
 	if(bits <= 24) {
-		printf("[+] Using sequential EC walk (range <= 2^24)\n");
-		Int k;
-		k.Set(&n_range_start);
-		Point cur = secp->ComputePublicKey(&k);
-		Point G = secp->G;
-		uint64_t steps_local = 0;
-		while(k.IsLowerOrEqual(&n_range_end)) {
-			if(cur.equals(target)) {
-				writekey(compressed, &k);
-				printf("[+] Kangaroo solved in %" PRIu64 " steps\n", steps_local);
-				return 0;
+		if(use_gpu) {
+			printf("[+] Using GPU sequential EC scan (range <= 2^24, -U cuda)\n");
+			uint32_t batch = g_backend_config.gpu_batch_size;
+			if(batch < 256) batch = 256;
+			if(batch > 65536) batch = 65536;
+			uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
+			if(!privs) {
+				fprintf(stderr,"[E] OOM kangaroo GPU scan\n");
+				return 1;
 			}
-			cur = secp->AddDirect(cur, G);
-			k.AddOne();
-			steps_local++;
-			if((steps_local & 0xFFFFFull) == 0 && !FLAGQUIET)
-				printf("\r[+] kangaroo steps %" PRIu64, steps_local);
+			Int k;
+			k.Set(&n_range_start);
+			uint64_t steps_local = 0;
+			while(k.IsLowerOrEqual(&n_range_end)) {
+				uint32_t n = 0;
+				Int kcur;
+				kcur.Set(&k);
+				while(n < batch && kcur.IsLowerOrEqual(&n_range_end)) {
+					kcur.Get32Bytes(privs + (size_t)n * 32);
+					kcur.AddOne();
+					n++;
+				}
+				if(n == 0) break;
+				int match = -1;
+				if(!gpu_dispatcher_kangaroo_scan(g_gpu_dispatcher, privs, n,
+						compressed ? 1 : 0, target_xy, &match)) {
+					fprintf(stderr,"[W] GPU kangaroo scan failed; falling back to CPU walk\n");
+					free(privs);
+					use_gpu = 0;
+					break;
+				}
+				if(match >= 0 && (uint32_t)match < n) {
+					Int kfound;
+					kfound.Set32Bytes(privs + (size_t)match * 32);
+					Point check = secp->ComputePublicKey(&kfound);
+					if(check.equals(target)) {
+						writekey(compressed, &kfound);
+						printf("[+] Kangaroo (GPU) solved in %" PRIu64 " steps\n",
+							steps_local + (uint64_t)match + 1);
+						free(privs);
+						return 0;
+					}
+				}
+				steps_local += n;
+				k.Set(&kcur);
+				if(!FLAGQUIET && (steps_local & 0xFFFFFull) == 0)
+					printf("\r[+] kangaroo GPU steps %" PRIu64, steps_local);
+			}
+			free(privs);
+			if(use_gpu) {
+				fprintf(stderr,"[E] Kangaroo: key not in range\n");
+				return 1;
+			}
+			/* fall through to CPU if GPU failed mid-run */
 		}
-		fprintf(stderr,"[E] Kangaroo: key not in range\n");
-		return 1;
+		if(!use_gpu) {
+			printf("[+] Using sequential EC walk (range <= 2^24)\n");
+			Int k;
+			k.Set(&n_range_start);
+			Point cur = secp->ComputePublicKey(&k);
+			Point G = secp->G;
+			uint64_t steps_local = 0;
+			while(k.IsLowerOrEqual(&n_range_end)) {
+				if(cur.equals(target)) {
+					writekey(compressed, &k);
+					printf("[+] Kangaroo solved in %" PRIu64 " steps\n", steps_local);
+					return 0;
+				}
+				cur = secp->AddDirect(cur, G);
+				k.AddOne();
+				steps_local++;
+				if((steps_local & 0xFFFFFull) == 0 && !FLAGQUIET)
+					printf("\r[+] kangaroo steps %" PRIu64, steps_local);
+			}
+			fprintf(stderr,"[E] Kangaroo: key not in range\n");
+			return 1;
+		}
 	}
 
 	/* Pollard's kangaroo with distinguished points. */
@@ -11117,14 +11337,19 @@ int run_kangaroo_search(const char *pubkey_file) {
 	if(dp_bits > 18) dp_bits = 18;
 	if(dp_bits < 6) dp_bits = 6;
 	uint64_t dp_mask = (1ULL << dp_bits) - 1ULL;
-	printf("[+] Using Pollard's kangaroo (dp_bits=%d)\n", dp_bits);
 
 	Point jump_pts[32];
 	Int jump_len[32];
+	uint8_t jump_xy[32 * 64];
+	uint8_t jump_len_be[32 * 32];
+	memset(jump_len_be, 0, sizeof(jump_len_be));
 	for(int i = 0; i < 32; i++) {
 		jump_len[i].SetInt32(1);
 		jump_len[i].ShiftL(i);
 		jump_pts[i] = secp->ComputePublicKey(&jump_len[i]);
+		jump_pts[i].x.Get32Bytes(jump_xy + (size_t)i * 64);
+		jump_pts[i].y.Get32Bytes(jump_xy + (size_t)i * 64 + 32);
+		jump_len[i].Get32Bytes(jump_len_be + (size_t)i * 32);
 	}
 
 	auto jump_idx = [](Point &p) -> int {
@@ -11146,6 +11371,11 @@ int run_kangaroo_search(const char *pubkey_file) {
 		memcpy(&k, b, 8);
 		return k;
 	};
+	auto xkey_bytes = [](const uint8_t *xy64) -> uint64_t {
+		uint64_t k = 0;
+		memcpy(&k, xy64, 8);
+		return k;
+	};
 
 	struct HerdEntry { Int dist; int herd; };
 	std::map<uint64_t, HerdEntry> table;
@@ -11157,6 +11387,119 @@ int run_kangaroo_search(const char *pubkey_file) {
 	tmp.Sub(&n_range_start);
 	tmp.ShiftR(1);
 	mid.Add(&tmp);
+
+	/* GPU multi-walker DP path */
+	if(use_gpu) {
+		int n_walkers = (int)g_backend_config.gpu_batch_size;
+		if(n_walkers < 64) n_walkers = 64;
+		if(n_walkers > 4096) n_walkers = 4096;
+		if(n_walkers & 1) n_walkers++;
+		int half = n_walkers / 2;
+		printf("[+] Using GPU Pollard's kangaroo (dp_bits=%d, walkers=%d)\n",
+			dp_bits, n_walkers);
+
+		uint8_t *pos_xy = (uint8_t*)malloc((size_t)n_walkers * 64);
+		uint8_t *dist_be = (uint8_t*)malloc((size_t)n_walkers * 32);
+		int *herd = (int*)malloc((size_t)n_walkers * sizeof(int));
+		const int max_dps = 8192;
+		uint8_t *out_xy = (uint8_t*)malloc((size_t)max_dps * 64);
+		uint8_t *out_dist = (uint8_t*)malloc((size_t)max_dps * 32);
+		int *out_herd = (int*)malloc((size_t)max_dps * sizeof(int));
+		if(!pos_xy || !dist_be || !herd || !out_xy || !out_dist || !out_herd) {
+			fprintf(stderr,"[E] OOM kangaroo GPU walkers; falling back to CPU\n");
+			free(pos_xy); free(dist_be); free(herd);
+			free(out_xy); free(out_dist); free(out_herd);
+			use_gpu = 0;
+		} else {
+			Point G = secp->G;
+			(void)G;
+			for(int i = 0; i < half; i++) {
+				/* tame: mid + i */
+				Int td;
+				td.Set(&mid);
+				td.Add((uint64_t)i);
+				Point tp = secp->ComputePublicKey(&td);
+				tp.x.Get32Bytes(pos_xy + (size_t)i * 64);
+				tp.y.Get32Bytes(pos_xy + (size_t)i * 64 + 32);
+				td.Get32Bytes(dist_be + (size_t)i * 32);
+				herd[i] = 1;
+				/* wild: target + i*G, dist = i */
+				Int wd;
+				wd.SetInt32(i);
+				Point wp;
+				if(i == 0) {
+					wp.Set(target);
+				} else {
+					Point offset = secp->ComputePublicKey(&wd);
+					wp = secp->AddDirect(target, offset);
+				}
+				wp.x.Get32Bytes(pos_xy + (size_t)(half + i) * 64);
+				wp.y.Get32Bytes(pos_xy + (size_t)(half + i) * 64 + 32);
+				wd.Get32Bytes(dist_be + (size_t)(half + i) * 32);
+				herd[half + i] = 0;
+			}
+
+			uint64_t ops = 0;
+			const uint64_t max_ops = 1ULL << (bits < 40 ? (bits + 2) : 42);
+			const int steps_per = 256;
+			while(ops < max_ops) {
+				int n_dps = 0;
+				if(!gpu_dispatcher_kangaroo_dp_run(g_gpu_dispatcher,
+						pos_xy, dist_be, herd, n_walkers,
+						jump_xy, jump_len_be, dp_mask, steps_per,
+						out_xy, out_dist, out_herd, max_dps, &n_dps)) {
+					fprintf(stderr,"[W] GPU kangaroo DP failed; falling back to CPU\n");
+					use_gpu = 0;
+					break;
+				}
+				ops += (uint64_t)n_walkers * (uint64_t)steps_per;
+				for(int d = 0; d < n_dps; d++) {
+					uint64_t key = xkey_bytes(out_xy + (size_t)d * 64);
+					int h = out_herd[d];
+					Int dist;
+					dist.Set32Bytes(out_dist + (size_t)d * 32);
+					auto it = table.find(key);
+					if(it == table.end()) {
+						HerdEntry e;
+						e.dist.Set(&dist);
+						e.herd = h;
+						table[key] = e;
+					} else if(it->second.herd != h) {
+						Int kfound;
+						if(h == 1) {
+							kfound.Set(&dist);
+							kfound.Sub(&it->second.dist);
+						} else {
+							kfound.Set(&it->second.dist);
+							kfound.Sub(&dist);
+						}
+						if(kfound.IsLower(&n_range_start) || kfound.IsGreater(&n_range_end))
+							continue;
+						Point check = secp->ComputePublicKey(&kfound);
+						if(check.equals(target)) {
+							writekey(compressed, &kfound);
+							printf("[+] Kangaroo (GPU) solved in %" PRIu64 " ops (DP table %zu)\n",
+								ops, table.size());
+							free(pos_xy); free(dist_be); free(herd);
+							free(out_xy); free(out_dist); free(out_herd);
+							return 0;
+						}
+					}
+				}
+				if(!FLAGQUIET && (ops & 0xFFFFFull) == 0)
+					printf("\r[+] kangaroo GPU ops %" PRIu64 " DPs %zu", ops, table.size());
+			}
+			free(pos_xy); free(dist_be); free(herd);
+			free(out_xy); free(out_dist); free(out_herd);
+			if(use_gpu) {
+				fprintf(stderr,"\n[E] Kangaroo: not found within op limit (try tighter -r)\n");
+				return 1;
+			}
+			table.clear();
+		}
+	}
+
+	printf("[+] Using Pollard's kangaroo (dp_bits=%d)\n", dp_bits);
 
 	Point tame_pos = secp->ComputePublicKey(&mid);
 	Int tame_dist;
@@ -11246,6 +11589,8 @@ void writekey(bool compressed,Int *key)	{
 #else
 	pthread_mutex_unlock(&write_keys);
 #endif
+	/* Balance check outside the write mutex (may block on curl). writekey addresses are BTC P2PKH. */
+	report_hit_balance(address, CRYPTO_BTC, "BTC");
 	free(hextemp);
 	free(hexrmd);
 }
@@ -11280,6 +11625,8 @@ void writekeyeth(Int *key)	{
 #else
 	pthread_mutex_unlock(&write_keys);
 #endif
+	report_hit_balance(address,
+		(FLAGCRYPTO == CRYPTO_ETC) ? CRYPTO_ETC : CRYPTO_ETH, "ETH");
 	free(hextemp);
 }
 
@@ -11323,6 +11670,7 @@ void writekeysol(Int *key)	{
 #else
 	pthread_mutex_unlock(&write_keys);
 #endif
+	report_hit_balance(address, CRYPTO_SOL, "SOL");
 	free(hextemp);
 }
 

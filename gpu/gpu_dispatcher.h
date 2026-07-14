@@ -78,6 +78,25 @@ int gpu_dispatcher_bsgs_grp_run(struct GpuDispatcher* disp,
                                 uint8_t* start_xy64, int n_cycles, uint8_t* out_x32);
 
 /*
+ * Kangaroo CUDA: batch-compare privkeys to target affine pubkey (64B x||y BE).
+ * Sets *match_index to first hit (>=0) or -1. Returns 1 on successful launch.
+ */
+int gpu_dispatcher_kangaroo_scan(struct GpuDispatcher* disp,
+                                 const uint8_t* privkeys, uint32_t count, int compressed,
+                                 const uint8_t* target_xy64, int* match_index);
+
+/*
+ * Kangaroo CUDA DP walkers: EC jumps on device; distinguished points returned to host.
+ */
+int gpu_dispatcher_kangaroo_dp_run(struct GpuDispatcher* disp,
+                                   uint8_t* pos_xy64, uint8_t* dist32, const int* herd,
+                                   int n_walkers, const uint8_t* jump_xy64,
+                                   const uint8_t* jump_len32, uint64_t dp_mask,
+                                   int steps_per_launch, uint8_t* out_dp_xy64,
+                                   uint8_t* out_dp_dist32, int* out_dp_herd,
+                                   int max_dps, int* n_dps_out);
+
+/*
  * Submit a batch of compressed pubkeys for address-mode hash+filter.
  * keys33: count * 33 bytes. matches: optional index list (may be NULL).
  * Returns number of filter hits written to matches (0 if matches is NULL —

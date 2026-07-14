@@ -55,6 +55,29 @@ int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes);
  */
 uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes);
 
+/*
+ * Kangaroo CUDA helpers.
+ * Small ranges: host batches privkeys; compare device pubs to target.
+ * Larger ranges: multi-walker DP kernel (EC jumps on device); host DP table / collision.
+ */
+int tcuda_kangaroo_scan_match(const uint8_t *privkeys, int count, int compressed,
+                               const uint8_t *target_xy64, int *match_index);
+
+int tcuda_kangaroo_dp_run(
+	uint8_t *pos_xy64,          /* in/out: n_walkers * 64 affine x||y BE */
+	uint8_t *dist32,            /* in/out: n_walkers * 32 BE distance */
+	const int *herd,            /* n_walkers: 0=wild, 1=tame */
+	int n_walkers,
+	const uint8_t *jump_xy64,   /* 32 * 64 jump points */
+	const uint8_t *jump_len32,  /* 32 * 32 jump lengths BE */
+	uint64_t dp_mask,
+	int steps_per_launch,
+	uint8_t *out_dp_xy64,       /* max_dps * 64 */
+	uint8_t *out_dp_dist32,     /* max_dps * 32 */
+	int *out_dp_herd,           /* max_dps */
+	int max_dps,
+	int *n_dps_out);
+
 #ifdef __cplusplus
 }
 #endif

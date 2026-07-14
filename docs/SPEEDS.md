@@ -59,7 +59,7 @@ Path: **GPU secp256k1 EC** + **device** hash160/bloom when self-test passes (els
 | bsgs | **Yes** — GPU baby-table + device GRP (host bloom; serial cycles) |
 | address `-c sol` | **Yes** — full device ed25519 ge |
 | Full on-device hash160+bloom | **Yes** when self-test passes |
-| kangaroo | **No** — CPU only |
+| kangaroo | **Yes** — CUDA batch EC scan (≤2²⁴) + multi-walker DP; CPU fallback |
 
 See hub [README.md](../README.md) for commands and BSGS `-n`/`-k` tables.
 

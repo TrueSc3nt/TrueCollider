@@ -26,7 +26,8 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 | vanity / xpoint / pubkey2addr / minikeys / mnemonic / poetry / brainwallet | GPU EC + filter (device hash160+bloom when ready; else host) |
 | BSGS | Baby-table GPU EC + **device GRP giant-step** (`tcuda_bsgs_grp_*`; host bloom). Currently serial per-cycle launches (correct, not yet throughput-tuned) |
 | SOL (`-c sol`) | **Full device** ed25519 `ge_scalarmult_base` (SHA512+clamp+ge); host-ge fallback |
-| Kangaroo | CPU (`-m kangaroo`) |
+| Kangaroo | **CUDA** (`-m kangaroo -U cuda`): ≤2²⁴ GPU batch EC scan; larger multi-walker DP (device jumps, host DP table). CPU fallback |
+| OpenCL | Host EC + GPU hash160 only |
 
 ### CUDA path (`-U cuda`)
 
@@ -111,7 +112,7 @@ Or double-click / run: `run_gpu_cuda_example.bat`.
 
 1. Trusted device hash160 → full on-device bloom path. **Done.**
 2. GPU BSGS giant-step GRP kernels (baby tables stay RAM-heavy). **Done** (serial; optimize next).
-3. GPU Kangaroo (SOTA for large pubkey puzzles).
+3. GPU Kangaroo (scan + multi-walker DP). **Done** (not RCKangaroo/SOTA throughput yet; correct collisions).
 4. Throughput-tune device Solana ed25519 grind + base58 prefilter.
 5. OpenCL secp EC twin for AMD.
 
