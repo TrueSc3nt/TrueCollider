@@ -20,7 +20,8 @@ Full exhaustive reference: **[README.md](../README.md)**. Raw built-in help: [`H
 | `-l` | `-l compress` | compress / uncompress / both |
 | `-e` | `-e` | GLV endomorphism (CPU secp) |
 | `-A` | `-A auto` | Vector: auto / none / sse / avx / avx2 / avx512 |
-| `-x` | `-x chaos` | sequential / random / chaos / gravity / spiral / reverse / auto |
+| `-x` | `-x chaos` / `-x rseq` | sequential / random / rseq / chaos / gravity / spiral / reverse / auto |
+| `-rs` | `-rs` | Random-sequential (alias `-x rseq`): random start, walk N, reseed. Default N=1M |
 | `-U` | `-U cuda` | GPU: none / cuda / opencl |
 | `-G` | `-G 8192` | GPU batch hint (keys) |
 | `-M` | `-M auto` / `-M 2048` / `-M 2G` | Memory budget (VRAM/RAM); `-M matrix` = screen |
@@ -30,6 +31,7 @@ Full exhaustive reference: **[README.md](../README.md)**. Raw built-in help: [`H
 | `-S` | `-S` | Save/load BSGS tables |
 | `-z` | `-z 2` | Bloom size multiplier |
 | `-R` | `-R` | Random / BSGS random convenience |
+| `-rs` | `-rs` | Random-sequential (Mivvvy-style chunk walk) |
 | `-I` | `-I 2` | Stride (address / rmd160 / xpoint) |
 | `-y` | `-y` | Dry-run config and exit |
 | `-v` | `-v 1Cool` | Vanity prefix |
@@ -48,6 +50,8 @@ Full exhaustive reference: **[README.md](../README.md)**. Raw built-in help: [`H
 
 ```bash
 ./keyhunt -m address -f tests/66.txt -b 66 -l compress -e -A auto -t 8 -q -s 10
+./keyhunt -m address -f tests/_btc_1to2.txt -r 1:1000 -rs -n 0x400 -t 2 -s 5
+./keyhunt_cuda -m address -f tests/_btc_1to2.txt -r 1:1000 -rs -n 0x400 -U cuda -M auto -t 1 -s 5
 ./keyhunt -m address -c eth -f tests/_eth_1.txt -t 8 -q -s 10
 ./keyhunt -m address -c sol -f tests/sol_sample.txt -t 8
 ./keyhunt -m vanity -v 1Cool -e -t 8

@@ -127,6 +127,9 @@ static int rand_r(unsigned int *seed) {
 #define SEARCHMODE_SPIRAL 4
 #define SEARCHMODE_REVERSE 5
 #define SEARCHMODE_AUTO 6
+#define SEARCHMODE_RSEQ 7
+/* Mivvvy-style default chunk: random start, then walk this many keys before reseed */
+#define RANDOM_SEQUENTIAL_DEFAULT_N 0x100000ULL
 
 uint32_t  THREADBPWORKLOAD = 1048576;
 
@@ -336,10 +339,11 @@ const char *bsgs_modes[5] = {"sequential","backward","both","random","dance"};
 const char *modes[12] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr","kangaroo"};
 const char *cryptos[13] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol","auto"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
-const char *searchmodes[7] = {"sequential","random","chaos","gravity","spiral","reverse","auto"};
+const char *searchmodes[8] = {"sequential","random","chaos","gravity","spiral","reverse","auto","rseq"};
 const char *default_fileName = "addresses.txt";
 
 int FLAGSEARCHMODE = SEARCHMODE_RANDOM;
+int FLAGRS = 0; /* -rs / -x rseq: random-sequential (random base + sequential N walk) */
 double chaos_x = 0.1;
 const double chaos_r = 3.99999;
 Int gravity_center;
@@ -874,6 +878,7 @@ void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
 			result->Set(range_start);
 			break;
 		case SEARCHMODE_RANDOM:
+		case SEARCHMODE_RSEQ:
 			result->Rand(range_start, range_end);
 			break;
 		case SEARCHMODE_CHAOS:
@@ -895,6 +900,33 @@ void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
 			result->Rand(range_start, range_end);
 			break;
 	}
+}
+
+/* Consume -rs / --random-sequential before getopt so -rs is not parsed as -r s. */
+static int consume_rs_argv_flags(int *argc, char **argv) {
+	int found = 0;
+	int i, j;
+	for(i = 1; i < *argc; ) {
+		if(strcmp(argv[i], "-rs") == 0 || strcmp(argv[i], "--random-sequential") == 0) {
+			found = 1;
+			for(j = i; j < *argc - 1; j++)
+				argv[j] = argv[j + 1];
+			(*argc)--;
+			argv[*argc] = NULL;
+			continue;
+		}
+		i++;
+	}
+	return found;
+}
+
+static void enable_random_sequential(const char *via) {
+	FLAGRS = 1;
+	FLAGRANDOM = 1;
+	FLAGSEARCHMODE = SEARCHMODE_RSEQ;
+	FLAGBSGSMODE = 3;
+	printf("[+] Random-sequential mode (%s): random start in range, walk N keys, reseed\n", via);
+	printf("[+] Unlike plain -R alone for BSGS, -rs always uses random-base + sequential chunk\n");
 }
 
 void notify_key_found(Int *found_key) {
@@ -1351,6 +1383,9 @@ int main(int argc, char **argv)	{
 	
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
+
+	if(consume_rs_argv_flags(&argc, argv))
+		enable_random_sequential("-rs");
 
 	while ((c = getopt(argc, argv, "deh6M:qRSVZyZ:A:B:b:c:C:D:E:f:I:k:l:m:N::n:p:r:s:t:T:U:v:G:8:z:x:w:L:W")) != -1) {
 		switch(c) {
@@ -1862,13 +1897,17 @@ int main(int argc, char **argv)	{
 				printf("[+] Bloom Size Multiplier %i\n",FLAGBLOOMMULTIPLIER);
 			break;
 			case 'x':
-				index_value = indexOf(optarg,searchmodes,7);
-				if(index_value >= 0 && index_value <= 6)	{
+				index_value = indexOf(optarg,searchmodes,8);
+				if(index_value >= 0 && index_value <= 7)	{
 					FLAGSEARCHMODE = index_value;
 					printf("[+] Search mode: %s\n",optarg);
-					if(FLAGSEARCHMODE == SEARCHMODE_RANDOM)	{
+					if(FLAGSEARCHMODE == SEARCHMODE_RANDOM || FLAGSEARCHMODE == SEARCHMODE_RSEQ)	{
 						FLAGRANDOM = 1;
 						FLAGBSGSMODE = 3;
+					}
+					if(FLAGSEARCHMODE == SEARCHMODE_RSEQ) {
+						FLAGRS = 1;
+						printf("[+] Random-sequential: random start, walk N keys, reseed (same as -rs)\n");
 					}
 				}
 				else	{
@@ -2226,6 +2265,12 @@ int main(int argc, char **argv)	{
 				FLAG_N = 0;
 				N_SEQUENTIAL_MAX = 0x100000000;
 			}
+		}
+		/* -rs / -x rseq: Mivvvy-style 1M-key chunk when -n omitted */
+		if(FLAGRS && !FLAG_N) {
+			N_SEQUENTIAL_MAX = RANDOM_SEQUENTIAL_DEFAULT_N;
+			printf("[+] -rs default N = %" PRIu64 " (1M keys/chunk; override with -n)\n",
+				N_SEQUENTIAL_MAX);
 		}
 		printf("[+] N = %" PRIu64 "\n",N_SEQUENTIAL_MAX);
 		if(FLAGMODE == MODE_MINIKEYS)	{
@@ -10685,7 +10730,12 @@ void menu() {
 	printf("               Example: -b 72 -Z 6 strips 6 zero bytes, searches ~16M keys\n");
 	printf("  -n number    Sequential keys per cycle / BSGS baby-step table size\n");
 	printf("               Must be divisible by 1024 for BSGS mode\n");
-	printf("  -b bits      Bit range - only test keys with this many bits\n\n");
+	printf("  -b bits      Bit range - only test keys with this many bits\n");
+	printf("  -R           Random convenience flag (sets FLAGRANDOM; BSGS giant-step random)\n");
+	printf("  -rs          Random-sequential (Mivvvy-style): pick random start in range,\n");
+	printf("               walk N keys sequentially, then reseed. Alias: -x rseq\n");
+	printf("               Default N=0x100000 (1M) when -n omitted. Works with CPU and -U cuda\n");
+	printf("               Differs from plain -R: always random-base + sequential chunk\n\n");
 
 	printf("BSGS OPTIONS (-m bsgs):\n");
 	printf("  -B mode      BSGS giant-step strategy (sequential/backward/both/random/dance)\n");
@@ -10743,13 +10793,15 @@ void menu() {
 	printf("  -t tn        Number of threads. Default: 1\n");
 	printf("  -x mode      Key generation / search pattern:\n");
 	printf("                 sequential - Linear walk from start to end of range\n");
-	printf("                 random     - Random key selection across full range\n");
+	printf("                 random     - Random base key, then sequential walk of N\n");
+	printf("                 rseq       - Explicit random-sequential (same as -rs)\n");
 	printf("                 chaos      - Logistic map chaotic sequence (r=3.99999)\n");
 	printf("                 gravity    - Adaptive: clusters around previously found keys\n");
 	printf("                 spiral     - Archimedean spiral from range midpoint\n");
 	printf("                 reverse    - Inverted BSGS baby/giant step roles\n");
 	printf("                 auto       - Cycles: spiral->chaos->gravity->reverse\n");
-	printf("               Works with ALL modes including BSGS.\n\n");
+	printf("               Works with ALL modes including BSGS.\n");
+	printf("  -rs          Same as -x rseq: random start, sequential N chunk, reseed\n\n");
 
 	printf("PERFORMANCE:\n");
 	printf("  -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)\n");
@@ -10808,6 +10860,12 @@ void menu() {
 
 	printf("  keyhunt -m address -f targets.txt -x chaos -e -t 8\n");
 	printf("    Address search with chaos pattern and endomorphism\n\n");
+
+	printf("  keyhunt -m address -f targets.txt -r 1:100000 -rs -n 0x400 -t 2\n");
+	printf("    Random-sequential: random starts in range, walk 1024 keys, reseed\n\n");
+
+	printf("  keyhunt_cuda -m address -f targets.txt -b 66 -rs -U cuda -M auto -t 1\n");
+	printf("    Same random-sequential keystream on CUDA EC path\n\n");
 
 	printf("  keyhunt -m rmd160 -f hashes.rmd -l compress -x gravity -t 8\n");
 	printf("    RMD160 hash search with compressed keys and gravity pattern\n\n");

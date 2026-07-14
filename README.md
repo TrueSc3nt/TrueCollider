@@ -208,6 +208,7 @@ Parsed from `getopt` in `keyhunt.cpp` and `menu()` / `-h`. **Do not invent flags
 | `-n` | number | Sequential keys per cycle **or** BSGS table span `N` (hex `0x…` or decimal). BSGS: ≥ `1048576`, exact square root |
 | `-I` | stride | Stride for address / rmd160 / xpoint |
 | `-R` | — | Random / BSGS random giant-step convenience (`FLAGRANDOM`, BSGS mode 3) |
+| `-rs` | — | **Random-sequential** (Mivvvy-style): random start in `-r`/`-b` range, walk `-n` keys, reseed. Alias: `-x rseq`. Default `-n 0x100000` (1M) if `-n` omitted. CPU + `-U cuda` |
 
 ### BSGS-specific
 
@@ -223,12 +224,15 @@ Parsed from `getopt` in `keyhunt.cpp` and `menu()` / `-h`. **Do not invent flags
 | Value | Description |
 |-------|-------------|
 | `sequential` | Linear walk start→end |
-| `random` | Random keys in range (also `-R`) |
+| `random` | Random base key, then sequential walk of N keys (also `-R`) |
+| `rseq` | Explicit random-sequential — same as **`-rs`** (default N=1M when `-n` omitted) |
 | `chaos` | Logistic map `r=3.99999` |
 | `gravity` | Bias toward previously found regions |
 | `spiral` | Archimedean spiral from range midpoint |
 | `reverse` | Inverted BSGS baby/giant roles |
 | `auto` | Cycle spiral → chaos → gravity → reverse |
+
+**`-rs` vs plain `-R`:** `-R` is a convenience that sets `FLAGRANDOM` (and BSGS random giant-steps). Address/rmd160 workers already walk N keys after each base pick when not using `-x sequential`. **`-rs` / `-x rseq`** make that habit explicit, force random-base resampling, and default the chunk size to **1 048 576** keys (Mivvvy `group_size²`) unless you pass `-n`.
 
 Works with essentially all modes including BSGS. See also [`COLLIDER_MODES_README.md`](COLLIDER_MODES_README.md).
 
@@ -610,6 +614,7 @@ All under [`examples/`](examples/). Edit threads / targets; run from repo root o
 | [`balance_check.bat`](examples/balance_check.bat) | Documents `-N` (partial) |
 | [`dry_run.bat`](examples/dry_run.bat) | `-y` CPU + CUDA if present |
 | [`gpu_cuda_address.bat`](examples/gpu_cuda_address.bat) | CUDA address + `-M auto` |
+| [`search_rs_random_sequential.bat`](examples/search_rs_random_sequential.bat) | `-rs` random-sequential (set `USE_CUDA=1` for CUDA) |
 
 Root-level leftovers (still valid): `run_keyhunt.bat`, `run_puzzle66_example.bat`, `run_sol_sample.bat`, `run_gpu_cuda_example.bat`.
 
