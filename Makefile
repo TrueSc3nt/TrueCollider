@@ -48,8 +48,15 @@ else ifneq (,$(findstring CYGWIN,$(OS)))
   CFLAGS   += -DOS_CYGWIN
 endif
 
-# Detect Termux
-ifeq ($(shell test -d /data/data/com.termux && echo yes),yes)
+# Detect Termux (Unix shells only — cmd.exe has no `test`)
+ifneq ($(filter Windows% MINGW% MSYS% CYGWIN%,$(OS)),)
+  IS_TERMUX :=
+else ifeq ($(OS),Windows)
+  IS_TERMUX :=
+else
+  IS_TERMUX := $(shell test -d /data/data/com.termux 2>/dev/null && echo yes)
+endif
+ifeq ($(IS_TERMUX),yes)
   CXXFLAGS += -DTERMUX -DNO_SSE
   CFLAGS   += -DTERMUX -DNO_SSE
   # Termux has broken SSE — disable all SSE/native flags
@@ -69,7 +76,6 @@ OBJECTS := oldbloom.o bloom.o base58.o rmd160.o sha3.o keccak.o xxhash.o \
            ed25519/sha512_bridge.o
 
 # On x86 (non-Termux), also compile SSE hash files
-IS_TERMUX := $(shell test -d /data/data/com.termux && echo yes)
 ifneq ($(IS_X86),)
   ifneq ($(IS_TERMUX),yes)
     OBJECTS += hash/ripemd160_sse.o hash/sha256_sse.o hash/hash160_avx512.o hash/hash160_avx2.o
@@ -202,4 +208,12 @@ endif
 .PHONY: default clean windows
 
 clean:
+ifneq ($(filter Windows% MINGW% MSYS% CYGWIN%,$(OS)),)
+	-cmd /C "del /Q keyhunt.exe keyhunt keyhunt_nolto.o *.o 2>nul"
+	-cmd /C "del /Q hash\*.o gpu\*.o ed25519\*.o 2>nul"
+else ifeq ($(OS),Windows)
+	-cmd /C "del /Q keyhunt.exe keyhunt keyhunt_nolto.o *.o 2>nul"
+	-cmd /C "del /Q hash\*.o gpu\*.o ed25519\*.o 2>nul"
+else
 	rm -f $(TARGET) keyhunt.exe keyhunt_nolto.o *.o hash/*.o gpu/*.o ed25519/*.o
+endif

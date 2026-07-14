@@ -76,21 +76,25 @@ A machine dump of the current help text lives in [`docs/HELP_DUMP.txt`](docs/HEL
 | Build | Need |
 |-------|------|
 | CPU (`keyhunt.exe`) | [MSYS2](https://www.msys2.org/) MinGW-w64 **or** an already-built release binary |
-| CUDA (`keyhunt_cuda.exe`) | Visual Studio 2022 Build Tools + NVIDIA CUDA Toolkit 12.x + NVIDIA GPU |
+| CUDA (`keyhunt_cuda.exe`) | Visual Studio 2022 Build Tools (preferred) + complete NVIDIA CUDA Toolkit 12.x + NVIDIA GPU |
+
+Build scripts auto-detect MinGW / VS / CUDA when present and print clear errors if a tool is missing. Incomplete CUDA installs (missing `include\cuda_runtime.h`) are skipped.
 
 ### Build CPU
 
 ```bat
-examples\build_cpu.bat
-REM or: build_mingw_native.bat
+build_mingw_native.bat
+REM or: build.bat
+REM or: examples\build_cpu.bat
 REM → keyhunt.exe
 ```
 
 ### Build CUDA
 
 ```bat
-examples\build_cuda.bat
-REM or: build_cuda_vs2022.bat
+build_cuda_vs2022.bat
+REM or: build_cuda_msvc.bat
+REM or: examples\build_cuda.bat
 REM → keyhunt_cuda.exe
 ```
 

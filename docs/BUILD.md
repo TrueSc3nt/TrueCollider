@@ -148,14 +148,26 @@ With `-e` (endomorphism) and compress-only search, AVX-512 also accelerates the 
 
 ---
 
+## Native Windows CPU (MinGW)
+
+```bat
+build_mingw_native.bat
+REM Output: keyhunt.exe
+```
+
+Auto-detects MSYS2 `mingw64` / `ucrt64` / `clang64` (or `MINGW_HOME`). Falls back to `g++` on `PATH`.
+
 ## Native Windows + CUDA (NVIDIA)
 
-Requires **VS 2022 Build Tools** (or VS with MSVC v143) and a complete **CUDA 12.x** toolkit. VS 2025/18 alone can break `nvcc`.
+Requires **VS 2022 Build Tools** (preferred for `nvcc` host compat) and a **complete** CUDA 12.x toolkit (`nvcc.exe` **and** `include\cuda_runtime.h`). Partial installs are skipped.
 
 ```bat
 build_cuda_vs2022.bat
-REM Output: build-cuda-vs2022\keyhunt.exe  (copy as keyhunt_cuda.exe)
+REM Output: keyhunt_cuda.exe  (also build-cuda-vs2022\keyhunt.exe)
+REM Alternate: build_cuda_msvc.bat
 ```
+
+Scripts auto-detect VS via `vswhere`, prefer VS 2022, then fall back to newer VS with `-allow-unsupported-compiler`.
 
 Manual:
 
@@ -207,6 +219,9 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/termux-aarch64.cmake
 
 ### CUDA build: `nvcc` cannot find MSVC
 Use **VS 2022** `vcvars64.bat`, not only VS 2025/18. See `build_cuda_vs2022.bat`.
+
+### CUDA: `cuda_runtime.h` not found
+The selected toolkit is incomplete. Reinstall CUDA 12.x, or delete partial version folders missing `include\cuda_runtime.h`. The build bats skip those automatically.
 
 ### OpenCL: no devices
 Install a GPU OpenCL driver ICD. `topencl_hello` lists platforms/devices at startup with `-U opencl`.
