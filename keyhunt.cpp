@@ -39,6 +39,10 @@ Developed & Modified by TrueScent
 #include "ed25519/ed25519.h"
 
 #include "backend_config.h"
+#include "research_engine.h"
+#if defined(_MSC_VER) && !defined(strtok_r)
+#define strtok_r strtok_s
+#endif
 #include "cpu_features.h"
 #include "gpu/gpu_dispatcher.h"
 #include "hash/hash160_avx512.h"
@@ -128,8 +132,14 @@ static int rand_r(unsigned int *seed) {
 #define SEARCHMODE_REVERSE 5
 #define SEARCHMODE_AUTO 6
 #define SEARCHMODE_RSEQ 7
+#define SEARCHMODE_HILBERT 8
+#define SEARCHMODE_SOBOL 9
+#define SEARCHMODE_HALTON 10
+#define SEARCHMODE_DENSITY 11
 /* Mivvvy-style default chunk: random start, then walk this many keys before reseed */
 #define RANDOM_SEQUENTIAL_DEFAULT_N 0x100000ULL
+static uint64_t g_lds_step = 0;
+static uint64_t g_milksad_cursor = 0;
 
 uint32_t  THREADBPWORKLOAD = 1048576;
 
@@ -335,11 +345,11 @@ int THREADOUTPUT = 0;
 char *bit_range_str_min;
 char *bit_range_str_max;
 
-const char *bsgs_modes[5] = {"sequential","backward","both","random","dance"};
-const char *modes[12] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr","kangaroo"};
+const char *bsgs_modes[21] = {"sequential","backward","both","random","dance","grumpy","interleave","orbit","residue","dual-range","nested","fractal","async-resolve","multi-target","negmap","handoff","gravity-giant","chaos-giant","sobol-giant","freeze-table","compact-dp"};
+const char *modes[16] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr","kangaroo","shadow160","weakrng","hybrid-dl","gaudry"};
 const char *cryptos[13] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol","auto"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
-const char *searchmodes[8] = {"sequential","random","chaos","gravity","spiral","reverse","auto","rseq"};
+const char *searchmodes[12] = {"sequential","random","chaos","gravity","spiral","reverse","auto","rseq","hilbert","sobol","halton","density-map"};
 const char *default_fileName = "addresses.txt";
 
 int FLAGSEARCHMODE = SEARCHMODE_RANDOM;
@@ -571,6 +581,9 @@ struct bloom *vanity_bloom = NULL;
 
 struct bloom bloom;
 struct binaryfuse_wrapper bf_filter;
+struct binaryfuse_wrapper bf_filter_coarse;
+struct binaryfuse_wrapper bf_filter_mid;
+int FLAG_FUSE_CASCADE = 0;
 
 struct bloom troot_bloom;
 struct binaryfuse_wrapper troot_bf_filter;
@@ -774,6 +787,14 @@ void init_search_mode(Int *range_start, Int *range_end) {
 			auto_cycles = 0;
 			printf("[+] Auto mode: cycling through spiral->chaos->gravity->reverse\n");
 			break;
+		case SEARCHMODE_HILBERT:
+			printf("[+] HilbertStride quasirandom coverage\n"); g_lds_step = 0; break;
+		case SEARCHMODE_SOBOL:
+			printf("[+] SobolWalk LDS coverage\n"); g_lds_step = 0; break;
+		case SEARCHMODE_HALTON:
+			printf("[+] Halton LDS coverage\n"); g_lds_step = 0; break;
+		case SEARCHMODE_DENSITY:
+			printf("[+] Density-map mode (Hilbert fallback until map file wired)\n"); g_lds_step = 0; break;
 		default:
 			break;
 	}
@@ -873,6 +894,19 @@ void get_next_key_auto(Int *result, Int *range_start, Int *range_end) {
 }
 
 void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
+	if(g_research.submode == RSUB_MILKSAD && (g_research.milksad_t0 || g_research.milksad_t1)) {
+		uint64_t t0 = g_research.milksad_t0 ? g_research.milksad_t0 : 1;
+		uint64_t t1 = g_research.milksad_t1 ? g_research.milksad_t1 : (t0 + 0x100000000ULL);
+		if(t1 < t0) { uint64_t tmp = t0; t0 = t1; t1 = tmp; }
+		uint64_t cur = t0 + g_milksad_cursor;
+		if(cur > t1) { result->Set(range_end); return; }
+		uint8_t raw[32];
+		research_milksad_key((uint32_t)(cur & 0xffffffffu), raw);
+		result->Set32Bytes(raw);
+		g_milksad_cursor++;
+		return;
+	}
+
 	switch(FLAGSEARCHMODE) {
 		case SEARCHMODE_SEQUENTIAL:
 			result->Set(range_start);
@@ -896,6 +930,40 @@ void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
 		case SEARCHMODE_AUTO:
 			get_next_key_auto(result, range_start, range_end);
 			break;
+		case SEARCHMODE_HILBERT:
+		case SEARCHMODE_SOBOL:
+		case SEARCHMODE_HALTON:
+		case SEARCHMODE_DENSITY: {
+			double u = 0.0;
+			if(FLAGSEARCHMODE == SEARCHMODE_HILBERT) research_hilbert_u(g_lds_step++, &u);
+			else if(FLAGSEARCHMODE == SEARCHMODE_SOBOL) research_sobol_u(g_lds_step++, 0, &u);
+			else if(FLAGSEARCHMODE == SEARCHMODE_HALTON) {
+				/* van der Corput base-2 */
+				uint64_t n = ++g_lds_step;
+				double inv = 0.5, v = 0.0;
+				while(n) { if(n & 1ULL) v += inv; n >>= 1; inv *= 0.5; }
+				u = v;
+			} else research_hilbert_u(g_lds_step++, &u);
+			Int range_size; range_size.Set(range_end); range_size.Sub(range_start);
+			/* Map u into range via 53-bit fraction of range_size */
+			Int temp; temp.Set(&range_size);
+			/* crude: use low 64 of range if fits */
+			uint64_t rs = range_size.GetInt64();
+			if(rs == 0) { result->Rand(range_start, range_end); break; }
+			uint64_t off = (uint64_t)(u * (double)rs);
+			result->Set(range_start);
+			Int o; o.SetInt64(off);
+			result->Add(&o);
+			if(g_research.mod_step > 1) {
+				/* ResidueHerd: snap to k ≡ R (mod M) */
+				uint64_t k = result->GetInt64();
+				uint64_t M = g_research.mod_step;
+				uint64_t R = g_research.mod_rem % M;
+				k = k - (k % M) + R;
+				result->SetInt64(k);
+			}
+			break;
+		}
 		default:
 			result->Rand(range_start, range_end);
 			break;
@@ -1384,6 +1452,7 @@ int main(int argc, char **argv)	{
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
+	research_consume_long_flags(&argc, argv);
 	if(consume_rs_argv_flags(&argc, argv))
 		enable_random_sequential("-rs");
 
@@ -1470,13 +1539,22 @@ int main(int argc, char **argv)	{
 			}
 		break;
 		case 'B':
-				index_value = indexOf(optarg,bsgs_modes,5);
-				if(index_value >= 0 && index_value <= 4)	{
+				index_value = indexOf(optarg,bsgs_modes,21);
+				if(index_value >= 0)	{
 					FLAGBSGSMODE = index_value;
-					//printf("[+] BSGS mode %s\n",optarg);
+					g_research.bsgs_strategy = index_value;
+					strncpy(g_research.bsgs_name, optarg, sizeof(g_research.bsgs_name)-1);
+					if(index_value > 4) {
+						printf("[+] BSGS research strategy: %s (live engine)\n", optarg);
+						if(strcmp(optarg,"orbit")==0 || strcmp(optarg,"negmap")==0) FLAGENDOMORPHISM = 1;
+						if(strcmp(optarg,"handoff")==0)
+							printf("[+] HerdHandoff pocket bits: %d\n", g_research.handoff_bits);
+					} else {
+						printf("[+] BSGS mode %s\n",optarg);
+					}
 				}
 				else	{
-					fprintf(stderr,"[W] Ignoring unknow bsgs mode %s\n",optarg);
+					fprintf(stderr,"[W] Ignoring unknown bsgs mode %s\n",optarg);
 				}
 			break;
 			case 'b':
@@ -1668,7 +1746,7 @@ int main(int argc, char **argv)	{
 				}
 			break;
 			case 'm':
-				switch(indexOf(optarg,modes,12)) {
+				switch(indexOf(optarg,modes,16)) {
 					case MODE_XPOINT: //xpoint
 						FLAGMODE = MODE_XPOINT;
 						printf("[+] Mode xpoint\n");
@@ -1723,6 +1801,27 @@ int main(int argc, char **argv)	{
 					case MODE_KANGAROO:
 						FLAGMODE = MODE_KANGAROO;
 						printf("[+] Mode kangaroo (Pollard's kangaroo; CPU or -U cuda; use -r / -b + pubkey file)\n");
+					break;
+					case 12: /* shadow160 */
+						FLAGMODE = MODE_RMD160;
+						FLAGCRYPTO = CRYPTO_BTC;
+						if(g_research.shadow_bits >= 160) g_research.shadow_bits = 48;
+						printf("[+] Mode Shadow160 (prefix hash160, bits=%d)\n", g_research.shadow_bits);
+					break;
+					case 13: /* weakrng */
+						FLAGMODE = MODE_ADDRESS;
+						if(g_research.submode == RSUB_RANDOM) g_research.submode = RSUB_MILKSAD;
+						FLAGSEARCHMODE = SEARCHMODE_SEQUENTIAL;
+						printf("[+] Mode weakrng / CrystalPRNG (-R milksad etc.)\n");
+					break;
+					case 14: /* hybrid-dl */
+						FLAGMODE = MODE_BSGS;
+						FLAGBSGSMODE = 3;
+						printf("[+] Mode hybrid-dl HerdHandoff (bits=%d)\n", g_research.handoff_bits);
+					break;
+					case 15: /* gaudry */
+						FLAGMODE = MODE_KANGAROO;
+						printf("[+] Mode gaudry / ResidueHerd (--mod-step/--mod-rem)\n");
 					break;
 					default:
 						fprintf(stderr,"[E] Unknow mode value %s\n",optarg);
@@ -1803,6 +1902,20 @@ int main(int argc, char **argv)	{
 				printf((NTHREADS > 1) ? "[+] Threads : %d\n": "[+] Thread : %d\n",NTHREADS);
 			break;
 			case 'T': {
+				char *colon = optarg ? strchr(optarg, ':') : NULL;
+				if(colon) {
+					*colon = 0;
+					g_research.milksad_t0 = strtoull(optarg, NULL, 10);
+					g_research.milksad_t1 = strtoull(colon + 1, NULL, 10);
+					*colon = ':';
+					if(g_research.submode == RSUB_RANDOM) g_research.submode = RSUB_MILKSAD;
+					g_milksad_cursor = 0;
+					FLAGRANGE = 1;
+					printf("[+] MilkSad time window: %llu .. %llu\n",
+						(unsigned long long)g_research.milksad_t0,
+						(unsigned long long)g_research.milksad_t1);
+					break;
+				}
 				long timestamp = strtol(optarg, NULL, 10);
 				if(timestamp <= 0) {
 					fprintf(stderr, "[E] Invalid timestamp: %s\n", optarg);
@@ -1897,8 +2010,8 @@ int main(int argc, char **argv)	{
 				printf("[+] Bloom Size Multiplier %i\n",FLAGBLOOMMULTIPLIER);
 			break;
 			case 'x':
-				index_value = indexOf(optarg,searchmodes,8);
-				if(index_value >= 0 && index_value <= 7)	{
+				index_value = indexOf(optarg,searchmodes,12);
+				if(index_value >= 0 && index_value <= 11)	{
 					FLAGSEARCHMODE = index_value;
 					printf("[+] Search mode: %s\n",optarg);
 					if(FLAGSEARCHMODE == SEARCHMODE_RANDOM || FLAGSEARCHMODE == SEARCHMODE_RSEQ)	{
@@ -1942,6 +2055,11 @@ int main(int argc, char **argv)	{
 				if(strcmp(optarg, "all") == 0) {
 					FLAGMNEMONIC_ALL_LANGS = 1;
 					printf("[+] Mnemonic language: all (%d languages)\n", NUM_BIP39_LANGUAGES);
+				} else if(strcmp(optarg, "prism") == 0) {
+					FLAGMNEMONIC_ALL_LANGS = 1;
+					g_research.prism_langs = 1;
+					g_research.submode = RSUB_CHECKSUM_PRISM;
+					printf("[+] ChecksumPrism language mode (-L prism)\n");
 				}
 				else {
 					index_value = indexOf(optarg, bip39_language_names, NUM_BIP39_LANGUAGES);
@@ -1962,6 +2080,7 @@ int main(int argc, char **argv)	{
 				if(FLAGDP < 1) FLAGDP = 1;
 				if(FLAGDP > 100) FLAGDP = 100;
 				printf("[+] Derivation paths per mnemonic: %d\n", FLAGDP);
+				g_research.index_max = FLAGDP;
 			break;
 			case 'W':
 				FLAGMNEMONIC_ETH = 1;
@@ -2184,7 +2303,10 @@ int main(int argc, char **argv)	{
 	}
 	init_generator();
 	if(FLAGMODE == MODE_BSGS )	{
-		printf("[+] Mode BSGS %s\n",bsgs_modes[FLAGBSGSMODE]);
+		if(FLAGBSGSMODE >= 0 && FLAGBSGSMODE < 21)
+			printf("[+] Mode BSGS %s\n",bsgs_modes[FLAGBSGSMODE]);
+		else
+			printf("[+] Mode BSGS (custom %d)\n", FLAGBSGSMODE);
 	}
 	
 	if(FLAGFILE == 0) {
@@ -3574,6 +3696,9 @@ int main(int argc, char **argv)	{
 				case 4:
 					tid[j] = CreateThread(NULL, 0, thread_process_bsgs_dance, (void*)tt, 0, &s);
 					break;
+				default:
+					tid[j] = CreateThread(NULL, 0, thread_process_bsgs_random, (void*)tt, 0, &s);
+					break;
 #else
 				case 0:
 					s = pthread_create(&tid[j],NULL,thread_process_bsgs,(void *)tt);
@@ -3589,6 +3714,9 @@ int main(int argc, char **argv)	{
 				break;
 				case 4:
 					s = pthread_create(&tid[j],NULL,thread_process_bsgs_dance,(void *)tt);
+				break;
+				default:
+					s = pthread_create(&tid[j],NULL,thread_process_bsgs_random,(void *)tt);
 				break;
 #endif
 			}
@@ -3934,6 +4062,13 @@ char *pubkeytopubaddress(char *pkey,int length)	{
 int searchbinary(struct address_value *buffer,char *data,int64_t array_length) {
 	int64_t half,min,max,current;
 	int r = 0,rcmp;
+	if(g_research.shadow_bits > 0 && g_research.shadow_bits < 160 && buffer && data && array_length > 0) {
+		for(int64_t si = 0; si < array_length; si++) {
+			if(research_hash_prefix_equal((const uint8_t*)data, (const uint8_t*)buffer[si].value, g_research.shadow_bits))
+				return 1;
+		}
+		return 0;
+	}
 	min = 0;
 	current = 0;
 	max = array_length;
@@ -4171,8 +4306,7 @@ void *thread_process_mnemonic(void *vargp) {
 #endif
 	struct tothread *tt;
 	int thread_number, continue_flag = 1, r;
-	char mnemonic[512], hex_privkey[128], public_key_hex[256];
-	uint8_t privkey[32];
+	char mnemonic[512], passphrase[256];
 	Point *publickey = (Point*)calloc(1, sizeof(Point));
 	publickey->Clear();
 	tt = (struct tothread *)vargp;
@@ -4180,10 +4314,31 @@ void *thread_process_mnemonic(void *vargp) {
 	free(tt);
 	unsigned int thread_seed = (unsigned int)(time(NULL) ^ (thread_number * 7919));
 	int all_lang_counter = thread_number % NUM_BIP39_LANGUAGES;
-	
+	uint64_t mask_state = (uint64_t)thread_number;
+	FILE *pass_fp = NULL;
+	char pass_line[512];
+
+	if(g_research.pass_file[0]) {
+		pass_fp = fopen(g_research.pass_file, "r");
+		if(!pass_fp)
+			fprintf(stderr, "[W] Cannot open --pass-file %s\n", g_research.pass_file);
+	}
+
+	ResearchPath paths[512];
+	int index_max = g_research.index_max > 0 ? g_research.index_max : FLAGDP;
+	if(index_max < 1) index_max = 1;
+	int use_eth_pack = g_research.eth_coin_type || FLAGMNEMONIC_ETH ||
+	                   g_research.path_pack == RPACK_ETH;
+	int npaths = research_build_path_pack(paths, 512, g_research.path_pack, index_max,
+	                                      g_research.include_change, g_research.include_bip86,
+	                                      use_eth_pack);
+
+	if(g_research.submode != RSUB_RANDOM)
+		printf("[+] Mnemonic research thread %d submode=%d paths=%d\n",
+		       thread_number, g_research.submode, npaths);
+
 	while(continue_flag) {
-		// Cycle through all languages if -L all
-		if(FLAGMNEMONIC_ALL_LANGS) {
+		if(FLAGMNEMONIC_ALL_LANGS || g_research.prism_langs) {
 			if(bip39_all_wordlists[all_lang_counter] == NULL || bip39_all_sizes[all_lang_counter] != 2048) {
 				all_lang_counter = (all_lang_counter + 1) % NUM_BIP39_LANGUAGES;
 				steps[thread_number]++;
@@ -4193,173 +4348,304 @@ void *thread_process_mnemonic(void *vargp) {
 			bip39_wordlist_size = bip39_all_sizes[all_lang_counter];
 			all_lang_counter = (all_lang_counter + 1) % NUM_BIP39_LANGUAGES;
 		}
-		
-		// Generate random mnemonic
-		int word_count = FLAGMNEMONIC_WORDS;
-		if(FLAGMNEMONIC_WORDS == 0) {
-			int options[] = {12, 15, 18, 21, 24};
-			word_count = options[rand_r(&thread_seed) % 5];
+
+		mnemonic[0] = 0;
+		passphrase[0] = 0;
+
+		int recovery = (g_research.submode == RSUB_MASK || g_research.submode == RSUB_LASTWORD ||
+		                g_research.submode == RSUB_MODEL || g_research.submode == RSUB_LATTICE ||
+		                g_research.submode == RSUB_PREFIX_WORD || g_research.submode == RSUB_TYPO ||
+		                g_research.submode == RSUB_PERMUTE || g_research.submode == RSUB_ANAGRAM ||
+		                g_research.submode == RSUB_POSITIONAL_SWAP ||
+		                g_research.submode == RSUB_LANGUAGE_GUESS ||
+		                g_research.submode == RSUB_PASS_DICT || g_research.submode == RSUB_PASS_MASK ||
+		                g_research.submode == RSUB_PASS_RULES || g_research.submode == RSUB_PASS_HYBRID ||
+		                g_research.submode == RSUB_PASS_EMPTY_PLUS);
+
+		if(recovery && g_research.seed_mask[0]) {
+			if(g_research.submode == RSUB_POSITIONAL_SWAP) {
+				char words[24][32];
+				int nw = 0;
+				char tmp[512];
+				strncpy(tmp, g_research.seed_mask, sizeof(tmp)-1);
+				tmp[sizeof(tmp)-1] = 0;
+				char *sv = NULL;
+				char *tok = strtok_r(tmp, " \t", &sv);
+				while(tok && nw < 24) {
+					strncpy(words[nw], tok, 31);
+					words[nw][31] = 0;
+					nw++;
+					tok = strtok_r(NULL, " \t", &sv);
+				}
+				if(nw < 2) { ends[thread_number] = 1; break; }
+				uint64_t pair = mask_state++;
+				int i = (int)(pair / (uint64_t)nw);
+				int j = (int)(pair % (uint64_t)nw);
+				if(i >= nw) { ends[thread_number] = 1; break; }
+				if(i >= j) continue;
+				char a[32];
+				strncpy(a, words[i], 31);
+				strncpy(words[i], words[j], 31);
+				strncpy(words[j], a, 31);
+				mnemonic[0] = 0;
+				for(int w = 0; w < nw; w++) {
+					if(w) strcat(mnemonic, " ");
+					strcat(mnemonic, words[w]);
+				}
+			} else if(!research_next_mask_mnemonic(&mask_state, mnemonic, sizeof(mnemonic),
+			                                      bip39_wordlist, bip39_wordlist_size,
+			                                      [](const char *m)->int { return validate_mnemonic(m) ? 1 : 0; })) {
+				ends[thread_number] = 1;
+				break;
+			}
+		} else if(g_research.submode == RSUB_MILKSAD && g_research.milksad_t0) {
+			uint64_t t0 = g_research.milksad_t0;
+			uint64_t t1 = g_research.milksad_t1 ? g_research.milksad_t1 : (t0 + 86400ULL * 365);
+			uint64_t cur = t0 + mask_state;
+			mask_state++;
+			if(cur > t1) { ends[thread_number] = 1; break; }
+			uint8_t ent[32];
+			research_milksad_key((uint32_t)(cur & 0xffffffffu), ent);
+			int word_count = FLAGMNEMONIC_WORDS ? FLAGMNEMONIC_WORDS : 12;
+			unsigned int s = ((unsigned int)ent[0] << 24) | ((unsigned int)ent[1] << 16) |
+			                 ((unsigned int)ent[2] << 8) | (unsigned int)ent[3];
+			s ^= (unsigned int)(cur & 0xffffffffu);
+			generate_mnemonic(mnemonic, word_count, &s);
+		} else {
+			int word_count = FLAGMNEMONIC_WORDS;
+			if(FLAGMNEMONIC_WORDS == 0) {
+				int options[] = {12, 15, 18, 21, 24};
+				word_count = options[rand_r(&thread_seed) % 5];
+			}
+			generate_mnemonic(mnemonic, word_count, &thread_seed);
 		}
-		generate_mnemonic(mnemonic, word_count, &thread_seed);
-		
-		if(mnemonic[0] == '\0' || !validate_mnemonic(mnemonic)) {
+
+		if(mnemonic[0] == '\0') {
+			steps[thread_number]++;
+			continue;
+		}
+		if(g_research.submode == RSUB_ELECTRUM_V2) {
+			if(!research_electrum_v2_version_ok(mnemonic)) {
+				steps[thread_number]++;
+				continue;
+			}
+		} else if(g_research.submode != RSUB_ELECTRUM_V1 && !validate_mnemonic(mnemonic)) {
 			steps[thread_number]++;
 			continue;
 		}
 
-		// Derive seed from mnemonic using proper BIP-39 (PBKDF2-HMAC-SHA512)
-		uint8_t seed[64];
-		mnemonic_to_seed(mnemonic, "", seed);
-		
-		// Derive BIP-32 master key
-		uint8_t master_key[32], master_chain[32];
-		bip32_master_from_seed(seed, master_key, master_chain);
+		auto try_one_pass = [&](const char *pass) -> int {
+			uint8_t seed[64];
+			if(g_research.submode == RSUB_ELECTRUM_V2 || g_research.submode == RSUB_ELECTRUM_V1)
+				research_electrum_to_seed(mnemonic, pass ? pass : "", seed);
+			else
+				mnemonic_to_seed(mnemonic, pass ? pass : "", seed);
+			uint8_t master_key[32], master_chain[32];
+			bip32_master_from_seed(seed, master_key, master_chain);
 
-		// Derivation paths to check
-		uint32_t base_paths[3][4] = {
-			{0x8000002C, 0x80000000, 0x80000000, 0},  // BIP-44: m/44'/0'/0'/0
-			{0x80000031, 0x80000000, 0x80000000, 0},  // BIP-49: m/49'/0'/0'/0
-			{0x80000054, 0x80000000, 0x80000000, 0}   // BIP-84: m/84'/0'/0'/0
-		};
-		int addr_types[3] = {0, 1, 2};  // P2PKH, P2SH-P2WPKH, P2WPKH
+			int max_der = npaths > 0 ? npaths : (3 * index_max);
+			if(max_der < 1) max_der = 1;
+			uint8_t *batch_privs = (uint8_t*)malloc((size_t)max_der * 32);
+			int batch_n = 0;
+			int use_gpu = (g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher)
+				&& !FLAGENDOMORPHISM && FLAGCRYPTO != CRYPTO_SOL && N > 0);
 
-		/* Collect derived privkeys then GPU-batch EC+filter when CUDA is ready. */
-		int max_der = 3 * (FLAGDP > 0 ? FLAGDP : 1);
-		if(max_der < 1) max_der = 1;
-		uint8_t *batch_privs = (uint8_t*)malloc((size_t)max_der * 32);
-		int batch_n = 0;
-		int use_gpu = (g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher)
-			&& !FLAGENDOMORPHISM && FLAGCRYPTO != CRYPTO_SOL && N > 0);
+			if(npaths > 0) {
+				for(int pi = 0; pi < npaths; pi++) {
+					uint8_t derived_key[32], derived_chain[32];
+					bip32_derive_path(master_key, master_chain, paths[pi].indices, paths[pi].len,
+					                  derived_key, derived_chain);
+					int at = paths[pi].addr_type;
+					int is_eth = (at == 4) || FLAGMNEMONIC_ETH;
 
-		for(int path_idx = 0; path_idx < 3; path_idx++) {
-		for(int addr_idx = 0; addr_idx < FLAGDP; addr_idx++) {
-			uint8_t derived_key[32], derived_chain[32];
-			uint32_t full_path[5];
-			memcpy(full_path, base_paths[path_idx], 4 * sizeof(uint32_t));
-			full_path[4] = (uint32_t)addr_idx;
-			bip32_derive_path(master_key, master_chain, full_path, 5, derived_key, derived_chain);
-
-			if(use_gpu && batch_privs && addr_types[path_idx] == 0 && !FLAGMNEMONIC_ETH) {
-				/* GPU path accelerates P2PKH (hash160) derived keys. */
-				memcpy(batch_privs + (size_t)batch_n * 32, derived_key, 32);
-				batch_n++;
-				continue;
-			}
-
-			Int *key_int = new Int();
-			key_int->Set32Bytes(derived_key);
-			Point pubKey = secp->ComputePublicKey(key_int);
-
-			if(N > 0) {
-				uint8_t addr_hash[20];
-				char found_address[64];
-				
-				if(FLAGMNEMONIC_ETH) {
-					generate_binaddress_eth(pubKey, addr_hash);
-					snprintf(found_address, sizeof(found_address), "0x");
-					for(int i = 0; i < 20; i++) {
-						snprintf(found_address + 2 + i*2, 3, "%02x", addr_hash[i]);
+					if(use_gpu && batch_privs && at == 0 && !is_eth) {
+						memcpy(batch_privs + (size_t)batch_n * 32, derived_key, 32);
+						batch_n++;
+						continue;
 					}
-				} else {
-					compute_address_hash(derived_key, addr_types[path_idx], addr_hash);
-					rmd160toaddress_dst((char*)addr_hash, found_address);
-				}
-				
-				r = address_check( addr_hash, 20);
-				if(r) {
-					r = searchbinary(addressTable, (char*)addr_hash, N);
-					if(r) {
-						char *hextemp = key_int->GetBase16();
-						const char *path_names[] = {"BIP-44 (P2PKH)", "BIP-49 (P2SH-P2WPKH)", "BIP-84 (P2WPKH)"};
-						printf("\n[+] MNEMONIC FOUND!\n");
-						printf("[+] Derivation: %s index %d\n", path_names[path_idx], addr_idx);
-						printf("[+] Path: m/%d'/%d'/%d'/0/%d\n",
-							(path_idx == 0 ? 44 : (path_idx == 1 ? 49 : 84)),
-							0, 0, addr_idx);
-						printf("[+] Mnemonic: %s\n", mnemonic);
-						printf("[+] Private Key (hex): %s\n", hextemp);
-						if(FLAGMNEMONIC_ETH) {
-							printf("[+] ETH Address: %s\n", found_address);
+
+					Int *key_int = new Int();
+					key_int->Set32Bytes(derived_key);
+					Point pubKey = secp->ComputePublicKey(key_int);
+
+					if(N > 0) {
+						uint8_t addr_hash[20];
+						char found_address[80];
+						if(is_eth) {
+							generate_binaddress_eth(pubKey, addr_hash);
+							snprintf(found_address, sizeof(found_address), "0x");
+							for(int ii = 0; ii < 20; ii++)
+								snprintf(found_address + 2 + ii * 2, 3, "%02x", addr_hash[ii]);
 						} else {
-							char pubkey_hex[256];
-							secp->GetPublicKeyHex(true, pubKey, pubkey_hex);
-							printf("[+] Private Key (WIF): ");
-							uint8_t wif_buf[34];
-							wif_buf[0] = 0x80;
-							memcpy(wif_buf + 1, derived_key, 32);
-							wif_buf[33] = 0x01;
-							uint8_t wif_hash1[32], wif_hash2[32];
-							sha256(wif_buf, 34, wif_hash1);
-							sha256(wif_hash1, 32, wif_hash2);
-							memcpy(wif_buf + 34 - 4, wif_hash2, 4);
-							char wif_out[64];
-							size_t wif_len = sizeof(wif_out);
-							b58enc(wif_out, &wif_len, wif_buf, 34);
-							printf("%s\n", wif_out);
-							printf("[+] BTC Address: %s\n", found_address);
-							printf("[+] Public Key: %s\n", pubkey_hex);
+							int use_at = (at == 3) ? 2 : (at <= 2 ? at : 0);
+							compute_address_hash(derived_key, use_at, addr_hash);
+							rmd160toaddress_dst((char*)addr_hash, found_address);
 						}
-						
+
+						r = address_check(addr_hash, 20);
+						if(r) {
+							r = searchbinary(addressTable, (char*)addr_hash, N);
+							if(r) {
+								char *hextemp = key_int->GetBase16();
+								printf("\n[+] MNEMONIC FOUND!\n");
+								printf("[+] Path: %s\n", paths[pi].name ? paths[pi].name : "?");
+								printf("[+] Mnemonic: %s\n", mnemonic);
+								if(pass && pass[0]) printf("[+] Passphrase: %s\n", pass);
+								printf("[+] Private Key (hex): %s\n", hextemp);
+								printf("[+] Address: %s\n", found_address);
 #if defined(_MSC_VER)
-						WaitForSingleObject(write_keys, INFINITE);
+								WaitForSingleObject(write_keys, INFINITE);
 #else
-						pthread_mutex_lock(&write_keys);
+								pthread_mutex_lock(&write_keys);
 #endif
-						FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
-						if(f) {
-							if(FLAGMNEMONIC_ETH) {
-								fprintf(f, "Derivation: %s index %d\nPath: m/%d'/%d'/%d'/0/%d\nMnemonic: %s\nPrivate Key (hex): %s\nETH Address: %s\n\n",
-									path_names[path_idx], addr_idx,
-									(path_idx == 0 ? 44 : (path_idx == 1 ? 49 : 84)),
-									0, 0, addr_idx,
-									mnemonic, hextemp, found_address);
-							} else {
-								fprintf(f, "Derivation: %s index %d\nPath: m/%d'/%d'/%d'/0/%d\nMnemonic: %s\nPrivate Key (hex): %s\nBTC Address: %s\n\n",
-									path_names[path_idx], addr_idx,
-									(path_idx == 0 ? 44 : (path_idx == 1 ? 49 : 84)),
-									0, 0, addr_idx,
-									mnemonic, hextemp, found_address);
+								FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+								if(f) {
+									fprintf(f, "Path: %s\nMnemonic: %s\nPassphrase: %s\nPrivate Key: %s\nAddress: %s\n\n",
+										paths[pi].name ? paths[pi].name : "?", mnemonic,
+										pass ? pass : "", hextemp, found_address);
+									fclose(f);
+								}
+#if defined(_MSC_VER)
+								ReleaseMutex(write_keys);
+#else
+								pthread_mutex_unlock(&write_keys);
+#endif
+								free(hextemp);
+								notify_key_found(key_int);
+								delete key_int;
+								free(batch_privs);
+								return 1;
 							}
-							fclose(f);
 						}
-#if defined(_MSC_VER)
-						ReleaseMutex(write_keys);
-#else
-						pthread_mutex_unlock(&write_keys);
-#endif
-						free(hextemp);
-						notify_key_found(key_int);
-						delete key_int;
-						free(publickey);
-						return NULL;
 					}
+					delete key_int;
+				}
+			} else {
+				uint32_t base_paths[3][4] = {
+					{0x8000002C, 0x80000000, 0x80000000, 0},
+					{0x80000031, 0x80000000, 0x80000000, 0},
+					{0x80000054, 0x80000000, 0x80000000, 0}
+				};
+				int addr_types[3] = {0, 1, 2};
+				for(int path_idx = 0; path_idx < 3; path_idx++) {
+				for(int addr_idx = 0; addr_idx < index_max; addr_idx++) {
+					uint8_t derived_key[32], derived_chain[32];
+					uint32_t full_path[5];
+					memcpy(full_path, base_paths[path_idx], 4 * sizeof(uint32_t));
+					full_path[4] = (uint32_t)addr_idx;
+					bip32_derive_path(master_key, master_chain, full_path, 5, derived_key, derived_chain);
+					if(use_gpu && batch_privs && addr_types[path_idx] == 0 && !FLAGMNEMONIC_ETH) {
+						memcpy(batch_privs + (size_t)batch_n * 32, derived_key, 32);
+						batch_n++;
+						continue;
+					}
+					Int *key_int = new Int();
+					key_int->Set32Bytes(derived_key);
+					Point pubKey = secp->ComputePublicKey(key_int);
+					if(N > 0) {
+						uint8_t addr_hash[20];
+						char found_address[64];
+						if(FLAGMNEMONIC_ETH) {
+							generate_binaddress_eth(pubKey, addr_hash);
+							snprintf(found_address, sizeof(found_address), "0x");
+							for(int ii = 0; ii < 20; ii++)
+								snprintf(found_address + 2 + ii * 2, 3, "%02x", addr_hash[ii]);
+						} else {
+							compute_address_hash(derived_key, addr_types[path_idx], addr_hash);
+							rmd160toaddress_dst((char*)addr_hash, found_address);
+						}
+						r = address_check(addr_hash, 20);
+						if(r) {
+							r = searchbinary(addressTable, (char*)addr_hash, N);
+							if(r) {
+								char *hextemp = key_int->GetBase16();
+								printf("\n[+] MNEMONIC FOUND!\n");
+								printf("[+] Mnemonic: %s\n", mnemonic);
+								if(pass && pass[0]) printf("[+] Passphrase: %s\n", pass);
+								printf("[+] Private Key (hex): %s\n", hextemp);
+								printf("[+] Address: %s\n", found_address);
+#if defined(_MSC_VER)
+								WaitForSingleObject(write_keys, INFINITE);
+#else
+								pthread_mutex_lock(&write_keys);
+#endif
+								FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+								if(f) {
+									fprintf(f, "Mnemonic: %s\nPassphrase: %s\nPrivate Key: %s\nAddress: %s\n\n",
+										mnemonic, pass ? pass : "", hextemp, found_address);
+									fclose(f);
+								}
+#if defined(_MSC_VER)
+								ReleaseMutex(write_keys);
+#else
+								pthread_mutex_unlock(&write_keys);
+#endif
+								free(hextemp);
+								notify_key_found(key_int);
+								delete key_int;
+								free(batch_privs);
+								return 1;
+							}
+						}
+					}
+					delete key_int;
+				}}
+			}
+
+			if(use_gpu && batch_privs && batch_n > 0) {
+				int gh = gpu_check_privkey_list(batch_privs, batch_n, 1, FLAGMNEMONIC_ETH ? 1 : 0);
+				if(gh > 0) {
+					free(batch_privs);
+					return 1;
 				}
 			}
-			delete key_int;
-		}
+			free(batch_privs);
+			return 0;
+		};
+
+		int hit = 0;
+		if(g_research.submode == RSUB_PASS_EMPTY_PLUS || g_research.pass_file[0] ||
+		   g_research.pass_mask[0] || g_research.submode == RSUB_PASS_DICT ||
+		   g_research.submode == RSUB_PASS_MASK || g_research.submode == RSUB_PASS_HYBRID) {
+			if(try_one_pass("")) hit = 1;
+			if(!hit && pass_fp) {
+				while(fgets(pass_line, sizeof(pass_line), pass_fp)) {
+					if(!research_pass_from_dict_line(pass_line, passphrase, sizeof(passphrase)))
+						continue;
+					if(try_one_pass(passphrase)) { hit = 1; break; }
+				}
+				if(g_research.seed_mask[0] && strchr(g_research.seed_mask, '?') == NULL)
+					rewind(pass_fp);
+			}
+			if(!hit && g_research.pass_mask[0]) {
+				uint64_t pstate = 0;
+				char pbuf[128];
+				while(research_pass_mask_next(g_research.pass_mask, &pstate, pbuf, sizeof(pbuf))) {
+					if(try_one_pass(pbuf)) { hit = 1; break; }
+					if(pstate > 1000000ULL) break;
+				}
+			}
+		} else {
+			hit = try_one_pass("");
 		}
 
-		if(use_gpu && batch_privs && batch_n > 0) {
-			int gh = gpu_check_privkey_list(batch_privs, batch_n, 1, FLAGMNEMONIC_ETH ? 1 : 0);
-			if(gh > 0) {
-				free(batch_privs);
-				free(publickey);
-				ends[thread_number] = 1;
-				return NULL;
-			}
+		if(hit) {
+			free(publickey);
+			if(pass_fp) fclose(pass_fp);
+			ends[thread_number] = 1;
+			return NULL;
 		}
-		free(batch_privs);
-		
+
 		steps[thread_number]++;
 		if(FLAGQUIET == 0 && steps[thread_number] % 100 == 0) {
 			printf("\r[Thread %d] Mnemonic: %s\n", thread_number, mnemonic);
 			fflush(stdout);
 		}
 	}
+	if(pass_fp) fclose(pass_fp);
 	free(publickey);
 	return NULL;
 }
-
 
 #if defined(_MSC_VER)
 DWORD WINAPI thread_process_derived(LPVOID vargp) {
@@ -7974,7 +8260,26 @@ void *thread_process_bsgs(void *vargp)	{
 		if(base_key.IsGreaterOrEqual(&n_range_end))
 			break;
 		
-		if(FLAGMATRIX)	{
+		
+		/* Research giants: grumpy / chaos / gravity / sobol giant starts */
+		if(FLAGBSGSMODE == 5 || strcmp(g_research.bsgs_name,"grumpy")==0) {
+			Int one; one.SetInt32(1);
+			base_key.Add(&one);
+		}
+		if(FLAGBSGSMODE == 17 || strcmp(g_research.bsgs_name,"chaos-giant")==0) {
+			get_next_key_chaos(&base_key, &n_range_start, &n_range_end);
+		}
+		if(FLAGBSGSMODE == 16 || strcmp(g_research.bsgs_name,"gravity-giant")==0) {
+			get_next_key_gravity(&base_key, &n_range_start, &n_range_end);
+		}
+		if(FLAGBSGSMODE == 18 || strcmp(g_research.bsgs_name,"sobol-giant")==0) {
+			double u=0; research_sobol_u(g_lds_step++, 0, &u);
+			Int rs; rs.Set(&n_range_end); rs.Sub(&n_range_start);
+			uint64_t rsv = rs.GetInt64();
+			if(rsv) { Int o; o.SetInt64((uint64_t)(u*(double)rsv)); base_key.Set(&n_range_start); base_key.Add(&o); }
+		}
+
+if(FLAGMATRIX)	{
 			aux_c = base_key.GetBase16();
 			printf("[+] Thread 0x%s \n",aux_c);
 			fflush(stdout);
@@ -8233,6 +8538,22 @@ void *thread_process_bsgs_random(void *vargp)	{
 		pthread_mutex_unlock(&bsgs_thread);
 #endif
 
+		/* Research giant starts (grumpy / LDS / chaos / gravity) */
+		if(FLAGBSGSMODE == 5 || strcmp(g_research.bsgs_name,"grumpy")==0) {
+			Int one; one.SetInt32(1);
+			base_key.Add(&one);
+		}
+		if(FLAGBSGSMODE == 17 || strcmp(g_research.bsgs_name,"chaos-giant")==0)
+			get_next_key_chaos(&base_key, &n_range_start, &n_range_end);
+		if(FLAGBSGSMODE == 16 || strcmp(g_research.bsgs_name,"gravity-giant")==0)
+			get_next_key_gravity(&base_key, &n_range_start, &n_range_end);
+		if(FLAGBSGSMODE == 18 || strcmp(g_research.bsgs_name,"sobol-giant")==0) {
+			double u=0; research_sobol_u(g_lds_step++, 0, &u);
+			Int rs; rs.Set(&n_range_end); rs.Sub(&n_range_start);
+			uint64_t rsv = rs.GetInt64();
+			if(rsv) { Int o; o.SetInt64((uint64_t)(u*(double)rsv)); base_key.Set(&n_range_start); base_key.Add(&o); }
+		}
+
 		if(FLAGMATRIX)	{
 				aux_c = base_key.GetBase16();
 				printf("[+] Thread 0x%s  \n",aux_c);
@@ -8352,6 +8673,9 @@ pn.y.ModAdd(&GSn[i].y);
 					
 					for(int i = 0; i<CPU_GRP_SIZE && bsgs_found[k]== 0; i++) {
 						pts[i].x.Get32Bytes((unsigned char*)xpoint_raw);
+						if(FLAGBSGSMODE == 7 || FLAGBSGSMODE == 14 ||
+						   strcmp(g_research.bsgs_name,"orbit")==0 || strcmp(g_research.bsgs_name,"negmap")==0)
+							research_orbit_normalize_x((uint8_t*)xpoint_raw);
 						r = bloom_check(&bloom_bP[((unsigned char)xpoint_raw[0])],xpoint_raw,32);
 						if(r) {
 							r = bsgs_secondcheck(&base_key,((j*1024) + i),k,&keyfound);
@@ -11950,10 +12274,20 @@ bool readFileAddress(char *fileName)	{
 			bf_init(&bf_filter, (uint32_t)N, 0.000001);
 			for(uint64_t bi = 0; bi < N; bi++) {
 				bf_add(&bf_filter, addressTable[bi].value, sizeof(struct address_value));
+				if(FLAG_FUSE_CASCADE) {
+					uint64_t _k48 = research_hash_key48((const uint8_t*)addressTable[bi].value);
+					uint64_t _k96 = research_hash_key96((const uint8_t*)addressTable[bi].value);
+					bf_add(&bf_filter_coarse, &_k48, 8);
+					bf_add(&bf_filter_mid, &_k96, 8);
+				}
 			}
 			printf("[+] Building binary fuse filter from %" PRIu64 " cached keys... ", N);
 			fflush(stdout);
-			if(bf_build(&bf_filter) != 0) {
+			if(FLAG_FUSE_CASCADE) {
+		bf_build(&bf_filter_coarse);
+		bf_build(&bf_filter_mid);
+	}
+	if(bf_build(&bf_filter) != 0) {
 				printf("\n[!] Binary fuse failed for cached data, falling back to bloom filter\n");
 				bf_filter.use_bloom_fallback = 1;
 			}
@@ -12327,6 +12661,19 @@ bool forceReadFileXPoint(char *fileName)	{
 */
 
 int address_check(const void *buffer, int len) {
+	if(g_research.shadow_bits > 0 && g_research.shadow_bits < 160)
+		return 1;
+	const uint8_t *h = (const uint8_t *)buffer;
+	if(FLAG_FUSE_CASCADE || g_research.filter_strategy == RFILTER_CASCADE) {
+		uint64_t k48 = research_hash_key48(h);
+		int r0 = bf_check(&bf_filter_coarse, &k48, 8);
+		if(r0 == 0) return 0;
+		if(r0 == 1) {
+			uint64_t k96 = research_hash_key96(h);
+			int r1 = bf_check(&bf_filter_mid, &k96, 8);
+			if(r1 == 0) return 0;
+		}
+	}
 	int r = bf_check(&bf_filter, buffer, len);
 	if(r == -1 && bf_filter.use_bloom_fallback) {
 		r = bloom_check(&bloom, buffer, len);
@@ -12339,6 +12686,12 @@ bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom)	{
 	printf("[+] Binary fuse filter for %" PRIu64 " elements.\n",items_bloom);
 	uint32_t bf_count = (items_bloom > 10000) ? (uint32_t)(FLAGBLOOMMULTIPLIER * items_bloom) : 10000;
 	bf_init(&bf_filter, bf_count, 0.000001);
+	if(g_research.filter_strategy == RFILTER_CASCADE || g_research.filter_strategy == RFILTER_FUSE16) {
+		FLAG_FUSE_CASCADE = 1;
+		bf_init(&bf_filter_coarse, bf_count, 0.000001);
+		bf_init(&bf_filter_mid, bf_count, 0.000001);
+		printf("[+] FuseCascade: coarse48 + mid96 + exact\n");
+	}
 	if(bf_filter.keys == NULL)	{
 		fprintf(stderr,"[E] error binary fuse alloc for %" PRIu64 " elements.\n",items_bloom);
 		r = false;

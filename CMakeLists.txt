@@ -126,6 +126,7 @@ include_directories(
 # ---------------------------------------------------------------------------
 set(CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/keyhunt.cpp
+    ${CMAKE_SOURCE_DIR}/research_engine.cpp
     ${CMAKE_SOURCE_DIR}/backend_config.cpp
     ${CMAKE_SOURCE_DIR}/cpu_features.cpp
     ${CMAKE_SOURCE_DIR}/gpu/gpu_dispatcher.cpp

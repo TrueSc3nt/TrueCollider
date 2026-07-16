@@ -63,3 +63,6 @@ tests/_rmd*.txt
 # OS
 .DS_Store
 Thumbs.db
+# Local research notes — do not publish
+README_IDEAS_FOR_IMPROVEMENT.md
+

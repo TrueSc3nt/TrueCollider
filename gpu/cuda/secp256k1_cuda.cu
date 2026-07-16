@@ -1140,7 +1140,7 @@ extern "C" int tcuda_secp_search_init(const uint8_t *bloom_bf, uint64_t bloom_bi
         if (cudaMalloc(&g_d_bloom, bloom_bytes) != cudaSuccess) {
             fprintf(stderr, "[W] CUDA device bloom alloc failed; falling back to host filter.\n");
             g_d_bloom = NULL;
-            g_host_filter = 1;
+    g_host_filter = 1;
         } else if (cudaMemcpy(g_d_bloom, bloom_bf, bloom_bytes, cudaMemcpyHostToDevice) != cudaSuccess) {
             fprintf(stderr, "[W] CUDA device bloom upload failed; falling back to host filter.\n");
             cudaFree(g_d_bloom);
@@ -1493,6 +1493,143 @@ __global__ void bsgs_grp_one_cycle_kernel(const uint8_t *gsn64, const uint8_t *t
     }
 }
 
+/*
+ * Device-side multi-cycle GRP: removes per-cycle host<<<>>> sync.
+ * Still one CUDA thread (algorithmic dependency on startP), but all cycles stay on GPU.
+ */
+__global__ void bsgs_grp_n_cycles_kernel(const uint8_t *gsn64, const uint8_t *twogsn64,
+                                         int half, Fe *ws, uint8_t *start_xy,
+                                         uint8_t *out_x_all, int n_cycles) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    int grp = half * 2;
+    for (int c = 0; c < n_cycles; c++) {
+        uint8_t *out_x = out_x_all + (size_t)c * (size_t)grp * 32;
+        Fe *dx = ws;
+        Fe *gsn_x = ws + (half + 2);
+        Fe *gsn_y = gsn_x + half;
+
+        Fe spx, spy;
+        fe_from_bytes_be(&spx, start_xy);
+        fe_from_bytes_be(&spy, start_xy + 32);
+
+        for (int i = 0; i < half; i++) {
+            fe_from_bytes_be(&gsn_x[i], gsn64 + (size_t)i * 64);
+            fe_from_bytes_be(&gsn_y[i], gsn64 + (size_t)i * 64 + 32);
+        }
+        Fe t2x, t2y;
+        fe_from_bytes_be(&t2x, twogsn64);
+        fe_from_bytes_be(&t2y, twogsn64 + 32);
+
+        int hLength = half - 1;
+        for (int i = 0; i < hLength; i++)
+            fe_sub(&dx[i], &gsn_x[i], &spx);
+        fe_sub(&dx[hLength], &gsn_x[hLength], &spx);
+        fe_sub(&dx[hLength + 1], &t2x, &spx);
+
+        for (int i = 0; i < hLength + 2; i++) {
+            Fe t; fe_set(&t, &dx[i]);
+            fe_inv(&dx[i], &t);
+        }
+
+        fe_to_bytes_be(&spx, out_x + (size_t)half * 32);
+
+        for (int i = 0; i < hLength; i++) {
+            Fe ppx, ppy, pnx, pny, ngsn_y;
+            affine_add_xy(&ppx, &ppy, &spx, &spy, &gsn_x[i], &gsn_y[i], &dx[i]);
+            fe_set(&ngsn_y, &gsn_y[i]);
+            Fe z; fe_clear(&z);
+            fe_sub(&ngsn_y, &z, &ngsn_y);
+            affine_add_xy(&pnx, &pny, &spx, &spy, &gsn_x[i], &ngsn_y, &dx[i]);
+            fe_to_bytes_be(&ppx, out_x + (size_t)(half + (i + 1)) * 32);
+            fe_to_bytes_be(&pnx, out_x + (size_t)(half - (i + 1)) * 32);
+        }
+        {
+            Fe pnx, pny, ngsn_y, z;
+            fe_clear(&z);
+            fe_set(&ngsn_y, &gsn_y[hLength]);
+            fe_sub(&ngsn_y, &z, &ngsn_y);
+            affine_add_xy(&pnx, &pny, &spx, &spy, &gsn_x[hLength], &ngsn_y, &dx[hLength]);
+            fe_to_bytes_be(&pnx, out_x);
+        }
+        {
+            Fe nx, ny;
+            affine_add_xy(&nx, &ny, &spx, &spy, &t2x, &t2y, &dx[hLength + 1]);
+            fe_to_bytes_be(&nx, start_xy);
+            fe_to_bytes_be(&ny, start_xy + 32);
+        }
+    }
+}
+
+/*
+ * Parallel one-cycle GRP for many independent giant centers (Herd / multi-target).
+ * starts_xy: n_starts * 64; out_x: n_starts * (2*half) * 32
+ */
+__global__ void bsgs_grp_batch_starts_kernel(const uint8_t *gsn64, const uint8_t *twogsn64,
+                                             int half, Fe *ws_pool, uint8_t *starts_xy,
+                                             uint8_t *out_x_all, int n_starts) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_starts) return;
+    int grp = half * 2;
+    /* Per-thread workspace: (half+2) + 2*half Fe slots */
+    size_t ws_stride = (size_t)(half + 2) + (size_t)half * 2;
+    Fe *ws = ws_pool + (size_t)tid * ws_stride;
+    uint8_t *start_xy = starts_xy + (size_t)tid * 64;
+    uint8_t *out_x = out_x_all + (size_t)tid * (size_t)grp * 32;
+
+    Fe *dx = ws;
+    Fe *gsn_x = ws + (half + 2);
+    Fe *gsn_y = gsn_x + half;
+
+    Fe spx, spy;
+    fe_from_bytes_be(&spx, start_xy);
+    fe_from_bytes_be(&spy, start_xy + 32);
+
+    for (int i = 0; i < half; i++) {
+        fe_from_bytes_be(&gsn_x[i], gsn64 + (size_t)i * 64);
+        fe_from_bytes_be(&gsn_y[i], gsn64 + (size_t)i * 64 + 32);
+    }
+    Fe t2x, t2y;
+    fe_from_bytes_be(&t2x, twogsn64);
+    fe_from_bytes_be(&t2y, twogsn64 + 32);
+
+    int hLength = half - 1;
+    for (int i = 0; i < hLength; i++)
+        fe_sub(&dx[i], &gsn_x[i], &spx);
+    fe_sub(&dx[hLength], &gsn_x[hLength], &spx);
+    fe_sub(&dx[hLength + 1], &t2x, &spx);
+
+    for (int i = 0; i < hLength + 2; i++) {
+        Fe t; fe_set(&t, &dx[i]);
+        fe_inv(&dx[i], &t);
+    }
+
+    fe_to_bytes_be(&spx, out_x + (size_t)half * 32);
+    for (int i = 0; i < hLength; i++) {
+        Fe ppx, ppy, pnx, pny, ngsn_y, z;
+        affine_add_xy(&ppx, &ppy, &spx, &spy, &gsn_x[i], &gsn_y[i], &dx[i]);
+        fe_clear(&z);
+        fe_set(&ngsn_y, &gsn_y[i]);
+        fe_sub(&ngsn_y, &z, &ngsn_y);
+        affine_add_xy(&pnx, &pny, &spx, &spy, &gsn_x[i], &ngsn_y, &dx[i]);
+        fe_to_bytes_be(&ppx, out_x + (size_t)(half + (i + 1)) * 32);
+        fe_to_bytes_be(&pnx, out_x + (size_t)(half - (i + 1)) * 32);
+    }
+    {
+        Fe pnx, pny, ngsn_y, z;
+        fe_clear(&z);
+        fe_set(&ngsn_y, &gsn_y[hLength]);
+        fe_sub(&ngsn_y, &z, &ngsn_y);
+        affine_add_xy(&pnx, &pny, &spx, &spy, &gsn_x[hLength], &ngsn_y, &dx[hLength]);
+        fe_to_bytes_be(&pnx, out_x);
+    }
+    {
+        Fe nx, ny;
+        affine_add_xy(&nx, &ny, &spx, &spy, &t2x, &t2y, &dx[hLength + 1]);
+        fe_to_bytes_be(&nx, start_xy);
+        fe_to_bytes_be(&ny, start_xy + 32);
+    }
+}
+
 extern "C" void tcuda_bsgs_grp_free(void) {
     if (g_d_gsn) { cudaFree(g_d_gsn); g_d_gsn = NULL; }
     if (g_d_twogsn) { cudaFree(g_d_twogsn); g_d_twogsn = NULL; }
@@ -1546,13 +1683,11 @@ extern "C" int tcuda_bsgs_grp_run(uint8_t *start_xy64, int n_cycles, uint8_t *ou
     if (cudaMemcpy(d_start, start_xy64, 64, cudaMemcpyHostToDevice) != cudaSuccess) {
         cudaFree(d_start); cudaFree(d_out); return 0;
     }
-    for (int c = 0; c < n_cycles; c++) {
-        uint8_t *ox = d_out + (size_t)c * (size_t)grp * 32;
-        bsgs_grp_one_cycle_kernel<<<1, 1>>>(g_d_gsn, g_d_twogsn, half, g_d_bsgs_ws,
-                                            d_start, ox);
-        if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
-            cudaFree(d_start); cudaFree(d_out); return 0;
-        }
+    /* Single launch: all cycles on device (no per-cycle host sync) */
+    bsgs_grp_n_cycles_kernel<<<1, 1>>>(g_d_gsn, g_d_twogsn, half, g_d_bsgs_ws,
+                                       d_start, d_out, n_cycles);
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+        cudaFree(d_start); cudaFree(d_out); return 0;
     }
     if (cudaMemcpy(out_x32, d_out, out_bytes, cudaMemcpyDeviceToHost) != cudaSuccess ||
         cudaMemcpy(start_xy64, d_start, 64, cudaMemcpyDeviceToHost) != cudaSuccess) {
@@ -1560,6 +1695,42 @@ extern "C" int tcuda_bsgs_grp_run(uint8_t *start_xy64, int n_cycles, uint8_t *ou
     }
     cudaFree(d_start);
     cudaFree(d_out);
+    return 1;
+}
+
+extern "C" int tcuda_bsgs_grp_run_batch(uint8_t *starts_xy64, int n_starts, uint8_t *out_x32) {
+    if (!g_bsgs_ready || !starts_xy64 || !out_x32 || n_starts <= 0)
+        return 0;
+    if (n_starts > 4096) n_starts = 4096;
+    int half = g_bsgs_half;
+    int grp = half * 2;
+    size_t ws_stride = (size_t)(half + 2) + (size_t)half * 2;
+    Fe *d_ws = NULL;
+    uint8_t *d_starts = NULL, *d_out = NULL;
+    size_t out_bytes = (size_t)n_starts * (size_t)grp * 32;
+    if (cudaMalloc(&d_ws, (size_t)n_starts * ws_stride * sizeof(Fe)) != cudaSuccess ||
+        cudaMalloc(&d_starts, (size_t)n_starts * 64) != cudaSuccess ||
+        cudaMalloc(&d_out, out_bytes) != cudaSuccess) {
+        if (d_ws) cudaFree(d_ws);
+        if (d_starts) cudaFree(d_starts);
+        if (d_out) cudaFree(d_out);
+        return 0;
+    }
+    if (cudaMemcpy(d_starts, starts_xy64, (size_t)n_starts * 64, cudaMemcpyHostToDevice) != cudaSuccess) {
+        cudaFree(d_ws); cudaFree(d_starts); cudaFree(d_out); return 0;
+    }
+    int threads = 64;
+    int blocks = (n_starts + threads - 1) / threads;
+    bsgs_grp_batch_starts_kernel<<<blocks, threads>>>(g_d_gsn, g_d_twogsn, half, d_ws,
+                                                      d_starts, d_out, n_starts);
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+        cudaFree(d_ws); cudaFree(d_starts); cudaFree(d_out); return 0;
+    }
+    if (cudaMemcpy(out_x32, d_out, out_bytes, cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(starts_xy64, d_starts, (size_t)n_starts * 64, cudaMemcpyDeviceToHost) != cudaSuccess) {
+        cudaFree(d_ws); cudaFree(d_starts); cudaFree(d_out); return 0;
+    }
+    cudaFree(d_ws); cudaFree(d_starts); cudaFree(d_out);
     return 1;
 }
 

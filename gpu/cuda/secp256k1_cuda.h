@@ -43,6 +43,9 @@ void tcuda_bsgs_grp_free(void);
  */
 int tcuda_bsgs_grp_run(uint8_t *start_xy64, int n_cycles, uint8_t *out_x32);
 
+/* Parallel one-cycle GRP for n_starts independent centers (batched giants). */
+int tcuda_bsgs_grp_run_batch(uint8_t *starts_xy64, int n_starts, uint8_t *out_x32);
+
 int tcuda_bsgs_grp_ready(void);
 
 /* Free / total VRAM in bytes. Returns 1 on success. */
