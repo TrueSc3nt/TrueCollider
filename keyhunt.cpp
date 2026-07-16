@@ -612,6 +612,8 @@ int FLAGBLOOMMULTIPLIER = 1;
 int FLAGVANITY = 0;
 int FLAGBASEMINIKEY = 0;
 int FLAGBSGSMODE = 0;
+static char g_handoff_pubkey_file[1024] = "addresses.txt";
+static int g_handoff_armed = 0;
 int FLAGDEBUG = 0;
 int FLAGDRYRUN = 0;
 int FLAGQUIET = 0;
@@ -1816,7 +1818,8 @@ int main(int argc, char **argv)	{
 					break;
 					case 14: /* hybrid-dl */
 						FLAGMODE = MODE_BSGS;
-						FLAGBSGSMODE = 3;
+						FLAGBSGSMODE = 15; /* handoff */
+						strncpy(g_research.bsgs_name, "handoff", sizeof(g_research.bsgs_name)-1);
 						printf("[+] Mode hybrid-dl HerdHandoff (bits=%d)\n", g_research.handoff_bits);
 					break;
 					case 15: /* gaudry */
@@ -2312,6 +2315,15 @@ int main(int argc, char **argv)	{
 	if(FLAGFILE == 0) {
 		fileName =(char*) default_fileName;
 	}
+	if(fileName) {
+		strncpy(g_handoff_pubkey_file, fileName, sizeof(g_handoff_pubkey_file) - 1);
+		g_handoff_pubkey_file[sizeof(g_handoff_pubkey_file) - 1] = 0;
+	}
+	g_handoff_armed = (FLAGMODE == MODE_BSGS &&
+	                   (FLAGBSGSMODE == 15 || strcmp(g_research.bsgs_name, "handoff") == 0));
+	if(g_handoff_armed)
+		printf("[+] HerdHandoff armed: BSGS giants → kangaroo pockets (-H %d bits)\n",
+		       g_research.handoff_bits);
 	
 	if((FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_PUB2ADDR) && FLAGCRYPTO == CRYPTO_NONE) {	//When none crypto is defined the default search is for Bitcoin
 		FLAGCRYPTO = CRYPTO_BTC;
@@ -3679,7 +3691,11 @@ int main(int argc, char **argv)	{
 			tt->nt = j;
 			steps[j] = 0;
 			s = 0;
-			switch(FLAGBSGSMODE)	{
+			/* Research: interleave→both; handoff/grumpy/orbit…→random (+ hooks inside) */
+			int bsgs_thread_mode = FLAGBSGSMODE;
+			if(FLAGBSGSMODE == 6) bsgs_thread_mode = 2; /* interleave */
+			else if(FLAGBSGSMODE > 4) bsgs_thread_mode = 3; /* research giants via random */
+			switch(bsgs_thread_mode)	{
 #if defined(_MSC_VER)
 				case 0:
 					tid[j] = CreateThread(NULL, 0, thread_process_bsgs, (void*)tt, 0, &s);
@@ -4352,6 +4368,11 @@ void *thread_process_mnemonic(void *vargp) {
 		mnemonic[0] = 0;
 		passphrase[0] = 0;
 
+		if(g_research.submode == RSUB_LANGUAGE_GUESS || g_research.submode == RSUB_CHECKSUM_PRISM ||
+		   g_research.prism_langs) {
+			FLAGMNEMONIC_ALL_LANGS = 1;
+		}
+
 		int recovery = (g_research.submode == RSUB_MASK || g_research.submode == RSUB_LASTWORD ||
 		                g_research.submode == RSUB_MODEL || g_research.submode == RSUB_LATTICE ||
 		                g_research.submode == RSUB_PREFIX_WORD || g_research.submode == RSUB_TYPO ||
@@ -4360,7 +4381,8 @@ void *thread_process_mnemonic(void *vargp) {
 		                g_research.submode == RSUB_LANGUAGE_GUESS ||
 		                g_research.submode == RSUB_PASS_DICT || g_research.submode == RSUB_PASS_MASK ||
 		                g_research.submode == RSUB_PASS_RULES || g_research.submode == RSUB_PASS_HYBRID ||
-		                g_research.submode == RSUB_PASS_EMPTY_PLUS);
+		                g_research.submode == RSUB_PASS_EMPTY_PLUS ||
+		                g_research.submode == RSUB_BIP85 || g_research.submode == RSUB_RFC1751);
 
 		if(recovery && g_research.seed_mask[0]) {
 			if(g_research.submode == RSUB_POSITIONAL_SWAP) {
@@ -4392,12 +4414,69 @@ void *thread_process_mnemonic(void *vargp) {
 					if(w) strcat(mnemonic, " ");
 					strcat(mnemonic, words[w]);
 				}
+			} else if(g_research.submode == RSUB_TYPO || g_research.submode == RSUB_PERMUTE ||
+			          g_research.submode == RSUB_ANAGRAM || g_research.submode == RSUB_LATTICE ||
+			          g_research.submode == RSUB_PREFIX_WORD || g_research.submode == RSUB_MODEL) {
+				if(!research_next_recovery_mnemonic(&mask_state, mnemonic, sizeof(mnemonic),
+				                                    bip39_wordlist, bip39_wordlist_size,
+				                                    [](const char *m)->int { return validate_mnemonic(m) ? 1 : 0; })) {
+					ends[thread_number] = 1;
+					break;
+				}
 			} else if(!research_next_mask_mnemonic(&mask_state, mnemonic, sizeof(mnemonic),
 			                                      bip39_wordlist, bip39_wordlist_size,
 			                                      [](const char *m)->int { return validate_mnemonic(m) ? 1 : 0; })) {
 				ends[thread_number] = 1;
 				break;
 			}
+		} else if(g_research.submode == RSUB_RFC1751) {
+			uint64_t cur = mask_state++;
+			uint8_t k8[8];
+			for(int i = 0; i < 8; i++) k8[i] = (uint8_t)((cur >> (8 * (7 - i))) & 0xff);
+			if(g_research.milksad_t0) {
+				research_milksad_key((uint32_t)((g_research.milksad_t0 + cur) & 0xffffffffu), k8);
+			}
+			if(!research_rfc1751_encode(k8, mnemonic, sizeof(mnemonic))) {
+				steps[thread_number]++;
+				continue;
+			}
+			/* RFC1751 phrases are not BIP39 — map into hex priv via SHA256 of phrase */
+			uint8_t dig[32];
+			sha256((uint8_t *)mnemonic, (int)strlen(mnemonic), dig);
+			Int *key_int = new Int();
+			key_int->Set32Bytes(dig);
+			uint8_t addr_hash[20];
+			compute_address_hash(dig, 0, addr_hash);
+			if(N > 0 && address_check(addr_hash, 20) && searchbinary(addressTable, (char*)addr_hash, N)) {
+				char *hextemp = key_int->GetBase16();
+				printf("\n[+] RFC1751 FOUND! phrase=%s key=%s\n", mnemonic, hextemp);
+				FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+				if(f) { fprintf(f, "RFC1751: %s\nPrivate Key: %s\n\n", mnemonic, hextemp); fclose(f); }
+				free(hextemp);
+				notify_key_found(key_int);
+				delete key_int;
+				ends[thread_number] = 1;
+				return NULL;
+			}
+			delete key_int;
+			steps[thread_number]++;
+			continue;
+		} else if(g_research.submode == RSUB_BIP85 && g_research.seed_mask[0] &&
+		          strchr(g_research.seed_mask, '?') == NULL) {
+			/* Parent mnemonic -> seed -> BIP85 child entropy -> BIP39 child */
+			uint8_t parent_seed[64];
+			mnemonic_to_seed(g_research.seed_mask, "", parent_seed);
+			int word_count = FLAGMNEMONIC_WORDS ? FLAGMNEMONIC_WORDS : 12;
+			uint32_t idx = (uint32_t)(mask_state & 0xffffffffu);
+			mask_state++;
+			if(idx > 100000u) { ends[thread_number] = 1; break; }
+			uint8_t ent[32];
+			int nbytes = 16;
+			research_bip85_entropy(parent_seed, idx, word_count, ent, &nbytes);
+			unsigned int s = ((unsigned int)ent[0] << 24) | ((unsigned int)ent[1] << 16) |
+			                 ((unsigned int)ent[2] << 8) | (unsigned int)ent[3];
+			s ^= idx;
+			generate_mnemonic(mnemonic, word_count, &s);
 		} else if(g_research.submode == RSUB_MILKSAD && g_research.milksad_t0) {
 			uint64_t t0 = g_research.milksad_t0;
 			uint64_t t1 = g_research.milksad_t1 ? g_research.milksad_t1 : (t0 + 86400ULL * 365);
@@ -4623,6 +4702,37 @@ void *thread_process_mnemonic(void *vargp) {
 				while(research_pass_mask_next(g_research.pass_mask, &pstate, pbuf, sizeof(pbuf))) {
 					if(try_one_pass(pbuf)) { hit = 1; break; }
 					if(pstate > 1000000ULL) break;
+				}
+			}
+			if(!hit && (g_research.submode == RSUB_PASS_RULES || g_research.pass_rules_file[0])) {
+				/* Apply rules to empty + each dict line already tried; also rule-expand base "" and seed */
+				const char *bases[3];
+				int nb = 0;
+				bases[nb++] = "";
+				if(passphrase[0]) bases[nb++] = passphrase;
+				if(g_research.seed_mask[0] && !strchr(g_research.seed_mask, '?'))
+					bases[nb++] = "seed"; /* placeholder marker */
+				for(int bi = 0; bi < nb && !hit; bi++) {
+					const char *base = (strcmp(bases[bi], "seed") == 0) ? "" : bases[bi];
+					for(uint64_t ri = 0; ri < 200 && !hit; ri++) {
+						char pbuf[160];
+						if(!research_pass_rule_apply(base, ri, g_research.pass_rules_file, pbuf, sizeof(pbuf)))
+							break;
+						if(try_one_pass(pbuf)) hit = 1;
+					}
+				}
+				if(!hit && pass_fp) {
+					rewind(pass_fp);
+					while(!hit && fgets(pass_line, sizeof(pass_line), pass_fp)) {
+						char basep[128];
+						if(!research_pass_from_dict_line(pass_line, basep, sizeof(basep))) continue;
+						for(uint64_t ri = 0; ri < 112 && !hit; ri++) {
+							char pbuf[160];
+							if(!research_pass_rule_apply(basep, ri, g_research.pass_rules_file, pbuf, sizeof(pbuf)))
+								break;
+							if(try_one_pass(pbuf)) hit = 1;
+						}
+					}
 				}
 			}
 		} else {
@@ -8741,6 +8851,69 @@ pn.y.ModAdd(&GSn[i].y);
 				}	//End While
 			}	//End if
 		} // End for with k bsgs_point_number
+
+		/* HerdHandoff: record pocket; auto-kangaroo when pocket <= 28 bits */
+		if(g_handoff_armed && thread_number == 0 && (steps[thread_number] % 16) == 0) {
+			int hb = g_research.handoff_bits;
+			if(hb < 16) hb = 16;
+			if(hb > 56) hb = 56;
+			Int half, span, pstart, pend;
+			half.SetInt32(1);
+			half.ShiftL(hb - 1);
+			span.SetInt32(1);
+			span.ShiftL(hb);
+			pstart.Set(&base_key);
+			if(pstart.IsGreater(&half)) pstart.Sub(&half);
+			else pstart.SetInt32(1);
+			pend.Set(&pstart);
+			pend.Add(&span);
+			if(pend.IsGreater(&secp->order)) pend.Set(&secp->order);
+			char *hs = pstart.GetBase16();
+			char *he = pend.GetBase16();
+#if defined(_MSC_VER)
+			WaitForSingleObject(write_keys, INFINITE);
+#else
+			pthread_mutex_lock(&write_keys);
+#endif
+			FILE *pf = fopen("handoff_pockets.txt", "a");
+			if(pf) {
+				fprintf(pf, "0x%s:0x%s bits=%d\n", hs, he, hb);
+				fclose(pf);
+			}
+#if defined(_MSC_VER)
+			ReleaseMutex(write_keys);
+#else
+			pthread_mutex_unlock(&write_keys);
+#endif
+			printf("\n[+] HerdHandoff pocket 0x%s .. 0x%s (~%d bits)\n", hs, he, hb);
+			if(hb <= 28) {
+				Int save_s, save_e;
+				save_s.Set(&n_range_start);
+				save_e.Set(&n_range_end);
+				int save_fr = FLAGRANGE;
+#if defined(_MSC_VER)
+				WaitForSingleObject(bsgs_thread, INFINITE);
+#else
+				pthread_mutex_lock(&bsgs_thread);
+#endif
+				n_range_start.Set(&pstart);
+				n_range_end.Set(&pend);
+				FLAGRANGE = 1;
+				printf("[+] HerdHandoff → kangaroo (pocket <= 28 bits)\n");
+				run_kangaroo_search(g_handoff_pubkey_file);
+				n_range_start.Set(&save_s);
+				n_range_end.Set(&save_e);
+				FLAGRANGE = save_fr;
+#if defined(_MSC_VER)
+				ReleaseMutex(bsgs_thread);
+#else
+				pthread_mutex_unlock(&bsgs_thread);
+#endif
+			} else {
+				printf("[+] Pocket logged to handoff_pockets.txt (use -m kangaroo -r …)\n");
+			}
+			free(hs); free(he);
+		}
 
 		steps[thread_number]+=2;
 	}while(1);

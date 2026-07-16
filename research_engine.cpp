@@ -2,6 +2,7 @@
 #include "hash/sha512.h"
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -140,10 +141,33 @@ int research_consume_long_flags(int *argc, char **argv) {
 				continue;
 			}
 		}
+		if(strcmp(a, "--pass-rules") == 0) {
+			if(take_arg(argc, argv, i, g_research.pass_rules_file, sizeof(g_research.pass_rules_file)) == 0) {
+				printf("[+] Passphrase rules: %s\n", g_research.pass_rules_file);
+				if(g_research.submode == RSUB_RANDOM || g_research.submode == RSUB_PASS_DICT)
+					g_research.submode = RSUB_PASS_RULES;
+				touched++;
+				continue;
+			}
+		}
 		if(strcmp(a, "--model") == 0) {
 			if(take_arg(argc, argv, i, g_research.model_file, sizeof(g_research.model_file)) == 0) {
 				printf("[+] Model constraints: %s\n", g_research.model_file);
 				g_research.submode = RSUB_MODEL;
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--density-map") == 0) {
+			if(take_arg(argc, argv, i, g_research.density_map_file, sizeof(g_research.density_map_file)) == 0) {
+				printf("[+] Density map: %s\n", g_research.density_map_file);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--funded") == 0) {
+			if(take_arg(argc, argv, i, g_research.funded_file, sizeof(g_research.funded_file)) == 0) {
+				printf("[+] Funded snapshot: %s\n", g_research.funded_file);
 				touched++;
 				continue;
 			}
@@ -241,6 +265,12 @@ int research_consume_long_flags(int *argc, char **argv) {
 		}
 		if(strcmp(a, "--bip86") == 0) {
 			g_research.include_bip86 = 1;
+			remove_one(argc, argv, i);
+			touched++;
+			continue;
+		}
+		if(strcmp(a, "--no-bip86") == 0) {
+			g_research.include_bip86 = 0;
 			remove_one(argc, argv, i);
 			touched++;
 			continue;
@@ -694,6 +724,126 @@ int research_pass_mask_next(const char *mask, uint64_t *state, char *pass_out, s
 	return 1;
 }
 
+int research_pass_rule_apply(const char *base, uint64_t rule_index,
+                             const char *rules_file, char *pass_out, size_t out_sz) {
+	if(!base || !pass_out || out_sz < 2) return 0;
+	/* Built-in transforms 0..111: identity, Capitalize, UPPER, lower, append 0-99, leet */
+	const uint64_t builtin = 112;
+	if(rule_index < builtin) {
+		char tmp[256];
+		strncpy(tmp, base, sizeof(tmp) - 1);
+		tmp[sizeof(tmp) - 1] = 0;
+		size_t n = strlen(tmp);
+		if(rule_index == 0) {
+			/* identity */
+		} else if(rule_index == 1 && n) {
+			if(tmp[0] >= 'a' && tmp[0] <= 'z') tmp[0] = (char)(tmp[0] - 'a' + 'A');
+		} else if(rule_index == 2) {
+			for(size_t i = 0; i < n; i++)
+				if(tmp[i] >= 'a' && tmp[i] <= 'z') tmp[i] = (char)(tmp[i] - 'a' + 'A');
+		} else if(rule_index == 3) {
+			for(size_t i = 0; i < n; i++)
+				if(tmp[i] >= 'A' && tmp[i] <= 'Z') tmp[i] = (char)(tmp[i] - 'A' + 'a');
+		} else if(rule_index >= 4 && rule_index <= 103) {
+			char dig[8];
+			snprintf(dig, sizeof(dig), "%llu", (unsigned long long)(rule_index - 4));
+			if(n + strlen(dig) < sizeof(tmp) - 1) strcat(tmp, dig);
+		} else if(rule_index == 104) {
+			for(size_t i = 0; i < n; i++) {
+				if(tmp[i]=='a'||tmp[i]=='A') tmp[i]='@';
+				else if(tmp[i]=='e'||tmp[i]=='E') tmp[i]='3';
+				else if(tmp[i]=='i'||tmp[i]=='I') tmp[i]='1';
+				else if(tmp[i]=='o'||tmp[i]=='O') tmp[i]='0';
+				else if(tmp[i]=='s'||tmp[i]=='S') tmp[i]='$';
+			}
+		} else if(rule_index >= 105 && rule_index <= 111) {
+			char dig[4];
+			snprintf(dig, sizeof(dig), "!%c", (char)('0' + (int)(rule_index - 105)));
+			if(n + strlen(dig) < sizeof(tmp) - 1) strcat(tmp, dig);
+		} else {
+			return 0;
+		}
+		strncpy(pass_out, tmp, out_sz - 1);
+		pass_out[out_sz - 1] = 0;
+		return 1;
+	}
+	/* Optional rules file: each non-empty line is a suffix/prefix template with $WORD */
+	if(!rules_file || !rules_file[0]) return 0;
+	FILE *fp = fopen(rules_file, "r");
+	if(!fp) return 0;
+	uint64_t want = rule_index - builtin;
+	uint64_t cur = 0;
+	char line[256];
+	int ok = 0;
+	while(fgets(line, sizeof(line), fp)) {
+		size_t L = strlen(line);
+		while(L && (line[L-1]=='\n'||line[L-1]=='\r')) line[--L]=0;
+		if(!L || line[0]=='#') continue;
+		if(cur == want) {
+			char out[300];
+			out[0]=0;
+			const char *p = line;
+			while(*p) {
+				if(strncmp(p, "$WORD", 5)==0 || strncmp(p, "$word", 5)==0) {
+					strncat(out, base, sizeof(out)-strlen(out)-1);
+					p += 5;
+				} else {
+					size_t ol = strlen(out);
+					if(ol + 1 < sizeof(out)) { out[ol]=*p; out[ol+1]=0; }
+					p++;
+				}
+			}
+			strncpy(pass_out, out, out_sz - 1);
+			pass_out[out_sz - 1] = 0;
+			ok = 1;
+			break;
+		}
+		cur++;
+	}
+	fclose(fp);
+	return ok;
+}
+
+/* Minimal RFC-1751 word list (first 64 of 2048-equivalent subset for demo encode). */
+static const char *RFC1751_WORDS[64] = {
+	"A","ABE","ACE","ACT","AD","ADA","ADD","AGO","AID","AIM","AIR","ALL","ALP","AM","AMY","AN",
+	"ANA","AND","ANN","ANT","ANY","APE","APS","APT","ARC","ARE","ARK","ARM","ART","AS","ASH","ASK",
+	"AT","ATE","AUG","AUK","AVE","AWE","AWK","AWL","AWN","AX","AYE","BAD","BAG","BAH","BAM","BAN",
+	"BAR","BAT","BAY","BE","BED","BEE","BEG","BEN","BET","BEY","BIB","BID","BIG","BIN","BIT","BOB"
+};
+
+int research_rfc1751_encode(const uint8_t key8[8], char *out, size_t out_sz) {
+	if(!key8 || !out || out_sz < 32) return 0;
+	/* 64 bits -> 6 words of 11-ish bits; we use 6x ~10-bit from 64-bit key */
+	uint64_t v = 0;
+	for(int i = 0; i < 8; i++) v = (v << 8) | key8[i];
+	out[0] = 0;
+	for(int w = 0; w < 6; w++) {
+		int idx = (int)((v >> (w * 10)) & 63ULL);
+		if(w) strncat(out, " ", out_sz - strlen(out) - 1);
+		strncat(out, RFC1751_WORDS[idx], out_sz - strlen(out) - 1);
+	}
+	return 1;
+}
+
+void research_bip85_entropy(const uint8_t master_seed[64], uint32_t index,
+                            int word_count, uint8_t ent_out[32], int *ent_bytes) {
+	/* Simplified BIP-85: HMAC-SHA512("bip-entropy-from-k", seed || index || words) */
+	uint8_t msg[64 + 8];
+	memcpy(msg, master_seed, 64);
+	msg[64] = (uint8_t)((index >> 24) & 0xff);
+	msg[65] = (uint8_t)((index >> 16) & 0xff);
+	msg[66] = (uint8_t)((index >> 8) & 0xff);
+	msg[67] = (uint8_t)(index & 0xff);
+	msg[68] = (uint8_t)(word_count & 0xff);
+	msg[69] = 0; msg[70] = 0; msg[71] = 0;
+	uint8_t dig[64];
+	hmac_sha512((unsigned char *)"bip-entropy-from-k", 18, msg, 72, dig);
+	int nbytes = (word_count <= 12) ? 16 : (word_count <= 18) ? 24 : 32;
+	memcpy(ent_out, dig, (size_t)nbytes);
+	if(ent_bytes) *ent_bytes = nbytes;
+}
+
 uint64_t research_hash_key48(const uint8_t *h20) {
 	uint64_t h = 0;
 	for(int i = 0; i < 6; i++) h = (h << 8) | h20[i];
@@ -728,4 +878,156 @@ void research_orbit_normalize_x(uint8_t x32[32]) {
 	}
 	if(memcmp(neg, x32, 32) < 0)
 		memcpy(x32, neg, 32);
+}
+
+/* ── typo / permute / anagram / lattice recovery ─────────────────────── */
+
+#define RECOV_MAX_WORDS 24
+
+static int parse_seed_words(const char *mask, char words[][32], int *nw_out) {
+	char tmp[512];
+	strncpy(tmp, mask, sizeof(tmp) - 1);
+	tmp[sizeof(tmp) - 1] = 0;
+	int nw = 0;
+	char *sv = NULL;
+	char *tok = strtok_r(tmp, " \t", &sv);
+	while(tok && nw < RECOV_MAX_WORDS) {
+		strncpy(words[nw], tok, 31);
+		words[nw][31] = 0;
+		nw++;
+		tok = strtok_r(NULL, " \t", &sv);
+	}
+	*nw_out = nw;
+	return nw >= 12 && nw <= 24;
+}
+
+static void join_words(char words[][32], int nw, char *out, size_t out_sz) {
+	out[0] = 0;
+	for(int i = 0; i < nw; i++) {
+		if(i) strncat(out, " ", out_sz - strlen(out) - 1);
+		strncat(out, words[i], out_sz - strlen(out) - 1);
+	}
+}
+
+static uint64_t factorial_u64(int n) {
+	if(n < 0) return 0;
+	if(n > 20) n = 20; /* 21! overflows uint64 */
+	uint64_t f = 1;
+	for(int i = 2; i <= n; i++) f *= (uint64_t)i;
+	return f;
+}
+
+static int next_typo(uint64_t *state, char *mnemonic_out, size_t out_sz,
+                     char **wordlist, int wordlist_size,
+                     int (*validate_fn)(const char *)) {
+	static char base[RECOV_MAX_WORDS][32];
+	static int nw = 0;
+	static int ready = 0;
+	if(!ready) {
+		if(!parse_seed_words(g_research.seed_mask, base, &nw)) return 0;
+		ready = 1;
+		printf("[+] Typo recovery: %d words, single-substitution space\n", nw);
+	}
+	/* phase0: adjacent swaps (nw-1) ; phase1: substitute word@pos with all 2048 */
+	const uint64_t nswap = (nw > 1) ? (uint64_t)(nw - 1) : 0;
+	const uint64_t nsub = (uint64_t)nw * (uint64_t)wordlist_size;
+	for(;;) {
+		uint64_t s = (*state)++;
+		char cur[RECOV_MAX_WORDS][32];
+		memcpy(cur, base, sizeof(cur));
+		if(s < nswap) {
+			int i = (int)s;
+			char t[32];
+			strncpy(t, cur[i], 31); t[31] = 0;
+			strncpy(cur[i], cur[i + 1], 31);
+			strncpy(cur[i + 1], t, 31);
+		} else {
+			uint64_t t = s - nswap;
+			if(t >= nsub) return 0;
+			int pos = (int)(t / (uint64_t)wordlist_size);
+			int widx = (int)(t % (uint64_t)wordlist_size);
+			if(strcmp(base[pos], wordlist[widx]) == 0) continue; /* skip identity */
+			strncpy(cur[pos], wordlist[widx], 31);
+			cur[pos][31] = 0;
+		}
+		join_words(cur, nw, mnemonic_out, out_sz);
+		if(!validate_fn || validate_fn(mnemonic_out)) return 1;
+		if((*state) > nswap + nsub + 10) return 0;
+	}
+}
+
+static int next_permute(uint64_t *state, char *mnemonic_out, size_t out_sz,
+                        int (*validate_fn)(const char *)) {
+	static char base[RECOV_MAX_WORDS][32];
+	static int nw = 0;
+	static int ready = 0;
+	static uint64_t nperm = 0;
+	if(!ready) {
+		if(!parse_seed_words(g_research.seed_mask, base, &nw)) return 0;
+		/* reject '?' placeholders for pure permute */
+		for(int i = 0; i < nw; i++) {
+			if(strcmp(base[i], "?") == 0) {
+				fprintf(stderr, "[E] permute/anagram needs a fully known seed (no ?)\n");
+				return 0;
+			}
+		}
+		nperm = factorial_u64(nw);
+		ready = 1;
+		printf("[+] Permute/anagram: %d words, %" PRIu64 " permutations (checksum-first)\n",
+		       nw, nperm);
+	}
+	for(;;) {
+		uint64_t s = *state;
+		if(s >= nperm) return 0;
+		(*state)++;
+		/* factorial number system permutation */
+		int idx[RECOV_MAX_WORDS];
+		int used[RECOV_MAX_WORDS];
+		memset(used, 0, sizeof(used));
+		uint64_t rem = s;
+		for(int pos = 0; pos < nw; pos++) {
+			uint64_t f = factorial_u64(nw - pos - 1);
+			uint64_t choose = (f ? rem / f : 0);
+			rem = f ? (rem % f) : 0;
+			int seen = 0;
+			for(int j = 0; j < nw; j++) {
+				if(used[j]) continue;
+				if((uint64_t)seen == choose) {
+					idx[pos] = j;
+					used[j] = 1;
+					break;
+				}
+				seen++;
+			}
+		}
+		char cur[RECOV_MAX_WORDS][32];
+		for(int i = 0; i < nw; i++) {
+			strncpy(cur[i], base[idx[i]], 31);
+			cur[i][31] = 0;
+		}
+		join_words(cur, nw, mnemonic_out, out_sz);
+		if(!validate_fn || validate_fn(mnemonic_out)) return 1;
+	}
+}
+
+int research_next_recovery_mnemonic(uint64_t *state, char *mnemonic_out, size_t out_sz,
+                                    char **wordlist, int wordlist_size,
+                                    int (*validate_fn)(const char *)) {
+	if(!g_research.seed_mask[0]) return 0;
+	switch(g_research.submode) {
+	case RSUB_TYPO:
+		return next_typo(state, mnemonic_out, out_sz, wordlist, wordlist_size, validate_fn);
+	case RSUB_PERMUTE:
+	case RSUB_ANAGRAM:
+		return next_permute(state, mnemonic_out, out_sz, validate_fn);
+	case RSUB_LATTICE:
+	case RSUB_PREFIX_WORD:
+	case RSUB_MODEL:
+		/* Lattice/model/prefix: checksum-first mask enumeration */
+		return research_next_mask_mnemonic(state, mnemonic_out, out_sz,
+		                                   wordlist, wordlist_size, validate_fn);
+	default:
+		return research_next_mask_mnemonic(state, mnemonic_out, out_sz,
+		                                   wordlist, wordlist_size, validate_fn);
+	}
 }

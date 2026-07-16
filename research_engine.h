@@ -78,6 +78,7 @@ typedef struct {
 	char seed_mask[512];         /* "word ? ? ..." or full known seed */
 	char pass_mask[128];         /* hashcat-style ?l?d… */
 	char pass_file[512];
+	char pass_rules_file[512];
 	char model_file[512];
 	char path_pack_file[512];
 	char dual_target_file[512];
@@ -136,6 +137,18 @@ void research_electrum_to_seed(const char *mnemonic, const char *passphrase, uin
 /* Hashcat-lite passphrase mask expand: fills next candidate; state starts 0; returns 0 when done */
 int research_pass_mask_next(const char *mask, uint64_t *state, char *pass_out, size_t out_sz);
 
+/* Apply built-in + optional rules-file transforms to a base passphrase.
+ * rule_index 0..N-1; returns 1 if pass_out filled, 0 if exhausted. */
+int research_pass_rule_apply(const char *base, uint64_t rule_index,
+                             const char *rules_file, char *pass_out, size_t out_sz);
+
+/* RFC-1751: encode 8 bytes -> 6 English words into out (space-separated). */
+int research_rfc1751_encode(const uint8_t key8[8], char *out, size_t out_sz);
+
+/* BIP-85 style: derive 16/32-byte entropy from master seed + index (HMAC-SHA512 path tag). */
+void research_bip85_entropy(const uint8_t master_seed[64], uint32_t index,
+                            int word_count, uint8_t ent_out[32], int *ent_bytes);
+
 /* FuseCascade key extractors from 20-byte hash160 */
 uint64_t research_hash_key48(const uint8_t *h20);  /* first 6 bytes */
 uint64_t research_hash_key96(const uint8_t *h20);  /* first 12 bytes as mixed 64 */
@@ -143,6 +156,17 @@ uint64_t research_hash_key160(const uint8_t *h20); /* first 8 bytes (default fus
 
 /* Orbit / negation map: fold secp256k1 x into canonical representative (min of x, p-x) */
 void research_orbit_normalize_x(uint8_t x32[32]);
+
+/*
+ * Recovery enum for typo / permute / anagram / lattice over a known seed in seed_mask.
+ * typo: single-word substitutions (checksum-first)
+ * permute/anagram: factorial permutations of the known words
+ * lattice: same as mask free-slots but prefers checksum-valid streams
+ * Returns 1 if mnemonic_out filled, 0 if exhausted.
+ */
+int research_next_recovery_mnemonic(uint64_t *state, char *mnemonic_out, size_t out_sz,
+                                    char **wordlist, int wordlist_size,
+                                    int (*validate_fn)(const char *));
 
 #ifdef __cplusplus
 }
