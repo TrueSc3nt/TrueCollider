@@ -1535,8 +1535,14 @@ int main(int argc, char **argv)	{
 				g_backend_config.gpu_backend = GPU_BACKEND_OPENCL;
 				printf("[+] GPU backend set to OpenCL\n");
 			}
+			else if(strcmp(optarg,"both") == 0) {
+				/* CPU threads + CUDA GPU together (hybrid). */
+				g_backend_config.gpu_enabled = 1;
+				g_backend_config.gpu_backend = GPU_BACKEND_CUDA;
+				printf("[+] GPU backend set to BOTH (CPU threads + CUDA)\n");
+			}
 			else {
-				fprintf(stderr,"[E] Unknown GPU backend '%s'. Use none/cuda/opencl.\n",optarg);
+				fprintf(stderr,"[E] Unknown GPU backend '%s'. Use none/cuda/opencl/both.\n",optarg);
 				exit(EXIT_FAILURE);
 			}
 		break;
@@ -11306,9 +11312,10 @@ void menu() {
 	printf("                 auto   - Detect best: AVX-512 → AVX2 → SSE → scalar\n");
 	printf("                 none, sse, avx, avx2, avx512\n");
 	printf("               AVX2 = 8-wide hash160; AVX-512 = 16-wide; AVX1/SSE = 4-wide SSE.\n");
-	printf("  -U backend   GPU backend: none, cuda, opencl (default: none)\n");
+	printf("  -U backend   GPU backend: none, cuda, opencl, both (default: none)\n");
 	printf("                 cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)\n");
 	printf("                 opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU\n");
+	printf("                 both   = CPU threads + CUDA GPU together (hybrid)\n");
 	printf("  -G N         GPU batch size hint (keys). Default: auto from -M / VRAM\n");
 	printf("  -M MB|auto   GPU/search memory budget in megabytes (KeyHunt-Cuda style).\n");
 	printf("               Examples: -M 512  -M 2048  -M 2G  -M auto\n");
