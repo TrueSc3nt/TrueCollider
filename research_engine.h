@@ -118,6 +118,16 @@ typedef struct {
 	uint8_t *funded_hashes;      /* funded_count * 20 */
 	char descriptor_file[512];
 	char pass_grammar[512];
+	/* Collider-bsgs CLI bridge (pp717 aliases) */
+	char collider_pk[128];
+	char collider_pke[128];
+	char collider_file[512];
+	char collider_pb[260];       /* single pubkey hex or temp path */
+	int collider_force_bsgs;
+	int collider_htsz;           /* soft → bloom/memory */
+	int collider_baby_bits;      /* soft → -k / table sizing */
+	int collider_autosave_sec;   /* -wt */
+	char collider_workfile[512]; /* -wl */
 } ResearchConfig;
 
 extern ResearchConfig g_research;
@@ -128,6 +138,8 @@ int research_parse_filter(const char *name);
 
 /* Consume long options before getopt. Returns count consumed conceptually; mutates argc/argv. */
 int research_consume_long_flags(int *argc, char **argv);
+/* Consume Collider-bsgs style flags (--pb/--pk/--pke/--infile/…). */
+int collider_consume_flags(int *argc, char **argv);
 
 /* Wordlist helpers (english BIP-39 indices 0..2047) */
 int research_word_index(const char *word, char **wordlist, int nwords);

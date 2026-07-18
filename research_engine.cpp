@@ -33,6 +33,10 @@ static void research_init_defaults(void) {
 	g_research.script_tag = 0;
 	g_research.bsgs_strategy = 0;
 	g_research.bsgs_name[0] = 0;
+	g_research.collider_force_bsgs = 0;
+	g_research.collider_htsz = 0;
+	g_research.collider_baby_bits = 0;
+	g_research.collider_autosave_sec = 0;
 }
 
 int research_parse_submode(const char *name) {
@@ -373,6 +377,97 @@ int research_consume_long_flags(int *argc, char **argv) {
 			printf("[+] ChecksumPrism: all BIP-39 languages\n");
 			touched++;
 			continue;
+		}
+		i++;
+	}
+	return touched;
+}
+
+int collider_consume_flags(int *argc, char **argv) {
+	/* Collider-bsgs (pp717) long aliases — avoid clashing TrueCollider -w/-d/-t/-b/-p */
+	research_init_defaults();
+	int touched = 0;
+	int i = 1;
+	while(i < *argc) {
+		const char *a = argv[i];
+		if(strcmp(a, "--pb") == 0 || strcmp(a, "-pb") == 0) {
+			char buf[260] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				strncpy(g_research.collider_pb, buf, sizeof(g_research.collider_pb) - 1);
+				g_research.collider_force_bsgs = 1;
+				/* materialize single-pubkey file for -f */
+				FILE *fp = fopen("collider_pb_target.txt", "w");
+				if(fp) {
+					fprintf(fp, "%s\n", buf);
+					fclose(fp);
+					strncpy(g_research.collider_file, "collider_pb_target.txt",
+					        sizeof(g_research.collider_file) - 1);
+					printf("[+] Collider --pb → collider_pb_target.txt (BSGS)\n");
+				} else {
+					printf("[+] Collider --pb pubkey loaded (file write failed)\n");
+				}
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--pk") == 0 || strcmp(a, "-pk") == 0) {
+			if(take_arg(argc, argv, i, g_research.collider_pk, sizeof(g_research.collider_pk)) == 0) {
+				g_research.collider_force_bsgs = 1;
+				printf("[+] Collider --pk range start: %s\n", g_research.collider_pk);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--pke") == 0 || strcmp(a, "-pke") == 0) {
+			if(take_arg(argc, argv, i, g_research.collider_pke, sizeof(g_research.collider_pke)) == 0) {
+				g_research.collider_force_bsgs = 1;
+				printf("[+] Collider --pke range end: %s\n", g_research.collider_pke);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--infile") == 0 || strcmp(a, "-infile") == 0) {
+			if(take_arg(argc, argv, i, g_research.collider_file, sizeof(g_research.collider_file)) == 0) {
+				g_research.collider_force_bsgs = 1;
+				printf("[+] Collider --infile: %s\n", g_research.collider_file);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--htsz") == 0 || strcmp(a, "-htsz") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.collider_htsz = atoi(buf);
+				printf("[+] Collider --htsz %d (soft-maps to bloom/memory)\n", g_research.collider_htsz);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--baby-bits") == 0 || strcmp(a, "--w-bits") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.collider_baby_bits = atoi(buf);
+				printf("[+] Collider --baby-bits %d (soft-maps to -k table sizing)\n",
+				       g_research.collider_baby_bits);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--wl") == 0 || strcmp(a, "-wl") == 0) {
+			if(take_arg(argc, argv, i, g_research.collider_workfile, sizeof(g_research.collider_workfile)) == 0) {
+				printf("[+] Collider --wl workfile: %s\n", g_research.collider_workfile);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--wt") == 0 || strcmp(a, "-wt") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.collider_autosave_sec = atoi(buf);
+				printf("[+] Collider --wt autosave seconds: %d\n", g_research.collider_autosave_sec);
+				touched++;
+				continue;
+			}
 		}
 		i++;
 	}
@@ -721,7 +816,9 @@ int research_build_path_pack(ResearchPath *out, int max_out, int pack, int index
 
 void research_print_banner(void) {
 	research_init_defaults();
-	printf("[+] Research engine: mnemonic recovery / PathNova / MilkSad / Hilbert / Sobol / Shadow160 / ResidueHerd / Electrum / FuseCascade / OrbitBSGS\n");
+	printf("[+] Research engine: mnemonic recovery / PathNova / MilkSad / Hilbert / Sobol / Shadow160 / ResidueHerd / Electrum / FuseCascade / OrbitBSGS / Collider-bridge / Multicoin\n");
+	printf("[+] GPU: -U cuda accelerates EC (BSGS GRP + mnemonic pubkey batch). BIP39 PBKDF2 remains host SHA512 (checksum-first).\n");
+	printf("[+] Collider aliases: --pb --pk --pke --infile --htsz --baby-bits --wl --wt\n");
 }
 
 int research_electrum_normalize(const char *in, char *out, size_t out_sz) {

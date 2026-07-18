@@ -1486,6 +1486,7 @@ int main(int argc, char **argv)	{
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
 
 	research_consume_long_flags(&argc, argv);
+	collider_consume_flags(&argc, argv);
 	if(consume_rs_argv_flags(&argc, argv))
 		enable_random_sequential("-rs");
 
@@ -2175,7 +2176,54 @@ int main(int argc, char **argv)	{
 		research_prepare_model_mask();
 	if(g_research.submode == RSUB_MIXED_SCRIPT && g_research.seed_mask[0])
 		research_mixed_script_normalize(g_research.seed_mask, sizeof(g_research.seed_mask));
-	if(g_research.submode != RSUB_RANDOM)
+
+	/* Collider-bsgs bridge → native TrueCollider flags */
+	if(g_research.collider_force_bsgs) {
+		FLAGMODE = MODE_BSGS;
+		printf("[+] Collider bridge: mode BSGS\n");
+	}
+	if(g_research.collider_file[0] && (fileName == NULL || FLAGFILE == 0)) {
+		fileName = g_research.collider_file;
+		FLAGFILE = 1;
+		printf("[+] Collider bridge: target file %s\n", fileName);
+	}
+	if(g_research.collider_pk[0] && g_research.collider_pke[0] && !FLAGRANGE) {
+		if(isValidHex(g_research.collider_pk) && isValidHex(g_research.collider_pke)) {
+			FLAGRANGE = 1;
+			range_start = g_research.collider_pk;
+			range_end = g_research.collider_pke;
+			printf("[+] Collider bridge: range %s:%s\n", range_start, range_end);
+		} else {
+			fprintf(stderr, "[W] Collider --pk/--pke not valid hex; ignored\n");
+		}
+	} else if(g_research.collider_pk[0] && !FLAGRANGE) {
+		if(isValidHex(g_research.collider_pk)) {
+			FLAGRANGE = 1;
+			range_start = g_research.collider_pk;
+			range_end = secp->order.GetBase16();
+			printf("[+] Collider bridge: range from %s to order\n", range_start);
+		}
+	}
+	if(g_research.collider_htsz > 0 && FLAGBLOOMMULTIPLIER <= 1) {
+		FLAGBLOOMMULTIPLIER = g_research.collider_htsz > 1 ? g_research.collider_htsz / 4 : 1;
+		if(FLAGBLOOMMULTIPLIER < 1) FLAGBLOOMMULTIPLIER = 1;
+		printf("[+] Collider --htsz soft-map → bloom multiplier %i\n", FLAGBLOOMMULTIPLIER);
+	}
+	if(g_research.collider_baby_bits > 0) {
+		printf("[+] Collider --baby-bits %d: prefer large BSGS table (-k auto / -n 0x…)\n",
+		       g_research.collider_baby_bits);
+	}
+	if(g_research.collider_workfile[0]) {
+		printf("[+] Collider --wl %s: use with -S to load/save BSGS tables\n",
+		       g_research.collider_workfile);
+	}
+	if(g_research.collider_autosave_sec > 0) {
+		OUTPUTSECONDS.SetInt32(g_research.collider_autosave_sec);
+		printf("[+] Collider --wt → stats/save cadence %d sec\n",
+		       g_research.collider_autosave_sec);
+	}
+
+	if(g_research.submode != RSUB_RANDOM || g_research.collider_force_bsgs)
 		research_print_banner();
 	
 	if(  FLAGBSGSMODE == MODE_BSGS && FLAGENDOMORPHISM)	{
@@ -2364,7 +2412,7 @@ int main(int argc, char **argv)	{
 			printf("[+] Mode BSGS (custom %d)\n", FLAGBSGSMODE);
 	}
 	
-	if(FLAGFILE == 0) {
+	if(FLAGFILE == 0 && fileName == NULL) {
 		fileName =(char*) default_fileName;
 	}
 	if(fileName) {
@@ -4630,9 +4678,27 @@ void *thread_process_mnemonic(void *vargp) {
 					if(g_research.script_tag == 3 && at != 3) continue;
 					if(g_research.script_tag == 4 && !is_eth) continue;
 
-					if(use_gpu && batch_privs && at == 0 && !is_eth) {
+					/* GPU EC+hash160 covers P2PKH/P2SH-P2WPKH/P2WPKH (same compressed hash160) */
+					if(use_gpu && batch_privs && !is_eth && at >= 0 && at <= 2) {
 						memcpy(batch_privs + (size_t)batch_n * 32, derived_key, 32);
 						batch_n++;
+						if(batch_n >= 4096) {
+							int gh = gpu_check_privkey_list(batch_privs, batch_n, 1, 0);
+							batch_n = 0;
+							if(gh > 0) {
+								printf("\n[+] MNEMONIC FOUND (GPU EC batch)!\n");
+								printf("[+] Mnemonic: %s\n", mnemonic);
+								if(pass && pass[0]) printf("[+] Passphrase: %s\n", pass);
+								FILE *fg = fopen("KEYFOUNDKEYFOUND.txt", "a");
+								if(fg) {
+									fprintf(fg, "Mnemonic: %s\nPassphrase: %s\n(GPU EC hash160 batch hit)\n\n",
+									        mnemonic, pass ? pass : "");
+									fclose(fg);
+								}
+								free(batch_privs);
+								return 1;
+							}
+						}
 						continue;
 					}
 
@@ -4743,9 +4809,17 @@ void *thread_process_mnemonic(void *vargp) {
 					memcpy(full_path, base_paths[path_idx], 4 * sizeof(uint32_t));
 					full_path[4] = (uint32_t)addr_idx;
 					bip32_derive_path(master_key, master_chain, full_path, 5, derived_key, derived_chain);
-					if(use_gpu && batch_privs && addr_types[path_idx] == 0 && !FLAGMNEMONIC_ETH) {
+					if(use_gpu && batch_privs && !FLAGMNEMONIC_ETH) {
 						memcpy(batch_privs + (size_t)batch_n * 32, derived_key, 32);
 						batch_n++;
+						if(batch_n >= 4096) {
+							int gh = gpu_check_privkey_list(batch_privs, batch_n, 1, 0);
+							if(gh > 0) {
+								free(batch_privs);
+								return 1;
+							}
+							batch_n = 0;
+						}
 						continue;
 					}
 					Int *key_int = new Int();
@@ -4804,6 +4878,25 @@ void *thread_process_mnemonic(void *vargp) {
 			if(use_gpu && batch_privs && batch_n > 0) {
 				int gh = gpu_check_privkey_list(batch_privs, batch_n, 1, FLAGMNEMONIC_ETH ? 1 : 0);
 				if(gh > 0) {
+					printf("\n[+] MNEMONIC FOUND (GPU EC batch)!\n");
+					printf("[+] Mnemonic: %s\n", mnemonic);
+					if(pass && pass[0]) printf("[+] Passphrase: %s\n", pass);
+#if defined(_MSC_VER)
+					WaitForSingleObject(write_keys, INFINITE);
+#else
+					pthread_mutex_lock(&write_keys);
+#endif
+					FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+					if(f) {
+						fprintf(f, "Mnemonic: %s\nPassphrase: %s\n(GPU EC hash160 batch hit)\n\n",
+						        mnemonic, pass ? pass : "");
+						fclose(f);
+					}
+#if defined(_MSC_VER)
+					ReleaseMutex(write_keys);
+#else
+					pthread_mutex_unlock(&write_keys);
+#endif
 					free(batch_privs);
 					return 1;
 				}
