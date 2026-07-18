@@ -898,8 +898,18 @@ void get_next_key_auto(Int *result, Int *range_start, Int *range_end) {
 }
 
 void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
-	if(g_research.submode == RSUB_HEX_MASK || g_research.submode == RSUB_WIF_MASK ||
-	   (g_research.key_mask[0] && g_research.submode != RSUB_MILKSAD)) {
+	if(g_research.submode == RSUB_WIF_MASK) {
+		uint8_t raw[32];
+		if(!research_wif_mask_next(&g_milksad_cursor, raw)) {
+			result->Set(range_end);
+			return;
+		}
+		result->Set32Bytes(raw);
+		return;
+	}
+	if(g_research.submode == RSUB_HEX_MASK ||
+	   (g_research.key_mask[0] && g_research.submode != RSUB_MILKSAD &&
+	    g_research.submode != RSUB_WIF_MASK)) {
 		uint8_t raw[32];
 		if(!research_hex_mask_next(&g_milksad_cursor, raw)) {
 			result->Set(range_end);
@@ -2159,8 +2169,12 @@ int main(int argc, char **argv)	{
 	}
 	if(g_research.dual_target_file[0])
 		research_dual_target_load();
+	if(g_research.funded_file[0])
+		research_funded_load(g_research.funded_file);
 	if(g_research.submode == RSUB_MODEL)
 		research_prepare_model_mask();
+	if(g_research.submode == RSUB_MIXED_SCRIPT && g_research.seed_mask[0])
+		research_mixed_script_normalize(g_research.seed_mask, sizeof(g_research.seed_mask));
 	if(g_research.submode != RSUB_RANDOM)
 		research_print_banner();
 	
@@ -4384,8 +4398,13 @@ void *thread_process_mnemonic(void *vargp) {
 	int use_eth_pack = g_research.eth_coin_type || FLAGMNEMONIC_ETH ||
 	                   g_research.path_pack == RPACK_ETH;
 	int npaths = 0;
-	if(g_research.path_pack == RPACK_CUSTOM && g_research.path_pack_file[0])
+	if(g_research.submode == RSUB_DESCRIPTOR && g_research.descriptor_file[0])
+		npaths = research_load_descriptor_file(paths, 512, g_research.descriptor_file);
+	else if(g_research.path_pack == RPACK_CUSTOM && g_research.path_pack_file[0])
 		npaths = research_load_custom_path_file(paths, 512, g_research.path_pack_file);
+	else if(g_research.path_pack == RPACK_GAP_LIMIT || g_research.submode == RSUB_GAP_LIMIT)
+		npaths = research_build_gap_limit_pack(paths, 512, g_research.gap_limit,
+		                                      g_research.include_bip86);
 	else
 		npaths = research_build_path_pack(paths, 512, g_research.path_pack, index_max,
 		                                  g_research.include_change, g_research.include_bip86,
@@ -4393,15 +4412,28 @@ void *thread_process_mnemonic(void *vargp) {
 
 	if(g_research.submode == RSUB_PREFIX_WORD && g_research.seed_mask[0])
 		research_prepare_prefix_word_mask(bip39_wordlist, bip39_wordlist_size);
-	if(g_research.submode == RSUB_LANGUAGE_GUESS)
-		research_guess_language(bip39_all_wordlists, bip39_all_sizes, NUM_BIP39_LANGUAGES);
+	if(g_research.submode == RSUB_LANGUAGE_GUESS || g_research.submode == RSUB_MIXED_SCRIPT) {
+		int pin = research_apply_language_guess(bip39_all_wordlists, bip39_all_sizes,
+		                                       NUM_BIP39_LANGUAGES);
+		if(pin >= 0 && bip39_all_wordlists[pin] && bip39_all_sizes[pin] == 2048) {
+			bip39_wordlist = bip39_all_wordlists[pin];
+			bip39_wordlist_size = bip39_all_sizes[pin];
+			FLAGMNEMONIC_ALL_LANGS = 0;
+			g_research.prism_langs = 0;
+		}
+	}
 
 	if(g_research.submode != RSUB_RANDOM)
 		printf("[+] Mnemonic research thread %d submode=%d paths=%d\n",
 		       thread_number, g_research.submode, npaths);
 
 	while(continue_flag) {
-		if(FLAGMNEMONIC_ALL_LANGS || g_research.prism_langs) {
+		if(g_research.language_pin >= 0 && g_research.language_pin < NUM_BIP39_LANGUAGES &&
+		   bip39_all_wordlists[g_research.language_pin] &&
+		   bip39_all_sizes[g_research.language_pin] == 2048) {
+			bip39_wordlist = bip39_all_wordlists[g_research.language_pin];
+			bip39_wordlist_size = bip39_all_sizes[g_research.language_pin];
+		} else if(FLAGMNEMONIC_ALL_LANGS || g_research.prism_langs) {
 			if(bip39_all_wordlists[all_lang_counter] == NULL || bip39_all_sizes[all_lang_counter] != 2048) {
 				all_lang_counter = (all_lang_counter + 1) % NUM_BIP39_LANGUAGES;
 				steps[thread_number]++;
@@ -4428,8 +4460,10 @@ void *thread_process_mnemonic(void *vargp) {
 		                g_research.submode == RSUB_LANGUAGE_GUESS ||
 		                g_research.submode == RSUB_PASS_DICT || g_research.submode == RSUB_PASS_MASK ||
 		                g_research.submode == RSUB_PASS_RULES || g_research.submode == RSUB_PASS_HYBRID ||
-		                g_research.submode == RSUB_PASS_EMPTY_PLUS ||
-		                g_research.submode == RSUB_BIP85 || g_research.submode == RSUB_RFC1751);
+		                g_research.submode == RSUB_PASS_EMPTY_PLUS || g_research.submode == RSUB_PASS_LATTICE ||
+		                g_research.submode == RSUB_BIP85 || g_research.submode == RSUB_RFC1751 ||
+		                g_research.submode == RSUB_MIXED_SCRIPT || g_research.submode == RSUB_GAP_LIMIT ||
+		                g_research.submode == RSUB_DESCRIPTOR);
 
 		if(recovery && g_research.seed_mask[0]) {
 			if(g_research.submode == RSUB_POSITIONAL_SWAP) {
@@ -4586,6 +4620,10 @@ void *thread_process_mnemonic(void *vargp) {
 					                  derived_key, derived_chain);
 					int at = paths[pi].addr_type;
 					int is_eth = (at == 4) || FLAGMNEMONIC_ETH;
+					if(g_research.script_tag == 1 && at != 0) continue;
+					if(g_research.script_tag == 2 && at != 2) continue;
+					if(g_research.script_tag == 3 && at != 3) continue;
+					if(g_research.script_tag == 4 && !is_eth) continue;
 
 					if(use_gpu && batch_privs && at == 0 && !is_eth) {
 						memcpy(batch_privs + (size_t)batch_n * 32, derived_key, 32);
@@ -4619,14 +4657,37 @@ void *thread_process_mnemonic(void *vargp) {
 								snprintf(found_address + 2 + ii * 2, 3, "%02x", addr_hash[ii]);
 							r = address_check(addr_hash, 20);
 							if(r) r = searchbinary(addressTable, (char*)addr_hash, N);
-							if(r && research_dual_target_hit(addr_hash, 1)) hit_ok = 1;
+							if(r && research_dual_target_hit(addr_hash, 1) &&
+							   research_funded_hit(addr_hash)) {
+								hit_ok = 1;
+								if(research_dual_needs_btc()) {
+									/* also require BTC dual hash via BIP84/0/0 */
+									uint8_t bk[32], bc[32], bh[20];
+									uint32_t bp[5] = {0x80000054, 0x80000000, 0x80000000, 0, 0};
+									bip32_derive_path(master_key, master_chain, bp, 5, bk, bc);
+									compute_address_hash(bk, 2, bh);
+									if(!research_dual_btc_match(bh)) hit_ok = 0;
+								}
+							}
 						} else {
 							int use_at = (at <= 2) ? at : 0;
 							compute_address_hash(derived_key, use_at, addr_hash);
 							rmd160toaddress_dst((char*)addr_hash, found_address);
 							r = address_check(addr_hash, 20);
 							if(r) r = searchbinary(addressTable, (char*)addr_hash, N);
-							if(r && research_dual_target_hit(addr_hash, 0)) hit_ok = 1;
+							if(r && research_dual_target_hit(addr_hash, 0) &&
+							   research_funded_hit(addr_hash)) {
+								hit_ok = 1;
+								if(research_dual_needs_eth()) {
+									uint8_t ek[32], ec[32], eh[20];
+									uint32_t ep[5] = {0x8000002C, 0x8000003C, 0x80000000, 0, 0};
+									bip32_derive_path(master_key, master_chain, ep, 5, ek, ec);
+									Int eki; eki.Set32Bytes(ek);
+									Point epk = secp->ComputePublicKey(&eki);
+									generate_binaddress_eth(epk, eh);
+									if(!research_dual_eth_match(eh)) hit_ok = 0;
+								}
+							}
 						}
 
 						if(hit_ok) {
@@ -4751,18 +4812,43 @@ void *thread_process_mnemonic(void *vargp) {
 		   g_research.pass_mask[0] || g_research.pass_rules_file[0] ||
 		   g_research.submode == RSUB_PASS_DICT ||
 		   g_research.submode == RSUB_PASS_MASK || g_research.submode == RSUB_PASS_RULES ||
-		   g_research.submode == RSUB_PASS_HYBRID) {
+		   g_research.submode == RSUB_PASS_HYBRID || g_research.submode == RSUB_PASS_LATTICE) {
 			if(try_one_pass("")) hit = 1;
+			if(!hit && (g_research.submode == RSUB_PASS_EMPTY_PLUS)) {
+				uint64_t estate = 0;
+				char ebuf[128];
+				while(!hit && research_pass_empty_plus_next(&estate, ebuf, sizeof(ebuf))) {
+					if(try_one_pass(ebuf)) hit = 1;
+				}
+			}
+			if(!hit && (g_research.submode == RSUB_PASS_LATTICE || g_research.pass_grammar[0])) {
+				uint64_t lstate = 0;
+				char lbuf[128];
+				while(!hit && research_pass_lattice_next(&lstate, lbuf, sizeof(lbuf))) {
+					if(try_one_pass(lbuf)) hit = 1;
+					if(lstate > 20000ULL) break;
+				}
+			}
 			if(!hit && pass_fp) {
 				while(fgets(pass_line, sizeof(pass_line), pass_fp)) {
 					if(!research_pass_from_dict_line(pass_line, passphrase, sizeof(passphrase)))
 						continue;
 					if(try_one_pass(passphrase)) { hit = 1; break; }
+					if(!hit && g_research.submode == RSUB_PASS_HYBRID && g_research.pass_mask[0]) {
+						uint64_t hstate = 0;
+						char hbuf[160];
+						while(research_pass_hybrid_combine(passphrase, g_research.pass_mask,
+						                                   &hstate, hbuf, sizeof(hbuf))) {
+							if(try_one_pass(hbuf)) { hit = 1; break; }
+							if(hstate > 200000ULL) break;
+						}
+						if(hit) break;
+					}
 				}
 				if(g_research.seed_mask[0] && strchr(g_research.seed_mask, '?') == NULL)
 					rewind(pass_fp);
 			}
-			if(!hit && g_research.pass_mask[0]) {
+			if(!hit && g_research.pass_mask[0] && g_research.submode != RSUB_PASS_HYBRID) {
 				uint64_t pstate = 0;
 				char pbuf[128];
 				while(research_pass_mask_next(g_research.pass_mask, &pstate, pbuf, sizeof(pbuf))) {

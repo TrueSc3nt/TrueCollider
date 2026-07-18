@@ -28,6 +28,9 @@ static void research_init_defaults(void) {
 	g_research.include_change = 1;
 	g_research.include_bip86 = 1;
 	g_research.account_max = 0;
+	g_research.gap_limit = 20;
+	g_research.language_pin = -1;
+	g_research.script_tag = 0;
 	g_research.bsgs_strategy = 0;
 	g_research.bsgs_name[0] = 0;
 }
@@ -40,7 +43,8 @@ int research_parse_submode(const char *name) {
 		"electrum-v1","electrum-v2","slip39","aezeed","bip85","rfc1751","solana-bip39",
 		"milksad","lattice","checksum-prism",
 		"paths-btc","paths-eth","paths-electrum","paths-custom","account-sweep","multisig",
-		"profanity","android-sr","randstorm","timestamp-key","hex-mask","wif-mask"
+		"profanity","android-sr","randstorm","timestamp-key","hex-mask","wif-mask",
+		"pass-lattice","gap-limit","descriptor"
 	};
 	research_init_defaults();
 	if(!name) return -1;
@@ -62,6 +66,8 @@ int research_parse_path_pack(const char *name) {
 		return RPACK_CUSTOM;
 	if(strcmp(name, "account-sweep") == 0)
 		return RPACK_ACCOUNT_SWEEP;
+	if(strcmp(name, "gap-limit") == 0 || strcmp(name, "gap") == 0)
+		return RPACK_GAP_LIMIT;
 	return RPACK_BTC_STD;
 }
 
@@ -192,6 +198,57 @@ int research_consume_long_flags(int *argc, char **argv) {
 				if(g_research.submode == RSUB_RANDOM || g_research.submode == RSUB_MILKSAD)
 					g_research.submode = RSUB_HEX_MASK;
 				printf("[+] Key/hex mask: %s\n", g_research.key_mask);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--wif-mask") == 0) {
+			if(take_arg(argc, argv, i, g_research.key_mask, sizeof(g_research.key_mask)) == 0) {
+				g_research.submode = RSUB_WIF_MASK;
+				printf("[+] WIF mask: %s\n", g_research.key_mask);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--gap-limit") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.gap_limit = atoi(buf);
+				if(g_research.gap_limit < 1) g_research.gap_limit = 1;
+				if(g_research.gap_limit > 200) g_research.gap_limit = 200;
+				g_research.path_pack = RPACK_GAP_LIMIT;
+				if(g_research.submode == RSUB_RANDOM) g_research.submode = RSUB_GAP_LIMIT;
+				printf("[+] Gap-limit: %d\n", g_research.gap_limit);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--descriptor") == 0 || strcmp(a, "--descriptor-file") == 0) {
+			if(take_arg(argc, argv, i, g_research.descriptor_file, sizeof(g_research.descriptor_file)) == 0) {
+				g_research.submode = RSUB_DESCRIPTOR;
+				g_research.path_pack = RPACK_CUSTOM;
+				printf("[+] Descriptor file: %s\n", g_research.descriptor_file);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--script-tag") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				if(strcmp(buf, "p2pkh") == 0 || strcmp(buf, "44") == 0) g_research.script_tag = 1;
+				else if(strcmp(buf, "p2wpkh") == 0 || strcmp(buf, "84") == 0) g_research.script_tag = 2;
+				else if(strcmp(buf, "p2tr") == 0 || strcmp(buf, "86") == 0) g_research.script_tag = 3;
+				else if(strcmp(buf, "eth") == 0) g_research.script_tag = 4;
+				else g_research.script_tag = 0;
+				printf("[+] Script-tag filter: %s\n", buf);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--pass-grammar") == 0) {
+			if(take_arg(argc, argv, i, g_research.pass_grammar, sizeof(g_research.pass_grammar)) == 0) {
+				g_research.submode = RSUB_PASS_LATTICE;
+				printf("[+] Pass lattice / grammar: %s\n", g_research.pass_grammar);
 				touched++;
 				continue;
 			}
@@ -620,6 +677,9 @@ int research_build_path_pack(ResearchPath *out, int max_out, int pack, int index
 
 	if(pack == RPACK_CUSTOM)
 		return 0;
+
+	if(pack == RPACK_GAP_LIMIT)
+		return research_build_gap_limit_pack(out, max_out, g_research.gap_limit, include_bip86);
 
 	/* BTC standard PathNova (+ account-sweep over account' ) */
 	const struct { uint32_t purp; int atype; const char *name; int needs86; } rows[] = {

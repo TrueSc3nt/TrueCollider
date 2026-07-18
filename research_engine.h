@@ -48,6 +48,9 @@ enum {
 	RSUB_TIMESTAMP_KEY,
 	RSUB_HEX_MASK,
 	RSUB_WIF_MASK,
+	RSUB_PASS_LATTICE,
+	RSUB_GAP_LIMIT,
+	RSUB_DESCRIPTOR,
 	RSUB_COUNT
 };
 
@@ -65,7 +68,8 @@ enum {
 	RPACK_ETH,
 	RPACK_ELECTRUM,
 	RPACK_CUSTOM,
-	RPACK_ACCOUNT_SWEEP
+	RPACK_ACCOUNT_SWEEP,
+	RPACK_GAP_LIMIT
 };
 
 typedef struct {
@@ -100,8 +104,19 @@ typedef struct {
 	int dual_loaded;
 	uint8_t dual_hash[20];
 	int dual_is_eth;
+	int dual_has_btc;
+	int dual_has_eth;
+	uint8_t dual_btc[20];
+	uint8_t dual_eth[20];
 	int density_count;
 	double *density_cdf;
+	int gap_limit;               /* receive/change 0..gap_limit */
+	int language_pin;            /* >=0 pins BIP39 language index */
+	int script_tag;              /* 0 any, 1 p2pkh, 2 p2wpkh, 3 p2tr, 4 eth */
+	int funded_count;
+	uint8_t *funded_hashes;      /* funded_count * 20 */
+	char descriptor_file[512];
+	char pass_grammar[512];
 } ResearchConfig;
 
 extern ResearchConfig g_research;
@@ -189,9 +204,22 @@ int research_load_density_map(const char *path);
 double research_density_sample_u(uint64_t step);
 int research_dual_target_load(void);
 int research_dual_target_hit(const uint8_t *h20, int is_eth);
+int research_dual_needs_eth(void);
+int research_dual_needs_btc(void);
+int research_dual_eth_match(const uint8_t *h20);
+int research_dual_btc_match(const uint8_t *h20);
 int research_prepare_model_mask(void);
 int research_prepare_prefix_word_mask(char **wordlist, int wordlist_size);
 int research_guess_language(char ***wordlists, const int *sizes, int nlangs);
+int research_apply_language_guess(char ***wordlists, const int *sizes, int nlangs);
+int research_wif_mask_next(uint64_t *state, uint8_t out32[32]);
+int research_pass_empty_plus_next(uint64_t *state, char *out, size_t out_sz);
+int research_pass_hybrid_combine(const char *base, const char *mask,
+                                 uint64_t *state, char *out, size_t out_sz);
+int research_pass_lattice_next(uint64_t *state, char *out, size_t out_sz);
+int research_mixed_script_normalize(char *inout, size_t inout_sz);
+int research_funded_load(const char *path);
+int research_funded_hit(const uint8_t *h20);
 
 #ifdef __cplusplus
 }
@@ -207,6 +235,9 @@ struct ResearchPath {
 int research_build_path_pack(ResearchPath *out, int max_out, int pack, int index_max,
                              int include_change, int include_bip86, int eth);
 int research_load_custom_path_file(ResearchPath *out, int max_out, const char *path);
+int research_load_descriptor_file(ResearchPath *out, int max_out, const char *path);
+int research_build_gap_limit_pack(ResearchPath *out, int max_out, int gap_limit,
+                                  int include_bip86);
 
 #endif /* __cplusplus */
 
