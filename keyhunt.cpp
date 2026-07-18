@@ -4405,6 +4405,11 @@ void *thread_process_mnemonic(void *vargp) {
 	else if(g_research.path_pack == RPACK_GAP_LIMIT || g_research.submode == RSUB_GAP_LIMIT)
 		npaths = research_build_gap_limit_pack(paths, 512, g_research.gap_limit,
 		                                      g_research.include_bip86);
+	else if(g_research.path_pack == RPACK_MULTICOIN)
+		npaths = research_build_multicoin_pack(paths, 512,
+		                                      g_research.account_max > 0 ? g_research.account_max : 10,
+		                                      index_max, g_research.include_change,
+		                                      g_research.include_bip86);
 	else
 		npaths = research_build_path_pack(paths, 512, g_research.path_pack, index_max,
 		                                  g_research.include_change, g_research.include_bip86,

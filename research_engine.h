@@ -69,7 +69,8 @@ enum {
 	RPACK_ELECTRUM,
 	RPACK_CUSTOM,
 	RPACK_ACCOUNT_SWEEP,
-	RPACK_GAP_LIMIT
+	RPACK_GAP_LIMIT,
+	RPACK_MULTICOIN
 };
 
 typedef struct {
@@ -238,6 +239,8 @@ int research_load_custom_path_file(ResearchPath *out, int max_out, const char *p
 int research_load_descriptor_file(ResearchPath *out, int max_out, const char *path);
 int research_build_gap_limit_pack(ResearchPath *out, int max_out, int gap_limit,
                                   int include_bip86);
+int research_build_multicoin_pack(ResearchPath *out, int max_out, int account_max,
+                                  int index_max, int include_change, int include_bip86);
 
 #endif /* __cplusplus */
 

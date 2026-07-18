@@ -788,4 +788,87 @@ int research_load_descriptor_file(ResearchPath *out, int max_out, const char *pa
 	return n;
 }
 
+int research_build_multicoin_pack(ResearchPath *out, int max_out, int account_max,
+                                  int index_max, int include_change, int include_bip86) {
+	/* SLIP-44 main coins — account 0..account_max, index 0..index_max-1 */
+	if(account_max < 0) account_max = 0;
+	if(account_max > 50) account_max = 50;
+	if(index_max < 1) index_max = 1;
+	if(index_max > 100) index_max = 100;
+	struct CoinRow {
+		uint32_t coin; /* SLIP-44 */
+		int atype;     /* 0 p2pkh-style, 4 eth */
+		int btc_scripts; /* also emit 49/84/86 for BTC-like */
+		const char *name;
+	};
+	const CoinRow coins[] = {
+		{0, 0, 1, "BTC"},
+		{2, 0, 1, "LTC"},
+		{3, 0, 0, "DOGE"},
+		{145, 0, 1, "BCH"},
+		{156, 0, 0, "BTG"},
+		{144, 0, 0, "XRP"},
+		{60, 4, 0, "ETH"},
+		{61, 4, 0, "ETC"},
+		{714, 4, 0, "BNB"},
+		{966, 4, 0, "POL"},
+		{9000, 4, 0, "AVAX"},
+		{118, 0, 0, "ATOM"},
+		{195, 0, 0, "TRX"},
+		{501, 0, 0, "SOL-slip44"}, /* note: Solana usually ed25519 slip10 */
+	};
+	int n = 0;
+	for(size_t c = 0; c < sizeof(coins) / sizeof(coins[0]) && n < max_out; c++) {
+		uint32_t coin_h = 0x80000000u | coins[c].coin;
+		/* BIP44 m/44'/coin'/account'/change/index */
+		for(int acct = 0; acct <= account_max && n < max_out; acct++) {
+			uint32_t acct_h = 0x80000000u | (uint32_t)acct;
+			for(int ch = 0; ch <= (include_change ? 1 : 0) && n < max_out; ch++) {
+				for(int i = 0; i < index_max && n < max_out; i++) {
+					out[n].indices[0] = 0x8000002C;
+					out[n].indices[1] = coin_h;
+					out[n].indices[2] = acct_h;
+					out[n].indices[3] = (uint32_t)ch;
+					out[n].indices[4] = (uint32_t)i;
+					out[n].indices[5] = out[n].indices[6] = out[n].indices[7] = 0;
+					out[n].len = 5;
+					out[n].addr_type = coins[c].atype;
+					out[n].name = coins[c].name;
+					n++;
+				}
+			}
+		}
+		if(!coins[c].btc_scripts) continue;
+		/* BIP49 / BIP84 / BIP86 for UTXO coins (coin type still 0' for BTC; LTC uses 2') */
+		const struct { uint32_t purp; int atype; } scripts[] = {
+			{0x80000031, 1},
+			{0x80000054, 2},
+			{0x80000056, 3},
+		};
+		for(size_t s = 0; s < sizeof(scripts) / sizeof(scripts[0]) && n < max_out; s++) {
+			if(scripts[s].atype == 3 && !include_bip86) continue;
+			for(int acct = 0; acct <= account_max && n < max_out; acct++) {
+				uint32_t acct_h = 0x80000000u | (uint32_t)acct;
+				for(int ch = 0; ch <= (include_change ? 1 : 0) && n < max_out; ch++) {
+					for(int i = 0; i < index_max && n < max_out; i++) {
+						out[n].indices[0] = scripts[s].purp;
+						out[n].indices[1] = coin_h;
+						out[n].indices[2] = acct_h;
+						out[n].indices[3] = (uint32_t)ch;
+						out[n].indices[4] = (uint32_t)i;
+						out[n].indices[5] = out[n].indices[6] = out[n].indices[7] = 0;
+						out[n].len = 5;
+						out[n].addr_type = scripts[s].atype;
+						out[n].name = coins[c].name;
+						n++;
+					}
+				}
+			}
+		}
+	}
+	printf("[+] Multicoin PathNova: %d paths (accounts 0..%d indices %d)\n",
+	       n, account_max, index_max);
+	return n;
+}
+
 #endif /* __cplusplus */

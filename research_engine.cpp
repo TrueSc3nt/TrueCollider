@@ -68,6 +68,9 @@ int research_parse_path_pack(const char *name) {
 		return RPACK_ACCOUNT_SWEEP;
 	if(strcmp(name, "gap-limit") == 0 || strcmp(name, "gap") == 0)
 		return RPACK_GAP_LIMIT;
+	if(strcmp(name, "multicoin") == 0 || strcmp(name, "all-coins") == 0 ||
+	   strcmp(name, "paths-all") == 0)
+		return RPACK_MULTICOIN;
 	return RPACK_BTC_STD;
 }
 
@@ -680,6 +683,12 @@ int research_build_path_pack(ResearchPath *out, int max_out, int pack, int index
 
 	if(pack == RPACK_GAP_LIMIT)
 		return research_build_gap_limit_pack(out, max_out, g_research.gap_limit, include_bip86);
+
+	if(pack == RPACK_MULTICOIN) {
+		int amax = g_research.account_max > 0 ? g_research.account_max : 10;
+		return research_build_multicoin_pack(out, max_out, amax, index_max,
+		                                    include_change, include_bip86);
+	}
 
 	/* BTC standard PathNova (+ account-sweep over account' ) */
 	const struct { uint32_t purp; int atype; const char *name; int needs86; } rows[] = {
