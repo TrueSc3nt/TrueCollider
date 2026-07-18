@@ -37,6 +37,54 @@ static void research_init_defaults(void) {
 	g_research.collider_htsz = 0;
 	g_research.collider_baby_bits = 0;
 	g_research.collider_autosave_sec = 0;
+	g_research.collider_bsgs_mode = 0;
+	g_research.collider_walk_keys = 0;
+}
+
+static int walk_ieq(const char *a, const char *b) {
+	if(!a || !b) return 0;
+	while(*a && *b) {
+		if(tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+		a++; b++;
+	}
+	return *a == 0 && *b == 0;
+}
+
+uint64_t research_parse_walk_keys(const char *s) {
+	if(!s || !s[0]) return 0;
+	char buf[64];
+	strncpy(buf, s, sizeof(buf) - 1);
+	buf[sizeof(buf) - 1] = 0;
+	char *p = buf;
+	while(*p == ' ' || *p == '\t') p++;
+	size_t n = strlen(p);
+	while(n > 0 && (p[n - 1] == ' ' || p[n - 1] == '\t')) p[--n] = 0;
+	if(n == 0) return 0;
+	if(walk_ieq(p, "million") || walk_ieq(p, "1million") || walk_ieq(p, "1m"))
+		return 1000000ULL;
+	if(walk_ieq(p, "billion") || walk_ieq(p, "1billion") || walk_ieq(p, "1b") || walk_ieq(p, "1g"))
+		return 1000000000ULL;
+	if(walk_ieq(p, "trillion") || walk_ieq(p, "1trillion") || walk_ieq(p, "1t"))
+		return 1000000000000ULL;
+	/* suffixes: K/M/B/G/T */
+	double mul = 1.0;
+	char last = (char)tolower((unsigned char)p[n - 1]);
+	if((last == 'k' || last == 'm' || last == 'b' || last == 'g' || last == 't') &&
+	   n >= 2 && (isdigit((unsigned char)p[n - 2]) || p[n - 2] == '.')) {
+		if(last == 'k') mul = 1e3;
+		else if(last == 'm') mul = 1e6;
+		else if(last == 'b' || last == 'g') mul = 1e9;
+		else mul = 1e12;
+		p[n - 1] = 0;
+	}
+	if(p[0] == '0' && (p[1] == 'x' || p[1] == 'X'))
+		return (uint64_t)strtoull(p, NULL, 16);
+	char *end = NULL;
+	double v = strtod(p, &end);
+	if(end == p) return 0;
+	if(v < 0) v = 0;
+	if(v * mul > (double)UINT64_MAX) return UINT64_MAX;
+	return (uint64_t)(v * mul + 0.5);
 }
 
 int research_parse_submode(const char *name) {
@@ -469,6 +517,44 @@ int collider_consume_flags(int *argc, char **argv) {
 				continue;
 			}
 		}
+		if(strcmp(a, "--mode") == 0 || strcmp(a, "--bsgs-mode") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.collider_force_bsgs = 1;
+				if(walk_ieq(buf, "sequential") || walk_ieq(buf, "seq")) {
+					g_research.collider_bsgs_mode = 1;
+					printf("[+] Collider --mode sequential\n");
+				} else if(walk_ieq(buf, "random") || walk_ieq(buf, "rand") || walk_ieq(buf, "r")) {
+					g_research.collider_bsgs_mode = 2;
+					printf("[+] Collider --mode random\n");
+				} else if(walk_ieq(buf, "rseq") || walk_ieq(buf, "random-sequential") ||
+				          walk_ieq(buf, "random_sequential") || walk_ieq(buf, "rs")) {
+					g_research.collider_bsgs_mode = 3;
+					printf("[+] Collider --mode rseq (random start → sequential chunk → reseed)\n");
+				} else {
+					printf("[W] Collider --mode unknown '%s' (use sequential|random|rseq)\n", buf);
+				}
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--walk") == 0 || strcmp(a, "--chunk") == 0 || strcmp(a, "--rseq-n") == 0) {
+			char buf[64] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				uint64_t w = research_parse_walk_keys(buf);
+				if(w == 0) {
+					printf("[W] Collider --walk invalid '%s'\n", buf);
+				} else {
+					g_research.collider_walk_keys = w;
+					if(g_research.collider_bsgs_mode == 0)
+						g_research.collider_bsgs_mode = 3; /* imply rseq */
+					g_research.collider_force_bsgs = 1;
+					printf("[+] Collider --walk %" PRIu64 " keys/chunk (rseq)\n", w);
+				}
+				touched++;
+				continue;
+			}
+		}
 		i++;
 	}
 	return touched;
@@ -819,6 +905,7 @@ void research_print_banner(void) {
 	printf("[+] Research engine: mnemonic recovery / PathNova / MilkSad / Hilbert / Sobol / Shadow160 / ResidueHerd / Electrum / FuseCascade / OrbitBSGS / Collider-bridge / Multicoin\n");
 	printf("[+] GPU: -U cuda accelerates EC (BSGS GRP + mnemonic pubkey batch). BIP39 PBKDF2 remains host SHA512 (checksum-first).\n");
 	printf("[+] Collider aliases: --pb --pk --pke --infile --htsz --baby-bits --wl --wt\n");
+	printf("[+] Collider walk: --mode sequential|random|rseq  --walk 2M|1B|1T|0x100000\n");
 }
 
 int research_electrum_normalize(const char *in, char *out, size_t out_sz) {

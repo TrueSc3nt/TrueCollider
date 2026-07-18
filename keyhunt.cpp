@@ -347,7 +347,7 @@ int THREADOUTPUT = 0;
 char *bit_range_str_min;
 char *bit_range_str_max;
 
-const char *bsgs_modes[21] = {"sequential","backward","both","random","dance","grumpy","interleave","orbit","residue","dual-range","nested","fractal","async-resolve","multi-target","negmap","handoff","gravity-giant","chaos-giant","sobol-giant","freeze-table","compact-dp"};
+const char *bsgs_modes[22] = {"sequential","backward","both","random","dance","grumpy","interleave","orbit","residue","dual-range","nested","fractal","async-resolve","multi-target","negmap","handoff","gravity-giant","chaos-giant","sobol-giant","freeze-table","compact-dp","rseq"};
 const char *modes[16] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr","kangaroo","shadow160","weakrng","hybrid-dl","gaudry"};
 const char *cryptos[13] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol","auto"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
@@ -1026,8 +1026,12 @@ static void enable_random_sequential(const char *via) {
 	FLAGRANDOM = 1;
 	FLAGSEARCHMODE = SEARCHMODE_RSEQ;
 	FLAGBSGSMODE = 3;
+	if(g_research.collider_walk_keys == 0)
+		g_research.collider_walk_keys = RANDOM_SEQUENTIAL_DEFAULT_N;
 	printf("[+] Random-sequential mode (%s): random start in range, walk N keys, reseed\n", via);
-	printf("[+] Unlike plain -R alone for BSGS, -rs always uses random-base + sequential chunk\n");
+	printf("[+] Chunk size: %" PRIu64 " keys (set with --walk 2M|1B|1T)\n",
+	       g_research.collider_walk_keys);
+	printf("[+] Unlike plain -B random, rseq walks sequentially after each random base\n");
 }
 
 void notify_key_found(Int *found_key) {
@@ -1579,18 +1583,30 @@ int main(int argc, char **argv)	{
 			}
 		break;
 		case 'B':
-				index_value = indexOf(optarg,bsgs_modes,21);
+				index_value = indexOf(optarg,bsgs_modes,22);
 				if(index_value >= 0)	{
 					FLAGBSGSMODE = index_value;
 					g_research.bsgs_strategy = index_value;
 					strncpy(g_research.bsgs_name, optarg, sizeof(g_research.bsgs_name)-1);
-					if(index_value > 4) {
+					if(index_value == 21 || strcmp(optarg, "rseq") == 0) {
+						/* random-sequential: random base, walk --walk / -n keys, reseed */
+						FLAGRS = 1;
+						FLAGRANDOM = 1;
+						FLAGSEARCHMODE = SEARCHMODE_RSEQ;
+						FLAGBSGSMODE = 3; /* use random BSGS thread with rseq chunking */
+						printf("[+] BSGS mode rseq: random start → sequential chunk → reseed\n");
+						printf("[+] Set chunk with --walk 2M|1B|1T (default 1M keys)\n");
+					} else if(index_value > 4) {
 						printf("[+] BSGS research strategy: %s (live engine)\n", optarg);
 						if(strcmp(optarg,"orbit")==0 || strcmp(optarg,"negmap")==0) FLAGENDOMORPHISM = 1;
 						if(strcmp(optarg,"handoff")==0)
 							printf("[+] HerdHandoff pocket bits: %d\n", g_research.handoff_bits);
 					} else {
 						printf("[+] BSGS mode %s\n",optarg);
+						if(index_value == 3) {
+							FLAGRANDOM = 1;
+							FLAGSEARCHMODE = SEARCHMODE_RANDOM;
+						}
 					}
 				}
 				else	{
@@ -2182,6 +2198,39 @@ int main(int argc, char **argv)	{
 		FLAGMODE = MODE_BSGS;
 		printf("[+] Collider bridge: mode BSGS\n");
 	}
+	/* --mode sequential|random|rseq (+ optional --walk) */
+	if(g_research.collider_bsgs_mode == 1) {
+		FLAGBSGSMODE = 0;
+		FLAGRANDOM = 0;
+		FLAGRS = 0;
+		FLAGSEARCHMODE = SEARCHMODE_SEQUENTIAL;
+		printf("[+] Collider bridge: BSGS sequential\n");
+	} else if(g_research.collider_bsgs_mode == 2) {
+		FLAGBSGSMODE = 3;
+		FLAGRANDOM = 1;
+		FLAGRS = 0;
+		FLAGSEARCHMODE = SEARCHMODE_RANDOM;
+		printf("[+] Collider bridge: BSGS random\n");
+	} else if(g_research.collider_bsgs_mode == 3) {
+		FLAGBSGSMODE = 3;
+		FLAGRANDOM = 1;
+		FLAGRS = 1;
+		FLAGSEARCHMODE = SEARCHMODE_RSEQ;
+		if(g_research.collider_walk_keys == 0)
+			g_research.collider_walk_keys = RANDOM_SEQUENTIAL_DEFAULT_N;
+		printf("[+] Collider bridge: BSGS rseq, walk %" PRIu64 " keys/chunk\n",
+		       g_research.collider_walk_keys);
+	} else if(g_research.collider_force_bsgs && FLAGBSGSMODE == 0 && !FLAGRS) {
+		/* Collider default: random (not sequential) — matches Collider.exe -r style */
+		FLAGBSGSMODE = 3;
+		FLAGRANDOM = 1;
+		FLAGSEARCHMODE = SEARCHMODE_RANDOM;
+		printf("[+] Collider bridge: default BSGS random (use --mode sequential|rseq to change)\n");
+	}
+	if(g_research.collider_walk_keys > 0 && FLAGRS) {
+		printf("[+] Rseq walk chunk: %" PRIu64 " keys (override with --walk / -B rseq --walk)\n",
+		       g_research.collider_walk_keys);
+	}
 	if(g_research.collider_file[0] && (fileName == NULL || FLAGFILE == 0)) {
 		fileName = g_research.collider_file;
 		FLAGFILE = 1;
@@ -2406,7 +2455,9 @@ int main(int argc, char **argv)	{
 	}
 	init_generator();
 	if(FLAGMODE == MODE_BSGS )	{
-		if(FLAGBSGSMODE >= 0 && FLAGBSGSMODE < 21)
+		if(FLAGRS)
+			printf("[+] Mode BSGS rseq (random-sequential chunks)\n");
+		else if(FLAGBSGSMODE >= 0 && FLAGBSGSMODE < 22)
 			printf("[+] Mode BSGS %s\n",bsgs_modes[FLAGBSGSMODE]);
 		else
 			printf("[+] Mode BSGS (custom %d)\n", FLAGBSGSMODE);
@@ -8877,6 +8928,12 @@ void *thread_process_bsgs_random(void *vargp)	{
 	intaux.Mult(CPU_GRP_SIZE/2);
 	intaux.Add(&BSGS_M);
 
+	/* rseq: random base, then sequential giants covering --walk keys, then reseed */
+	Int rseq_cursor;
+	uint64_t rseq_giants_left = 0;
+	int use_rseq = (FLAGRS || FLAGSEARCHMODE == SEARCHMODE_RSEQ ||
+	                g_research.collider_bsgs_mode == 3);
+
 	do	{
 		
 	
@@ -8891,12 +8948,42 @@ void *thread_process_bsgs_random(void *vargp)	{
 		pthread_mutex_lock(&bsgs_thread);
 #endif
 
-		get_next_search_key(&base_key, &n_range_start, &n_range_end);
+		if(use_rseq) {
+			if(rseq_giants_left == 0) {
+				base_key.Rand(&n_range_start, &n_range_end);
+				rseq_cursor.Set(&base_key);
+				uint64_t walk = g_research.collider_walk_keys;
+				if(walk == 0) walk = RANDOM_SEQUENTIAL_DEFAULT_N;
+				/* giants needed ≈ walk / BSGS_N (each giant covers ~BSGS_N keys) */
+				Int walk_i; walk_i.SetInt64(walk);
+				Int per_i; per_i.Set(&BSGS_N);
+				if(per_i.IsZero()) per_i.SetInt32(1);
+				if(walk_i.IsLower(&per_i)) {
+					rseq_giants_left = 1; /* one giant already ≥ walk */
+				} else {
+					Int q; q.Set(&walk_i);
+					q.Div(&per_i);
+					rseq_giants_left = q.GetInt64();
+					if(rseq_giants_left < 1) rseq_giants_left = 1;
+				}
+			} else {
+				base_key.Set(&rseq_cursor);
+			}
+			rseq_cursor.Add(&BSGS_N_double);
+			if(rseq_giants_left > 0) rseq_giants_left--;
+		} else {
+			get_next_search_key(&base_key, &n_range_start, &n_range_end);
+		}
 #if defined(_MSC_VER)
 		ReleaseMutex(bsgs_thread);
 #else
 		pthread_mutex_unlock(&bsgs_thread);
 #endif
+
+		if(base_key.IsGreaterOrEqual(&n_range_end)) {
+			if(use_rseq) { rseq_giants_left = 0; continue; }
+			break;
+		}
 
 		/* Research giant starts (grumpy / LDS / chaos / gravity) */
 		if(FLAGBSGSMODE == 5 || strcmp(g_research.bsgs_name,"grumpy")==0) {
@@ -11548,7 +11635,10 @@ void menu() {
 	printf("                 reverse    - Inverted BSGS baby/giant step roles\n");
 	printf("                 auto       - Cycles: spiral->chaos->gravity->reverse\n");
 	printf("               Works with ALL modes including BSGS.\n");
-	printf("  -rs          Same as -x rseq: random start, sequential N chunk, reseed\n\n");
+	printf("  -rs          Same as -x rseq / -B rseq: random start, sequential chunk, reseed\n");
+	printf("  --mode MODE  Collider BSGS: sequential | random | rseq\n");
+	printf("  --walk N     Rseq chunk size in keys: 2M, 1B, 1T, 1000000, 0x100000\n");
+	printf("               (also --chunk). Default 1M. Implies --mode rseq if unset.\n\n");
 
 	printf("PERFORMANCE:\n");
 	printf("  -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)\n");

@@ -128,7 +128,14 @@ typedef struct {
 	int collider_baby_bits;      /* soft → -k / table sizing */
 	int collider_autosave_sec;   /* -wt */
 	char collider_workfile[512]; /* -wl */
+	/* Collider BSGS walk: 0=unset 1=sequential 2=random 3=rseq */
+	int collider_bsgs_mode;
+	/* Random-sequential chunk size in keys (0 = default 1M) */
+	uint64_t collider_walk_keys;
 } ResearchConfig;
+
+/* Parse walk size: 1000000, 1e6, 2M, 1B, 1T, 0x100000, … → keys */
+uint64_t research_parse_walk_keys(const char *s);
 
 extern ResearchConfig g_research;
 
