@@ -42,6 +42,12 @@ enum {
 	RSUB_PATHS_CUSTOM,
 	RSUB_ACCOUNT_SWEEP,
 	RSUB_MULTISIG,
+	RSUB_PROFANITY,
+	RSUB_ANDROID_SR,
+	RSUB_RANDSTORM,
+	RSUB_TIMESTAMP_KEY,
+	RSUB_HEX_MASK,
+	RSUB_WIF_MASK,
 	RSUB_COUNT
 };
 
@@ -84,12 +90,18 @@ typedef struct {
 	char dual_target_file[512];
 	char density_map_file[512];
 	char funded_file[512];
+	char key_mask[96];           /* hex/wif mask template with ? */
 	uint64_t milksad_t0;
 	uint64_t milksad_t1;
 	uint32_t mod_step;           /* residue M */
 	uint32_t mod_rem;            /* residue R */
 	int bsgs_strategy;           /* index into bsgs_modes[] (0..20); research >4 kept */
 	char bsgs_name[32];          /* "grumpy", "orbit", … */
+	int dual_loaded;
+	uint8_t dual_hash[20];
+	int dual_is_eth;
+	int density_count;
+	double *density_cdf;
 } ResearchConfig;
 
 extern ResearchConfig g_research;
@@ -168,6 +180,19 @@ int research_next_recovery_mnemonic(uint64_t *state, char *mnemonic_out, size_t 
                                     char **wordlist, int wordlist_size,
                                     int (*validate_fn)(const char *));
 
+int research_mnemonic_from_entropy(const uint8_t *entropy, int ent_bytes,
+                                   char **wordlist, int wordlist_size,
+                                   char *out, size_t out_sz);
+void research_weakrng_key(int submode, uint64_t cursor, uint8_t out32[32]);
+int research_hex_mask_next(uint64_t *state, uint8_t out32[32]);
+int research_load_density_map(const char *path);
+double research_density_sample_u(uint64_t step);
+int research_dual_target_load(void);
+int research_dual_target_hit(const uint8_t *h20, int is_eth);
+int research_prepare_model_mask(void);
+int research_prepare_prefix_word_mask(char **wordlist, int wordlist_size);
+int research_guess_language(char ***wordlists, const int *sizes, int nlangs);
+
 #ifdef __cplusplus
 }
 
@@ -181,6 +206,7 @@ struct ResearchPath {
 
 int research_build_path_pack(ResearchPath *out, int max_out, int pack, int index_max,
                              int include_change, int include_bip86, int eth);
+int research_load_custom_path_file(ResearchPath *out, int max_out, const char *path);
 
 #endif /* __cplusplus */
 

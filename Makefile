@@ -68,7 +68,7 @@ endif
 
 LIBS := -lm -lpthread
 
-OBJECTS := research_engine.o oldbloom.o bloom.o base58.o rmd160.o sha3.o keccak.o xxhash.o \
+OBJECTS := research_engine.o research_implants.o oldbloom.o bloom.o base58.o rmd160.o sha3.o keccak.o xxhash.o \
            util.o backend_config.o cpu_features.o Int.o Point.o SECP256K1.o \
            IntMod.o Random.o IntGroup.o gpu/gpu_dispatcher.o \
            hash/ripemd160.o hash/sha256.o hash/sha512.o \
@@ -219,4 +219,7 @@ else
 endif
 
 research_engine.o: research_engine.cpp research_engine.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+research_implants.o: research_implants.cpp research_engine.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@

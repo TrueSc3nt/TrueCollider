@@ -340,6 +340,8 @@ void increment_minikey_N(char *rawbuffer);
 	
 void KECCAK_256(uint8_t *source, size_t size,uint8_t *dst);
 void generate_binaddress_eth(Point &publickey,unsigned char *dst_address);
+void compute_taproot_output(Point &pubkey, uint8_t *x_only_out);
+int troot_searchbinary(struct troot_value *arr, uint8_t *data, int64_t array_length);
 
 int THREADOUTPUT = 0;
 char *bit_range_str_min;
@@ -796,7 +798,7 @@ void init_search_mode(Int *range_start, Int *range_end) {
 		case SEARCHMODE_HALTON:
 			printf("[+] Halton LDS coverage\n"); g_lds_step = 0; break;
 		case SEARCHMODE_DENSITY:
-			printf("[+] Density-map mode (Hilbert fallback until map file wired)\n"); g_lds_step = 0; break;
+			printf("[+] Density-map mode\n"); g_lds_step = 0; break;
 		default:
 			break;
 	}
@@ -896,6 +898,23 @@ void get_next_key_auto(Int *result, Int *range_start, Int *range_end) {
 }
 
 void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
+	if(g_research.submode == RSUB_HEX_MASK || g_research.submode == RSUB_WIF_MASK ||
+	   (g_research.key_mask[0] && g_research.submode != RSUB_MILKSAD)) {
+		uint8_t raw[32];
+		if(!research_hex_mask_next(&g_milksad_cursor, raw)) {
+			result->Set(range_end);
+			return;
+		}
+		result->Set32Bytes(raw);
+		return;
+	}
+	if(g_research.submode == RSUB_PROFANITY || g_research.submode == RSUB_ANDROID_SR ||
+	   g_research.submode == RSUB_RANDSTORM || g_research.submode == RSUB_TIMESTAMP_KEY) {
+		uint8_t raw[32];
+		research_weakrng_key(g_research.submode, g_milksad_cursor++, raw);
+		result->Set32Bytes(raw);
+		return;
+	}
 	if(g_research.submode == RSUB_MILKSAD && (g_research.milksad_t0 || g_research.milksad_t1)) {
 		uint64_t t0 = g_research.milksad_t0 ? g_research.milksad_t0 : 1;
 		uint64_t t1 = g_research.milksad_t1 ? g_research.milksad_t1 : (t0 + 0x100000000ULL);
@@ -903,7 +922,7 @@ void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
 		uint64_t cur = t0 + g_milksad_cursor;
 		if(cur > t1) { result->Set(range_end); return; }
 		uint8_t raw[32];
-		research_milksad_key((uint32_t)(cur & 0xffffffffu), raw);
+		research_weakrng_key(RSUB_MILKSAD, g_milksad_cursor, raw);
 		result->Set32Bytes(raw);
 		g_milksad_cursor++;
 		return;
@@ -945,7 +964,9 @@ void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
 				double inv = 0.5, v = 0.0;
 				while(n) { if(n & 1ULL) v += inv; n >>= 1; inv *= 0.5; }
 				u = v;
-			} else research_hilbert_u(g_lds_step++, &u);
+			} else if(FLAGSEARCHMODE == SEARCHMODE_DENSITY)
+				u = research_density_sample_u(g_lds_step++);
+			else research_hilbert_u(g_lds_step++, &u);
 			Int range_size; range_size.Set(range_end); range_size.Sub(range_start);
 			/* Map u into range via 53-bit fraction of range_size */
 			Int temp; temp.Set(&range_size);
@@ -2131,6 +2152,17 @@ int main(int argc, char **argv)	{
 			break;
 		}
 	}
+
+	if(g_research.density_map_file[0]) {
+		if(research_load_density_map(g_research.density_map_file))
+			FLAGSEARCHMODE = SEARCHMODE_DENSITY;
+	}
+	if(g_research.dual_target_file[0])
+		research_dual_target_load();
+	if(g_research.submode == RSUB_MODEL)
+		research_prepare_model_mask();
+	if(g_research.submode != RSUB_RANDOM)
+		research_print_banner();
 	
 	if(  FLAGBSGSMODE == MODE_BSGS && FLAGENDOMORPHISM)	{
 		fprintf(stderr,"[W] Endomorphism is not used in BSGS mode; disabling it automatically.\n");
@@ -4351,9 +4383,18 @@ void *thread_process_mnemonic(void *vargp) {
 	if(index_max < 1) index_max = 1;
 	int use_eth_pack = g_research.eth_coin_type || FLAGMNEMONIC_ETH ||
 	                   g_research.path_pack == RPACK_ETH;
-	int npaths = research_build_path_pack(paths, 512, g_research.path_pack, index_max,
-	                                      g_research.include_change, g_research.include_bip86,
-	                                      use_eth_pack);
+	int npaths = 0;
+	if(g_research.path_pack == RPACK_CUSTOM && g_research.path_pack_file[0])
+		npaths = research_load_custom_path_file(paths, 512, g_research.path_pack_file);
+	else
+		npaths = research_build_path_pack(paths, 512, g_research.path_pack, index_max,
+		                                  g_research.include_change, g_research.include_bip86,
+		                                  use_eth_pack);
+
+	if(g_research.submode == RSUB_PREFIX_WORD && g_research.seed_mask[0])
+		research_prepare_prefix_word_mask(bip39_wordlist, bip39_wordlist_size);
+	if(g_research.submode == RSUB_LANGUAGE_GUESS)
+		research_guess_language(bip39_all_wordlists, bip39_all_sizes, NUM_BIP39_LANGUAGES);
 
 	if(g_research.submode != RSUB_RANDOM)
 		printf("[+] Mnemonic research thread %d submode=%d paths=%d\n",
@@ -4479,10 +4520,11 @@ void *thread_process_mnemonic(void *vargp) {
 			uint8_t ent[32];
 			int nbytes = 16;
 			research_bip85_entropy(parent_seed, idx, word_count, ent, &nbytes);
-			unsigned int s = ((unsigned int)ent[0] << 24) | ((unsigned int)ent[1] << 16) |
-			                 ((unsigned int)ent[2] << 8) | (unsigned int)ent[3];
-			s ^= idx;
-			generate_mnemonic(mnemonic, word_count, &s);
+			if(!research_mnemonic_from_entropy(ent, nbytes, bip39_wordlist, bip39_wordlist_size,
+			                                  mnemonic, sizeof(mnemonic))) {
+				steps[thread_number]++;
+				continue;
+			}
 		} else if(g_research.submode == RSUB_MILKSAD && g_research.milksad_t0) {
 			uint64_t t0 = g_research.milksad_t0;
 			uint64_t t1 = g_research.milksad_t1 ? g_research.milksad_t1 : (t0 + 86400ULL * 365);
@@ -4492,10 +4534,12 @@ void *thread_process_mnemonic(void *vargp) {
 			uint8_t ent[32];
 			research_milksad_key((uint32_t)(cur & 0xffffffffu), ent);
 			int word_count = FLAGMNEMONIC_WORDS ? FLAGMNEMONIC_WORDS : 12;
-			unsigned int s = ((unsigned int)ent[0] << 24) | ((unsigned int)ent[1] << 16) |
-			                 ((unsigned int)ent[2] << 8) | (unsigned int)ent[3];
-			s ^= (unsigned int)(cur & 0xffffffffu);
-			generate_mnemonic(mnemonic, word_count, &s);
+			int ent_bytes = (word_count <= 12) ? 16 : (word_count <= 18) ? 24 : 32;
+			if(!research_mnemonic_from_entropy(ent, ent_bytes, bip39_wordlist, bip39_wordlist_size,
+			                                  mnemonic, sizeof(mnemonic))) {
+				steps[thread_number]++;
+				continue;
+			}
 		} else {
 			int word_count = FLAGMNEMONIC_WORDS;
 			if(FLAGMNEMONIC_WORDS == 0) {
@@ -4553,54 +4597,68 @@ void *thread_process_mnemonic(void *vargp) {
 					key_int->Set32Bytes(derived_key);
 					Point pubKey = secp->ComputePublicKey(key_int);
 
-					if(N > 0) {
+					if(N > 0 || (at == 3 && N_TROOT > 0)) {
 						uint8_t addr_hash[20];
 						char found_address[80];
-						if(is_eth) {
+						int hit_ok = 0;
+						if(at == 3) {
+							uint8_t troot_out[32];
+							compute_taproot_output(pubKey, troot_out);
+							found_address[0] = 'b'; found_address[1] = 'c';
+							found_address[2] = '1'; found_address[3] = 'p'; found_address[4] = 0;
+							char x_hex[65];
+							for(int b = 0; b < 32; b++) sprintf(x_hex + b * 2, "%02x", troot_out[b]);
+							strncat(found_address, x_hex, sizeof(found_address) - 5);
+							if(N_TROOT > 0 && trootTable &&
+							   troot_searchbinary(trootTable, troot_out, N_TROOT))
+								hit_ok = 1;
+						} else if(is_eth) {
 							generate_binaddress_eth(pubKey, addr_hash);
 							snprintf(found_address, sizeof(found_address), "0x");
 							for(int ii = 0; ii < 20; ii++)
 								snprintf(found_address + 2 + ii * 2, 3, "%02x", addr_hash[ii]);
+							r = address_check(addr_hash, 20);
+							if(r) r = searchbinary(addressTable, (char*)addr_hash, N);
+							if(r && research_dual_target_hit(addr_hash, 1)) hit_ok = 1;
 						} else {
-							int use_at = (at == 3) ? 2 : (at <= 2 ? at : 0);
+							int use_at = (at <= 2) ? at : 0;
 							compute_address_hash(derived_key, use_at, addr_hash);
 							rmd160toaddress_dst((char*)addr_hash, found_address);
+							r = address_check(addr_hash, 20);
+							if(r) r = searchbinary(addressTable, (char*)addr_hash, N);
+							if(r && research_dual_target_hit(addr_hash, 0)) hit_ok = 1;
 						}
 
-						r = address_check(addr_hash, 20);
-						if(r) {
-							r = searchbinary(addressTable, (char*)addr_hash, N);
-							if(r) {
-								char *hextemp = key_int->GetBase16();
-								printf("\n[+] MNEMONIC FOUND!\n");
-								printf("[+] Path: %s\n", paths[pi].name ? paths[pi].name : "?");
-								printf("[+] Mnemonic: %s\n", mnemonic);
-								if(pass && pass[0]) printf("[+] Passphrase: %s\n", pass);
-								printf("[+] Private Key (hex): %s\n", hextemp);
-								printf("[+] Address: %s\n", found_address);
+						if(hit_ok) {
+							char *hextemp = key_int->GetBase16();
+							printf("\n[+] MNEMONIC FOUND!\n");
+							printf("[+] Path: %s\n", paths[pi].name ? paths[pi].name : "?");
+							printf("[+] Mnemonic: %s\n", mnemonic);
+							if(pass && pass[0]) printf("[+] Passphrase: %s\n", pass);
+							printf("[+] Private Key (hex): %s\n", hextemp);
+							printf("[+] Address: %s\n", found_address);
 #if defined(_MSC_VER)
-								WaitForSingleObject(write_keys, INFINITE);
+							WaitForSingleObject(write_keys, INFINITE);
 #else
-								pthread_mutex_lock(&write_keys);
+							pthread_mutex_lock(&write_keys);
 #endif
-								FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
-								if(f) {
-									fprintf(f, "Path: %s\nMnemonic: %s\nPassphrase: %s\nPrivate Key: %s\nAddress: %s\n\n",
-										paths[pi].name ? paths[pi].name : "?", mnemonic,
-										pass ? pass : "", hextemp, found_address);
-									fclose(f);
-								}
-#if defined(_MSC_VER)
-								ReleaseMutex(write_keys);
-#else
-								pthread_mutex_unlock(&write_keys);
-#endif
-								free(hextemp);
-								notify_key_found(key_int);
-								delete key_int;
-								free(batch_privs);
-								return 1;
+							FILE *f = fopen("KEYFOUNDKEYFOUND.txt", "a");
+							if(f) {
+								fprintf(f, "Path: %s\nMnemonic: %s\nPassphrase: %s\nPrivate Key: %s\nAddress: %s\n\n",
+									paths[pi].name ? paths[pi].name : "?", mnemonic,
+									pass ? pass : "", hextemp, found_address);
+								fclose(f);
 							}
+#if defined(_MSC_VER)
+							ReleaseMutex(write_keys);
+#else
+							pthread_mutex_unlock(&write_keys);
+#endif
+							free(hextemp);
+							notify_key_found(key_int);
+							delete key_int;
+							free(batch_privs);
+							return 1;
 						}
 					}
 					delete key_int;
@@ -4690,8 +4748,10 @@ void *thread_process_mnemonic(void *vargp) {
 
 		int hit = 0;
 		if(g_research.submode == RSUB_PASS_EMPTY_PLUS || g_research.pass_file[0] ||
-		   g_research.pass_mask[0] || g_research.submode == RSUB_PASS_DICT ||
-		   g_research.submode == RSUB_PASS_MASK || g_research.submode == RSUB_PASS_HYBRID) {
+		   g_research.pass_mask[0] || g_research.pass_rules_file[0] ||
+		   g_research.submode == RSUB_PASS_DICT ||
+		   g_research.submode == RSUB_PASS_MASK || g_research.submode == RSUB_PASS_RULES ||
+		   g_research.submode == RSUB_PASS_HYBRID) {
 			if(try_one_pass("")) hit = 1;
 			if(!hit && pass_fp) {
 				while(fgets(pass_line, sizeof(pass_line), pass_fp)) {

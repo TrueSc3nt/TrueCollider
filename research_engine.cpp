@@ -39,7 +39,8 @@ int research_parse_submode(const char *name) {
 		"pass-dict","pass-mask","pass-rules","pass-hybrid","pass-empty-plus",
 		"electrum-v1","electrum-v2","slip39","aezeed","bip85","rfc1751","solana-bip39",
 		"milksad","lattice","checksum-prism",
-		"paths-btc","paths-eth","paths-electrum","paths-custom","account-sweep","multisig"
+		"paths-btc","paths-eth","paths-electrum","paths-custom","account-sweep","multisig",
+		"profanity","android-sr","randstorm","timestamp-key","hex-mask","wif-mask"
 	};
 	research_init_defaults();
 	if(!name) return -1;
@@ -161,6 +162,36 @@ int research_consume_long_flags(int *argc, char **argv) {
 		if(strcmp(a, "--density-map") == 0) {
 			if(take_arg(argc, argv, i, g_research.density_map_file, sizeof(g_research.density_map_file)) == 0) {
 				printf("[+] Density map: %s\n", g_research.density_map_file);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--path-file") == 0 || strcmp(a, "--pathfile") == 0) {
+			if(take_arg(argc, argv, i, g_research.path_pack_file, sizeof(g_research.path_pack_file)) == 0) {
+				g_research.path_pack = RPACK_CUSTOM;
+				g_research.submode = RSUB_PATHS_CUSTOM;
+				printf("[+] Custom path file: %s\n", g_research.path_pack_file);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--account-max") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.account_max = atoi(buf);
+				if(g_research.account_max < 0) g_research.account_max = 0;
+				if(g_research.account_max > 100) g_research.account_max = 100;
+				g_research.path_pack = RPACK_ACCOUNT_SWEEP;
+				printf("[+] Account-sweep max account: %d\n", g_research.account_max);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--key-mask") == 0 || strcmp(a, "--hex-mask") == 0) {
+			if(take_arg(argc, argv, i, g_research.key_mask, sizeof(g_research.key_mask)) == 0) {
+				if(g_research.submode == RSUB_RANDOM || g_research.submode == RSUB_MILKSAD)
+					g_research.submode = RSUB_HEX_MASK;
+				printf("[+] Key/hex mask: %s\n", g_research.key_mask);
 				touched++;
 				continue;
 			}
@@ -587,19 +618,30 @@ int research_build_path_pack(ResearchPath *out, int max_out, int pack, int index
 		return n;
 	}
 
-	/* BTC standard PathNova */
+	if(pack == RPACK_CUSTOM)
+		return 0;
+
+	/* BTC standard PathNova (+ account-sweep over account' ) */
 	const struct { uint32_t purp; int atype; const char *name; int needs86; } rows[] = {
 		{0x8000002C, 0, "BIP44", 0},
 		{0x80000031, 1, "BIP49", 0},
 		{0x80000054, 2, "BIP84", 0},
 		{0x80000056, 3, "BIP86", 1},
 	};
-	for(size_t r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
-		if(rows[r].needs86 && !include_bip86) continue;
-		for(int ch = 0; ch <= (include_change ? 1 : 0); ch++) {
-			for(int i = 0; i < index_max && n < max_out; i++) {
-				push(rows[r].purp, 0x80000000, 0x80000000, (uint32_t)ch, (uint32_t)i, 5,
-				     rows[r].atype, rows[r].name);
+	int acct_max = 0;
+	if(pack == RPACK_ACCOUNT_SWEEP) {
+		acct_max = g_research.account_max > 0 ? g_research.account_max : 5;
+		if(acct_max > 50) acct_max = 50;
+	}
+	for(int acct = 0; acct <= acct_max && n < max_out; acct++) {
+		uint32_t acct_i = 0x80000000u | (uint32_t)acct;
+		for(size_t r = 0; r < sizeof(rows) / sizeof(rows[0]); r++) {
+			if(rows[r].needs86 && !include_bip86) continue;
+			for(int ch = 0; ch <= (include_change ? 1 : 0); ch++) {
+				for(int i = 0; i < index_max && n < max_out; i++) {
+					push(rows[r].purp, 0x80000000, acct_i, (uint32_t)ch, (uint32_t)i, 5,
+					     rows[r].atype, rows[r].name);
+				}
 			}
 		}
 	}
