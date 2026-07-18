@@ -16,12 +16,14 @@ extern "C" {
 
 struct binaryfuse_wrapper {
     binary_fuse8_t filter;
+    binary_fuse16_t filter16;
     uint64_t *keys;
     uint32_t capacity;
     uint32_t count;
     int state;
     long double error;
     int use_bloom_fallback;
+    int use_fuse16; /* 1 = binary_fuse16 backend (huge lists) */
 };
 
 static inline void bf_init(struct binaryfuse_wrapper *bf, uint32_t expected, long double error) {
@@ -29,11 +31,19 @@ static inline void bf_init(struct binaryfuse_wrapper *bf, uint32_t expected, lon
     bf->count = 0;
     bf->state = BF_STATE_COLLECT;
     bf->error = error > 0 ? error : 0.000001;
+    bf->use_bloom_fallback = 0;
+    bf->use_fuse16 = 0;
     bf->keys = (uint64_t *)malloc(bf->capacity * sizeof(uint64_t));
     if (!bf->keys) {
         bf->capacity = 0;
     }
     memset(&bf->filter, 0, sizeof(binary_fuse8_t));
+    memset(&bf->filter16, 0, sizeof(binary_fuse16_t));
+}
+
+static inline void bf_init_fuse16(struct binaryfuse_wrapper *bf, uint32_t expected, long double error) {
+    bf_init(bf, expected, error);
+    bf->use_fuse16 = 1;
 }
 
 static inline int bf_add(struct binaryfuse_wrapper *bf, const void *buffer, int len) {
@@ -64,14 +74,26 @@ static inline int bf_build(struct binaryfuse_wrapper *bf) {
         bf->use_bloom_fallback = 1;
         return -1;
     }
-    if (!binary_fuse8_allocate(bf->count, &bf->filter)) {
-        bf->use_bloom_fallback = 1;
-        return -1;
-    }
-    if (!binary_fuse8_populate(bf->keys, bf->count, &bf->filter)) {
-        binary_fuse8_free(&bf->filter);
-        bf->use_bloom_fallback = 1;
-        return -1;
+    if (bf->use_fuse16) {
+        if (!binary_fuse16_allocate(bf->count, &bf->filter16)) {
+            bf->use_bloom_fallback = 1;
+            return -1;
+        }
+        if (!binary_fuse16_populate(bf->keys, bf->count, &bf->filter16)) {
+            binary_fuse16_free(&bf->filter16);
+            bf->use_bloom_fallback = 1;
+            return -1;
+        }
+    } else {
+        if (!binary_fuse8_allocate(bf->count, &bf->filter)) {
+            bf->use_bloom_fallback = 1;
+            return -1;
+        }
+        if (!binary_fuse8_populate(bf->keys, bf->count, &bf->filter)) {
+            binary_fuse8_free(&bf->filter);
+            bf->use_bloom_fallback = 1;
+            return -1;
+        }
     }
     free(bf->keys);
     bf->keys = NULL;
@@ -91,19 +113,25 @@ static inline int bf_check(struct binaryfuse_wrapper *bf, const void *buffer, in
             h = (h << 8) | p[i];
         }
     }
+    if (bf->use_fuse16)
+        return binary_fuse16_contain(h, &bf->filter16) ? 1 : 0;
     return binary_fuse8_contain(h, &bf->filter) ? 1 : 0;
 }
 
 static inline void bf_free(struct binaryfuse_wrapper *bf) {
     if (bf->keys) { free(bf->keys); bf->keys = NULL; }
     binary_fuse8_free(&bf->filter);
+    binary_fuse16_free(&bf->filter16);
     bf->count = 0;
     bf->capacity = 0;
     bf->state = 0;
+    bf->use_fuse16 = 0;
 }
 
 static inline size_t bf_size_in_bytes(struct binaryfuse_wrapper *bf) {
     if (bf->state == BF_STATE_BUILT) {
+        if (bf->use_fuse16)
+            return binary_fuse16_size_in_bytes(&bf->filter16);
         return binary_fuse8_size_in_bytes(&bf->filter);
     }
     return bf->capacity * sizeof(uint64_t);

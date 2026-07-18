@@ -23,6 +23,7 @@ add_library(truecollider_cuda STATIC
     secp256k1_cuda.cu
     ed25519_cuda.cu
     ed25519_cuda_host.cpp
+    pbkdf2_sha512_cuda.cu
 )
 
 target_include_directories(truecollider_cuda PUBLIC

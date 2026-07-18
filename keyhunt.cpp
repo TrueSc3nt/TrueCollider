@@ -348,7 +348,7 @@ char *bit_range_str_min;
 char *bit_range_str_max;
 
 const char *bsgs_modes[22] = {"sequential","backward","both","random","dance","grumpy","interleave","orbit","residue","dual-range","nested","fractal","async-resolve","multi-target","negmap","handoff","gravity-giant","chaos-giant","sobol-giant","freeze-table","compact-dp","rseq"};
-const char *modes[16] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr","kangaroo","shadow160","weakrng","hybrid-dl","gaudry"};
+const char *modes[20] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr","kangaroo","shadow160","weakrng","hybrid-dl","gaudry","CreateAccountWithSeed","wif-mask","hex-mask","kangaroo-mod"};
 const char *cryptos[13] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol","auto"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
 const char *searchmodes[12] = {"sequential","random","chaos","gravity","spiral","reverse","auto","rseq","hilbert","sobol","halton","density-map"};
@@ -1802,7 +1802,7 @@ int main(int argc, char **argv)	{
 				}
 			break;
 			case 'm':
-				switch(indexOf(optarg,modes,16)) {
+				switch(indexOf(optarg,modes,20)) {
 					case MODE_XPOINT: //xpoint
 						FLAGMODE = MODE_XPOINT;
 						printf("[+] Mode xpoint\n");
@@ -1879,6 +1879,29 @@ int main(int argc, char **argv)	{
 					case 15: /* gaudry */
 						FLAGMODE = MODE_KANGAROO;
 						printf("[+] Mode gaudry / ResidueHerd (--mod-step/--mod-rem)\n");
+					break;
+					case 16: /* CreateAccountWithSeed */
+						FLAGMODE = MODE_ADDRESS;
+						FLAGCRYPTO = CRYPTO_SOL;
+						FLAGSEARCHMODE = SEARCHMODE_RANDOM;
+						printf("[+] Mode CreateAccountWithSeed (Solana SHA256 vanity)\n");
+					break;
+					case 17: /* wif-mask */
+						FLAGMODE = MODE_ADDRESS;
+						g_research.submode = RSUB_WIF_MASK;
+						FLAGSEARCHMODE = SEARCHMODE_SEQUENTIAL;
+						printf("[+] Mode wif-mask (--key-mask / --seed WIF template)\n");
+					break;
+					case 18: /* hex-mask */
+						FLAGMODE = MODE_ADDRESS;
+						g_research.submode = RSUB_HEX_MASK;
+						FLAGSEARCHMODE = SEARCHMODE_SEQUENTIAL;
+						printf("[+] Mode hex-mask (--key-mask hex with ?)\n");
+					break;
+					case 19: /* kangaroo-mod */
+						FLAGMODE = MODE_KANGAROO;
+						g_research.kangaroo_mod = 1;
+						printf("[+] Mode kangaroo-mod (Pollard + --mod-step/--mod-rem)\n");
 					break;
 					default:
 						fprintf(stderr,"[E] Unknow mode value %s\n",optarg);
@@ -2400,6 +2423,14 @@ int main(int argc, char **argv)	{
 			FLAGMODE == MODE_XPOINT ? "xpoint" :
 			FLAGMODE == MODE_KANGAROO ? "kangaroo" : "other",
 			FLAGCRYPTO, NTHREADS, FLAGSEARCHMODE);
+		{
+			Int rs; rs.Set(&n_range_end); rs.Sub(&n_range_start); rs.AddOne();
+			uint64_t space = rs.GetInt64();
+			if(space == 0) space = 1ULL << 40;
+			double eta = research_dryrun_eta_seconds(space, 5e6);
+			printf("    honesty-ETA≈%.1f s (space≈%" PRIu64 " @ ~5M keys/s host guess)\n",
+			       eta, space);
+		}
 		printf("    GPU enabled=%d backend=%s batch=%u\n",
 			g_backend_config.gpu_enabled,
 			g_backend_config.gpu_backend == GPU_BACKEND_CUDA ? "cuda" :
@@ -2747,6 +2778,12 @@ int main(int argc, char **argv)	{
 				KFACTOR = rk;
 				printf("[+] BSGS auto -k %d (from ~%.1f GB RAM/-M)\n",
 					KFACTOR, ram ? (double)ram / (1024.0 * 1024.0 * 1024.0) : 0.0);
+				/* auto-k-eta: rough √N host estimate + kangaroo recommend */
+				Int rsz; rsz.Set(&n_range_end); rsz.Sub(&n_range_start); rsz.AddOne();
+				int rbits = rsz.GetBitLength();
+				double sqrt_ops = pow(2.0, (double)rbits * 0.5);
+				printf("[+] auto-k-eta: range~%d bits → BSGS ≈ %.2e√N ops; if bits≥70 prefer -m kangaroo\n",
+				       rbits, sqrt_ops);
 			}
 			if(!FLAG_N && rn) {
 				FLAG_N = 1;
@@ -4614,6 +4651,66 @@ void *thread_process_mnemonic(void *vargp) {
 				ends[thread_number] = 1;
 				break;
 			}
+		} else if(g_research.submode == RSUB_SLIP39) {
+			uint8_t seed64[64];
+			research_meters_bump(0);
+			if(!research_slip39_next_candidate(&mask_state, mnemonic, sizeof(mnemonic), seed64)) {
+				ends[thread_number] = 1;
+				break;
+			}
+			research_meters_bump(2);
+			uint8_t master_key[32], master_chain[32];
+			bip32_master_from_seed(seed64, master_key, master_chain);
+			uint8_t dk[32], dc[32], ah[20];
+			uint32_t path[5] = {0x8000002C, 0x80000000, 0x80000000, 0, 0};
+			bip32_derive_path(master_key, master_chain, path, 5, dk, dc);
+			compute_address_hash(dk, 0, ah);
+			research_meters_bump(3);
+			if(N > 0 && address_check(ah, 20) && searchbinary(addressTable, (char*)ah, N)) {
+				Int ki; ki.Set32Bytes(dk);
+				char *hx = ki.GetBase16();
+				printf("\n[+] SLIP39 FOUND! %s key=%s\n", mnemonic, hx);
+				research_found_jsonl("slip39", "btc", "m/44'/0'/0'/0/0", mnemonic, "", hx, "");
+				free(hx);
+				ends[thread_number] = 1;
+				return NULL;
+			}
+			steps[thread_number]++;
+			continue;
+		} else if(g_research.submode == RSUB_AEZEED) {
+			char passbuf[128];
+			uint64_t ps = mask_state++;
+			if(!research_pass_empty_plus_next(&ps, passbuf, sizeof(passbuf))) {
+				/* also try pass-mask / empty */
+				passbuf[0] = 0;
+				if(g_research.pass_mask[0]) {
+					uint64_t ms = mask_state;
+					if(!research_pass_mask_next(g_research.pass_mask, &ms, passbuf, sizeof(passbuf))) {
+						ends[thread_number] = 1;
+						break;
+					}
+					mask_state = ms;
+				}
+			}
+			uint8_t seed32[32];
+			const char *cipher = g_research.aezeed_cipher_hex[0] ? g_research.aezeed_cipher_hex : g_research.seed_mask;
+			if(!research_aezeed_try_pass(cipher, passbuf, seed32)) {
+				steps[thread_number]++;
+				continue;
+			}
+			Int ki; ki.Set32Bytes(seed32);
+			uint8_t ah[20];
+			compute_address_hash(seed32, 0, ah);
+			if(N > 0 && address_check(ah, 20) && searchbinary(addressTable, (char*)ah, N)) {
+				char *hx = ki.GetBase16();
+				printf("\n[+] aezeed FOUND! pass=%s key=%s\n", passbuf, hx);
+				research_found_jsonl("aezeed", "btc", "", "", passbuf, hx, "");
+				free(hx);
+				ends[thread_number] = 1;
+				return NULL;
+			}
+			steps[thread_number]++;
+			continue;
 		} else if(g_research.submode == RSUB_RFC1751) {
 			uint64_t cur = mask_state++;
 			uint8_t k8[8];
@@ -11840,6 +11937,13 @@ void menu() {
 bool vanityrmdmatch(unsigned char *rmdhash)	{
 	bool r = false;
 	int i,j,cmpA,cmpB,result;
+	/* Optional address-string glob after decode (vanity regex) */
+	if(g_research.vanity_regex[0] && rmdhash) {
+		char addr[64];
+		rmd160toaddress_dst((char*)rmdhash, addr);
+		if(research_vanity_regex_match(addr, g_research.vanity_regex))
+			return true;
+	}
 	result = bloom_check(vanity_bloom,rmdhash,vanity_rmd_minimun_bytes_check_length);
 	switch(result)	{
 		case -1:
@@ -12139,6 +12243,21 @@ int run_kangaroo_search(const char *pubkey_file) {
 	char *he = n_range_end.GetBase16();
 	printf("[+] Kangaroo: range 0x%s .. 0x%s (~%d bits)\n", hs, he, bits);
 	free(hs); free(he);
+	if(g_research.kangaroo_mod || g_research.mod_step > 1) {
+		uint32_t M = g_research.mod_step ? g_research.mod_step : 1;
+		uint32_t R = g_research.mod_rem % (M ? M : 1);
+		printf("[+] kangaroo-mod: constrain k ≡ %u (mod %u)\n", R, M);
+		/* Snap range start onto residue class */
+		uint64_t ks = n_range_start.GetInt64();
+		if(M > 1) {
+			uint64_t adj = ks % M;
+			if(adj != R) {
+				uint64_t add = (R + M - adj) % M;
+				Int a; a.SetInt64(add);
+				n_range_start.Add(&a);
+			}
+		}
+	}
 
 	uint8_t target_xy[64];
 	target.x.Get32Bytes(target_xy);
@@ -13177,6 +13296,8 @@ bool forceReadFileXPoint(char *fileName)	{
 int address_check(const void *buffer, int len) {
 	if(g_research.shadow_bits > 0 && g_research.shadow_bits < 160)
 		return 1;
+	if(g_research.prefix_nybbles > 0 && g_research.prefix_nybbles < 40)
+		return 1; /* prefix-N: bloom may miss; confirm in table with nybble match */
 	const uint8_t *h = (const uint8_t *)buffer;
 	if(FLAG_FUSE_CASCADE || g_research.filter_strategy == RFILTER_CASCADE) {
 		uint64_t k48 = research_hash_key48(h);
@@ -13199,12 +13320,20 @@ bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom)	{
 	bool r = true;
 	printf("[+] Binary fuse filter for %" PRIu64 " elements.\n",items_bloom);
 	uint32_t bf_count = (items_bloom > 10000) ? (uint32_t)(FLAGBLOOMMULTIPLIER * items_bloom) : 10000;
-	bf_init(&bf_filter, bf_count, 0.000001);
-	if(g_research.filter_strategy == RFILTER_CASCADE || g_research.filter_strategy == RFILTER_FUSE16) {
+	if(g_research.filter_strategy == RFILTER_FUSE16) {
+		bf_init_fuse16(&bf_filter, bf_count, 0.000001);
+		printf("[+] Filter backend: binary_fuse16 (huge target sets)\n");
+	} else {
+		bf_init(&bf_filter, bf_count, 0.000001);
+	}
+	if(g_research.filter_strategy == RFILTER_CASCADE) {
 		FLAG_FUSE_CASCADE = 1;
 		bf_init(&bf_filter_coarse, bf_count, 0.000001);
 		bf_init(&bf_filter_mid, bf_count, 0.000001);
 		printf("[+] FuseCascade: coarse48 + mid96 + exact\n");
+	} else if(g_research.filter_strategy == RFILTER_FUSE16) {
+		/* fuse16 exact filter; optional coarse cascade on fuse8 for early reject */
+		FLAG_FUSE_CASCADE = 0;
 	}
 	if(bf_filter.keys == NULL)	{
 		fprintf(stderr,"[E] error binary fuse alloc for %" PRIu64 " elements.\n",items_bloom);

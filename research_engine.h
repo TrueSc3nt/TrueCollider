@@ -132,6 +132,25 @@ typedef struct {
 	int collider_bsgs_mode;
 	/* Random-sequential chunk size in keys (0 = default 1M) */
 	uint64_t collider_walk_keys;
+	/* Wave implants */
+	char slip39_shares_file[512];
+	char aezeed_cipher_hex[160];
+	char xpub_cosigner[256];
+	char vanity_regex[128];
+	char found_jsonl_path[260];
+	char checkpoint_path[512];
+	uint64_t mnemonic_meter_raw;
+	uint64_t mnemonic_meter_checksum;
+	uint64_t mnemonic_meter_pbkdf2;
+	uint64_t mnemonic_meter_addr;
+	int kangaroo_mod;            /* 1 = kangaroo + residue constraint */
+	int prefix_nybbles;          /* prefix-N match length in nybbles (0=off) */
+	int jsonl_hits;              /* write FOUND_*.jsonl */
+	int entropy_guided;          /* mnemonic slot ordering */
+	int random_dedup;            /* bloom-dedup random mnemonic */
+	int phrase_gravity;          /* bias after near-miss */
+	int seed_cascade;            /* SeedCascadeVerify */
+	double last_eta_seconds;
 } ResearchConfig;
 
 /* Parse walk size: 1000000, 1e6, 2M, 1B, 1T, 0x100000, … → keys */
@@ -241,6 +260,25 @@ int research_mixed_script_normalize(char *inout, size_t inout_sz);
 int research_funded_load(const char *path);
 int research_funded_hit(const uint8_t *h20);
 
+/* Wave implants */
+int research_slip39_next_candidate(uint64_t *state, char *mnemonic_out, size_t out_sz,
+                                   uint8_t seed_out[64]);
+int research_aezeed_try_pass(const char *cipher_hex, const char *pass, uint8_t seed_out[32]);
+int research_solana_bip39_path(uint32_t account, uint32_t change, uint32_t index,
+                               uint32_t out_path[5], int *out_len);
+int research_create_account_with_seed(const uint8_t base_pubkey[32], const char *seed,
+                                      uint8_t out_pubkey[32]);
+int research_prefix_n_match(const uint8_t *a, const uint8_t *b, int nybbles);
+void research_found_jsonl(const char *mode, const char *coin, const char *path,
+                          const char *mnemonic, const char *pass,
+                          const char *priv_hex, const char *addr);
+int research_checkpoint_save(const char *path, uint64_t cursor, const char *tag);
+int research_checkpoint_load(const char *path, uint64_t *cursor);
+void research_meters_bump(int which); /* 0 raw 1 checksum 2 pbkdf2 3 addr */
+void research_meters_print(void);
+double research_dryrun_eta_seconds(uint64_t space, double keys_per_sec);
+int research_vanity_regex_match(const char *addr, const char *regex);
+
 #ifdef __cplusplus
 }
 
@@ -260,6 +298,7 @@ int research_build_gap_limit_pack(ResearchPath *out, int max_out, int gap_limit,
                                   int include_bip86);
 int research_build_multicoin_pack(ResearchPath *out, int max_out, int account_max,
                                   int index_max, int include_change, int include_bip86);
+int research_multisig_cosigner_paths(ResearchPath *out, int max_out, int index_max);
 
 #endif /* __cplusplus */
 

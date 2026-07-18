@@ -39,6 +39,14 @@ static void research_init_defaults(void) {
 	g_research.collider_autosave_sec = 0;
 	g_research.collider_bsgs_mode = 0;
 	g_research.collider_walk_keys = 0;
+	g_research.kangaroo_mod = 0;
+	g_research.prefix_nybbles = 0;
+	g_research.jsonl_hits = 0;
+	g_research.entropy_guided = 0;
+	g_research.random_dedup = 0;
+	g_research.phrase_gravity = 0;
+	g_research.seed_cascade = 0;
+	g_research.last_eta_seconds = 0;
 }
 
 static int walk_ieq(const char *a, const char *b) {
@@ -426,6 +434,105 @@ int research_consume_long_flags(int *argc, char **argv) {
 			touched++;
 			continue;
 		}
+		if(strcmp(a, "--slip39-file") == 0) {
+			if(take_arg(argc, argv, i, g_research.slip39_shares_file,
+			            sizeof(g_research.slip39_shares_file)) == 0) {
+				g_research.submode = RSUB_SLIP39;
+				printf("[+] SLIP39 shares file: %s\n", g_research.slip39_shares_file);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--aezeed") == 0) {
+			if(take_arg(argc, argv, i, g_research.aezeed_cipher_hex,
+			            sizeof(g_research.aezeed_cipher_hex)) == 0) {
+				g_research.submode = RSUB_AEZEED;
+				printf("[+] aezeed cipher set\n");
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--xpub") == 0) {
+			if(take_arg(argc, argv, i, g_research.xpub_cosigner,
+			            sizeof(g_research.xpub_cosigner)) == 0) {
+				g_research.submode = RSUB_MULTISIG;
+				printf("[+] Multisig cosigner xpub set\n");
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--vanity-regex") == 0 || strcmp(a, "--regex") == 0) {
+			if(take_arg(argc, argv, i, g_research.vanity_regex,
+			            sizeof(g_research.vanity_regex)) == 0) {
+				printf("[+] Vanity regex/glob: %s\n", g_research.vanity_regex);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--jsonl") == 0) {
+			g_research.jsonl_hits = 1;
+			if(i + 1 < *argc && argv[i + 1][0] != '-') {
+				take_arg(argc, argv, i, g_research.found_jsonl_path,
+				         sizeof(g_research.found_jsonl_path));
+			} else {
+				remove_one(argc, argv, i);
+				strncpy(g_research.found_jsonl_path, "FOUND_hits.jsonl",
+				        sizeof(g_research.found_jsonl_path) - 1);
+			}
+			printf("[+] JSONL hits → %s\n", g_research.found_jsonl_path);
+			touched++;
+			continue;
+		}
+		if(strcmp(a, "--checkpoint") == 0) {
+			if(take_arg(argc, argv, i, g_research.checkpoint_path,
+			            sizeof(g_research.checkpoint_path)) == 0) {
+				printf("[+] Checkpoint file: %s\n", g_research.checkpoint_path);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--prefix-n") == 0 || strcmp(a, "--prefix-nybbles") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.prefix_nybbles = atoi(buf);
+				if(g_research.prefix_nybbles > 0 && g_research.shadow_bits >= 160)
+					g_research.shadow_bits = g_research.prefix_nybbles * 4;
+				printf("[+] prefix-N nybbles=%d\n", g_research.prefix_nybbles);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--kangaroo-mod") == 0) {
+			g_research.kangaroo_mod = 1;
+			remove_one(argc, argv, i);
+			printf("[+] kangaroo-mod: residue-constrained kangaroo\n");
+			touched++;
+			continue;
+		}
+		if(strcmp(a, "--entropy-guided") == 0) {
+			g_research.entropy_guided = 1;
+			remove_one(argc, argv, i);
+			touched++;
+			continue;
+		}
+		if(strcmp(a, "--random-dedup") == 0) {
+			g_research.random_dedup = 1;
+			remove_one(argc, argv, i);
+			touched++;
+			continue;
+		}
+		if(strcmp(a, "--phrase-gravity") == 0) {
+			g_research.phrase_gravity = 1;
+			remove_one(argc, argv, i);
+			touched++;
+			continue;
+		}
+		if(strcmp(a, "--seed-cascade") == 0) {
+			g_research.seed_cascade = 1;
+			remove_one(argc, argv, i);
+			touched++;
+			continue;
+		}
 		i++;
 	}
 	return touched;
@@ -559,6 +666,7 @@ int collider_consume_flags(int *argc, char **argv) {
 	}
 	return touched;
 }
+
 
 int research_word_index(const char *word, char **wordlist, int nwords) {
 	if(!word || !wordlist) return -1;
@@ -903,7 +1011,7 @@ int research_build_path_pack(ResearchPath *out, int max_out, int pack, int index
 void research_print_banner(void) {
 	research_init_defaults();
 	printf("[+] Research engine: mnemonic recovery / PathNova / MilkSad / Hilbert / Sobol / Shadow160 / ResidueHerd / Electrum / FuseCascade / OrbitBSGS / Collider-bridge / Multicoin\n");
-	printf("[+] GPU: -U cuda accelerates EC (BSGS GRP + mnemonic pubkey batch). BIP39 PBKDF2 remains host SHA512 (checksum-first).\n");
+	printf("[+] GPU: -U cuda → EC/GRP + optional CUDA BIP39 PBKDF2 batch (pbkdf2_sha512_cuda). Checksum-first on host.\n");
 	printf("[+] Collider aliases: --pb --pk --pke --infile --htsz --baby-bits --wl --wt\n");
 	printf("[+] Collider walk: --mode sequential|random|rseq  --walk 2M|1B|1T|0x100000\n");
 }

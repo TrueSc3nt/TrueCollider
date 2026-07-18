@@ -2,15 +2,30 @@
 #include "research_engine.h"
 #include "hash/sha256.h"
 #include "base58/libbase58.h"
+#if defined(ENABLE_CUDA)
+#include "gpu/cuda/pbkdf2_sha512_cuda.h"
+#endif
 
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #if defined(_MSC_VER)
 #define strtok_r strtok_s
 #endif
+
+static void trim_inplace(char *s) {
+	if(!s) return;
+	char *a = s;
+	while(*a == ' ' || *a == '\t' || *a == '\r' || *a == '\n') a++;
+	if(a != s) memmove(s, a, strlen(a) + 1);
+	size_t n = strlen(s);
+	while(n && (s[n - 1] == ' ' || s[n - 1] == '\t' || s[n - 1] == '\r' || s[n - 1] == '\n'))
+		s[--n] = 0;
+}
 
 int research_mnemonic_from_entropy(const uint8_t *entropy, int ent_bytes,
                                    char **wordlist, int wordlist_size,
@@ -871,4 +886,227 @@ int research_build_multicoin_pack(ResearchPath *out, int max_out, int account_ma
 	return n;
 }
 
+int research_multisig_cosigner_paths(ResearchPath *out, int max_out, int index_max) {
+	/* Cosigner fanout: m/48'/0'/0'/2' / index (BIP48 nested) + standard 44/84 */
+	if(!out || max_out < 1) return 0;
+	if(index_max < 1) index_max = 20;
+	int n = 0;
+	const struct { uint32_t p[5]; int len; int at; const char *name; } bases[] = {
+		{{0x80000030, 0x80000000, 0x80000000, 0x80000002, 0}, 5, 1, "BIP48-P2SH-P2WSH"},
+		{{0x8000002C, 0x80000000, 0x80000000, 0, 0}, 5, 0, "BIP44-cosign"},
+		{{0x80000054, 0x80000000, 0x80000000, 0, 0}, 5, 2, "BIP84-cosign"},
+	};
+	for(size_t b = 0; b < sizeof(bases) / sizeof(bases[0]) && n < max_out; b++) {
+		for(int i = 0; i < index_max && n < max_out; i++) {
+			memcpy(out[n].indices, bases[b].p, sizeof(bases[b].p));
+			out[n].indices[4] = (uint32_t)i;
+			out[n].len = bases[b].len;
+			out[n].addr_type = bases[b].at;
+			out[n].name = bases[b].name;
+			n++;
+		}
+	}
+	printf("[+] Multisig cosigner paths: %d (xpub=%s)\n", n,
+	       g_research.xpub_cosigner[0] ? g_research.xpub_cosigner : "(unset)");
+	return n;
+}
+
 #endif /* __cplusplus */
+
+/* ---- Wave implants (C) ---- */
+
+void research_meters_bump(int which) {
+	if(which == 0) g_research.mnemonic_meter_raw++;
+	else if(which == 1) g_research.mnemonic_meter_checksum++;
+	else if(which == 2) g_research.mnemonic_meter_pbkdf2++;
+	else if(which == 3) g_research.mnemonic_meter_addr++;
+}
+
+void research_meters_print(void) {
+	printf("[+] Meters: raw=%" PRIu64 " checksum=%" PRIu64 " pbkdf2=%" PRIu64 " addr=%" PRIu64 "\n",
+	       g_research.mnemonic_meter_raw, g_research.mnemonic_meter_checksum,
+	       g_research.mnemonic_meter_pbkdf2, g_research.mnemonic_meter_addr);
+}
+
+double research_dryrun_eta_seconds(uint64_t space, double keys_per_sec) {
+	if(keys_per_sec <= 0.0) keys_per_sec = 1e6;
+	double eta = (double)space / keys_per_sec;
+	g_research.last_eta_seconds = eta;
+	return eta;
+}
+
+int research_prefix_n_match(const uint8_t *a, const uint8_t *b, int nybbles) {
+	if(!a || !b || nybbles <= 0) return 0;
+	if(nybbles >= 40) return memcmp(a, b, 20) == 0;
+	int full = nybbles / 2;
+	if(full && memcmp(a, b, (size_t)full) != 0) return 0;
+	if(nybbles & 1) {
+		uint8_t ma = (uint8_t)(a[full] & 0xF0);
+		uint8_t mb = (uint8_t)(b[full] & 0xF0);
+		return ma == mb;
+	}
+	return 1;
+}
+
+int research_vanity_regex_match(const char *addr, const char *regex) {
+	/* Lightweight glob: * and ? only (not full PCRE) */
+	if(!addr || !regex || !regex[0]) return 0;
+	const char *a = addr, *r = regex;
+	const char *star = NULL, *astar = NULL;
+	while(*a) {
+		if(*r == '*') { star = ++r; astar = a; continue; }
+		if(*r == '?' || *r == *a) { r++; a++; continue; }
+		if(star) { r = star; a = ++astar; continue; }
+		return 0;
+	}
+	while(*r == '*') r++;
+	return *r == 0;
+}
+
+void research_found_jsonl(const char *mode, const char *coin, const char *path,
+                          const char *mnemonic, const char *pass,
+                          const char *priv_hex, const char *addr) {
+	if(!g_research.jsonl_hits && !g_research.found_jsonl_path[0]) return;
+	const char *fp = g_research.found_jsonl_path[0] ? g_research.found_jsonl_path : "FOUND_hits.jsonl";
+	FILE *f = fopen(fp, "a");
+	if(!f) return;
+	fprintf(f,
+	        "{\"mode\":\"%s\",\"coin\":\"%s\",\"path\":\"%s\",\"mnemonic\":\"%s\","
+	        "\"pass\":\"%s\",\"priv\":\"%s\",\"addr\":\"%s\",\"ts\":%lld}\n",
+	        mode ? mode : "", coin ? coin : "", path ? path : "",
+	        mnemonic ? mnemonic : "", pass ? pass : "",
+	        priv_hex ? priv_hex : "", addr ? addr : "",
+	        (long long)time(NULL));
+	fclose(f);
+}
+
+int research_checkpoint_save(const char *path, uint64_t cursor, const char *tag) {
+	if(!path || !path[0]) return 0;
+	FILE *f = fopen(path, "w");
+	if(!f) return 0;
+	fprintf(f, "truecollider-checkpoint-v1\ntag=%s\ncursor=%" PRIu64 "\n",
+	        tag ? tag : "generic", cursor);
+	fclose(f);
+	return 1;
+}
+
+int research_checkpoint_load(const char *path, uint64_t *cursor) {
+	if(!path || !path[0] || !cursor) return 0;
+	FILE *f = fopen(path, "r");
+	if(!f) return 0;
+	char line[256];
+	int ok = 0;
+	while(fgets(line, sizeof(line), f)) {
+		if(strncmp(line, "cursor=", 7) == 0) {
+			*cursor = strtoull(line + 7, NULL, 10);
+			ok = 1;
+		}
+	}
+	fclose(f);
+	return ok;
+}
+
+int research_solana_bip39_path(uint32_t account, uint32_t change, uint32_t index,
+                               uint32_t out_path[5], int *out_len) {
+	/* SLIP-0010 style path used by Phantom: m/44'/501'/account'/change' */
+	(void)index;
+	if(!out_path || !out_len) return 0;
+	out_path[0] = 0x8000002C;
+	out_path[1] = 0x800001F5; /* 501' */
+	out_path[2] = 0x80000000u | account;
+	out_path[3] = 0x80000000u | change;
+	out_path[4] = 0;
+	*out_len = 4;
+	return 1;
+}
+
+int research_create_account_with_seed(const uint8_t base_pubkey[32], const char *seed,
+                                      uint8_t out_pubkey[32]) {
+	/* Solana CreateAccountWithSeed: SHA256(base || seed || owner) — owner=SystemProgram zeroed */
+	if(!base_pubkey || !seed || !out_pubkey) return 0;
+	size_t sl = strlen(seed);
+	uint8_t buf[32 + 64 + 32];
+	memcpy(buf, base_pubkey, 32);
+	if(sl > 64) sl = 64;
+	memcpy(buf + 32, seed, sl);
+	memset(buf + 32 + sl, 0, 32); /* owner placeholder */
+	sha256(buf, 32 + (int)sl + 32, out_pubkey);
+	return 1;
+}
+
+int research_aezeed_try_pass(const char *cipher_hex, const char *pass, uint8_t seed_out[32]) {
+	/* Simplified aezeed: SHA256(cipher||pass) → 32-byte entropy (full AEZ decrypt later) */
+	if(!cipher_hex || !pass || !seed_out) return 0;
+	size_t n = strlen(cipher_hex);
+	if(n < 16 || n > 160) return 0;
+	uint8_t msg[256];
+	size_t m = 0;
+	for(size_t i = 0; i + 1 < n && m < 80; i += 2) {
+		char hb[3] = { cipher_hex[i], cipher_hex[i + 1], 0 };
+		msg[m++] = (uint8_t)strtoul(hb, NULL, 16);
+	}
+	size_t pl = strlen(pass);
+	if(pl > 64) pl = 64;
+	memcpy(msg + m, pass, pl);
+	sha256(msg, (int)(m + pl), seed_out);
+	return 1;
+}
+
+int research_slip39_next_candidate(uint64_t *state, char *mnemonic_out, size_t out_sz,
+                                   uint8_t seed_out[64]) {
+	/*
+	 * Practical SLIP39 helper: treat --seed / slip39 file lines as BIP39-like word
+	 * lists with '?' free slots; combine by SHA512(share1||share2||…) into master seed.
+	 * Full RS1024 SLIP39 decode can replace this combiner later without API change.
+	 */
+	if(!state || !mnemonic_out || out_sz < 32 || !seed_out) return 0;
+	const char *tmpl = g_research.seed_mask;
+	if(!tmpl[0] && g_research.slip39_shares_file[0]) {
+		FILE *f = fopen(g_research.slip39_shares_file, "r");
+		if(!f) return 0;
+		static char filebuf[2048];
+		filebuf[0] = 0;
+		char line[512];
+		while(fgets(line, sizeof(line), f)) {
+			trim_inplace(line);
+			if(!line[0] || line[0] == '#') continue;
+			if(filebuf[0]) strncat(filebuf, " | ", sizeof(filebuf) - strlen(filebuf) - 1);
+			strncat(filebuf, line, sizeof(filebuf) - strlen(filebuf) - 1);
+		}
+		fclose(f);
+		tmpl = filebuf;
+	}
+	if(!tmpl || !tmpl[0]) return 0;
+	/* Enumerate '?' as 0..2047 using low 11 bits of state */
+	char built[1024];
+	strncpy(built, tmpl, sizeof(built) - 1);
+	built[sizeof(built) - 1] = 0;
+	int free_n = 0;
+	for(char *p = built; *p; p++) if(*p == '?') free_n++;
+	uint64_t space = free_n ? (1ULL << (free_n > 5 ? 55 : 11 * free_n)) : 1ULL;
+	if(*state >= space) return 0;
+	uint64_t s = (*state)++;
+	char *p = built;
+	while(*p) {
+		if(*p == '?') {
+			unsigned idx = (unsigned)(s & 0x7FF);
+			s >>= 11;
+			const char *w = "abandon"; /* placeholder word; real slip39 wordlist later */
+			(void)idx;
+			/* keep literal '?word index' token for combiner */
+			char tok[16];
+			snprintf(tok, sizeof(tok), "w%u", idx);
+			size_t tl = strlen(tok);
+			memmove(p + tl, p + 1, strlen(p));
+			memcpy(p, tok, tl);
+			p += tl;
+			continue;
+		}
+		p++;
+	}
+	strncpy(mnemonic_out, built, out_sz - 1);
+	mnemonic_out[out_sz - 1] = 0;
+	sha256((uint8_t *)built, (int)strlen(built), seed_out);
+	sha256(seed_out, 32, seed_out + 32);
+	return 1;
+}
