@@ -1168,6 +1168,8 @@ extern "C" void tcuda_secp_search_free(void) {
 
 extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes) {
     size_t free_b = 0, total_b = 0;
+    /* WDDM can return free=0 if no current device is selected yet. */
+    cudaSetDevice(0);
     if (cudaMemGetInfo(&free_b, &total_b) != cudaSuccess)
         return 0;
     if (free_bytes) *free_bytes = (uint64_t)free_b;
@@ -1178,6 +1180,15 @@ extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes) {
 extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes) {
     uint64_t free_b = 0, total_b = 0;
     tcuda_memory_info(&free_b, &total_b);
+
+    /* Some Windows/WDDM stacks report free=0 while total is valid (display compositor).
+       Fall back to a conservative fraction of total so -M auto is not stuck at 1024 keys. */
+    if (free_b == 0 && total_b > (512ull << 20)) {
+        free_b = (total_b * 40ull) / 100ull;
+        fprintf(stderr,
+                "[W] CUDA cudaMemGetInfo free=0 (WDDM); assuming ~%.0f MB free from total.\n",
+                (double)free_b / (1024.0 * 1024.0));
+    }
 
     int auto_mode = (budget_bytes == 0);
     if (auto_mode) {

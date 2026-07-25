@@ -356,6 +356,7 @@ const char *default_fileName = "addresses.txt";
 
 int FLAGSEARCHMODE = SEARCHMODE_RANDOM;
 int FLAGRS = 0; /* -rs / -x rseq: random-sequential (random base + sequential N walk) */
+volatile int FLAGKEYFOUND = 0; /* set by writekey*; threads exit when set */
 double chaos_x = 0.1;
 const double chaos_r = 3.99999;
 Int gravity_center;
@@ -1572,10 +1573,11 @@ int main(int argc, char **argv)	{
 				printf("[+] GPU backend set to OpenCL\n");
 			}
 			else if(strcmp(optarg,"both") == 0) {
-				/* CPU threads + CUDA GPU together (hybrid). */
+				/* Hybrid: even threads CUDA EC, odd threads CPU SIMD. */
 				g_backend_config.gpu_enabled = 1;
 				g_backend_config.gpu_backend = GPU_BACKEND_CUDA;
-				printf("[+] GPU backend set to BOTH (CPU threads + CUDA)\n");
+				g_backend_config.gpu_hybrid = 1;
+				printf("[+] GPU backend set to BOTH (hybrid: CPU SIMD + CUDA)\n");
 			}
 			else {
 				fprintf(stderr,"[E] Unknown GPU backend '%s'. Use none/cuda/opencl/both.\n",optarg);
@@ -2587,6 +2589,26 @@ int main(int argc, char **argv)	{
 			N_SEQUENTIAL_MAX = RANDOM_SEQUENTIAL_DEFAULT_N;
 			printf("[+] -rs default N = %" PRIu64 " (1M keys/chunk; override with -n)\n",
 				N_SEQUENTIAL_MAX);
+		}
+		/* Clamp walk length to the actual search range so -b 20 / tiny -r
+		   cannot scan billions of keys past the end (was default N=2^32). */
+		if((FLAGRANGE || FLAGBITRANGE) && !n_range_end.IsZero()) {
+			Int rsz;
+			rsz.Set(&n_range_end);
+			rsz.Sub(&n_range_start);
+			if(!rsz.IsZero() && rsz.GetBitLength() <= 62) {
+				uint64_t range_size = (uint64_t)rsz.GetInt64();
+				if(range_size == 0) range_size = 1;
+				if(N_SEQUENTIAL_MAX > range_size) {
+					uint64_t clamped = range_size;
+					if(clamped >= 1024ULL)
+						clamped = (clamped / 1024ULL) * 1024ULL;
+					if(clamped < 1ULL) clamped = 1ULL;
+					N_SEQUENTIAL_MAX = clamped;
+					printf("[+] Auto-clamped N to %" PRIu64 " to fit search range\n",
+						N_SEQUENTIAL_MAX);
+				}
+			}
 		}
 		printf("[+] N = %" PRIu64 "\n",N_SEQUENTIAL_MAX);
 		if(FLAGMODE == MODE_MINIKEYS)	{
@@ -4102,8 +4124,12 @@ int main(int argc, char **argv)	{
 		for(j = 0; j <NTHREADS && check_flag; j++) {
 			check_flag &= ends[j];
 		}
-		if(check_flag)	{
+		if(FLAGKEYFOUND || check_flag)	{
 			continue_flag = 0;
+			if(FLAGKEYFOUND) {
+				for(j = 0; j < NTHREADS; j++)
+					ends[j] = 1;
+			}
 		}
 		if(OUTPUTSECONDS.IsGreater(&ZERO) ){
 			MPZAUX.Set(&seconds);
@@ -5169,6 +5195,36 @@ void *thread_process_derived(void *vargp) {
 
 	Int key_mpz;
 
+	/* Accumulate BIP32 children across base keys, then GPU EC+hash160. */
+	int use_gpu = (g_gpu_dispatcher && gpu_dispatcher_secp_ready(g_gpu_dispatcher)
+		&& !FLAGENDOMORPHISM && FLAGCRYPTO != CRYPTO_SOL && N > 0);
+	int batch_cap = use_gpu ? (int)g_backend_config.gpu_batch_size : 0;
+	if(batch_cap < 256) batch_cap = 256;
+	if(batch_cap > 65536) batch_cap = 65536;
+	uint8_t *batch_privs = use_gpu ? (uint8_t*)malloc((size_t)batch_cap * 32) : NULL;
+	int batch_n = 0;
+	if(use_gpu && !batch_privs) use_gpu = 0;
+
+	auto flush_gpu_batch = [&]() -> int {
+		if(!use_gpu || !batch_privs || batch_n <= 0) return 0;
+		int is_eth = (FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC);
+		int hits = 0;
+		if(is_eth) {
+			hits = gpu_check_privkey_list(batch_privs, batch_n, 0, 1);
+		} else {
+			if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+				int h = gpu_check_privkey_list(batch_privs, batch_n, 1, 0);
+				if(h > 0) hits += h;
+			}
+			if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) {
+				int h = gpu_check_privkey_list(batch_privs, batch_n, 0, 0);
+				if(h > 0) hits += h;
+			}
+		}
+		batch_n = 0;
+		return hits > 0 ? 1 : 0;
+	};
+
 	while(continue_flag) {
 		get_next_search_key(&key_mpz, &n_range_start, &n_range_end);
 
@@ -5190,6 +5246,19 @@ void *thread_process_derived(void *vargp) {
 
 			uint8_t derived_key[32], derived_chain[32];
 			bip32_derive_path(master_key, master_chain, full_path, parsed_path_len + 1, derived_key, derived_chain);
+
+			if(use_gpu && batch_privs) {
+				memcpy(batch_privs + (size_t)batch_n * 32, derived_key, 32);
+				batch_n++;
+				if(batch_n >= batch_cap) {
+					if(flush_gpu_batch()) {
+						free(master_hex);
+						free(batch_privs);
+						return NULL;
+					}
+				}
+				continue;
+			}
 
 			Int derivedInt;
 			derivedInt.Set32Bytes(derived_key);
@@ -5347,6 +5416,11 @@ void *thread_process_derived(void *vargp) {
 			fflush(stdout);
 		}
 	}
+	if(flush_gpu_batch()) {
+		free(batch_privs);
+		return NULL;
+	}
+	free(batch_privs);
 	return NULL;
 }
 
@@ -6923,6 +6997,24 @@ static int process_secp_gpu_privkey_batch(
 	int batch = (int)g_backend_config.gpu_batch_size;
 	if(batch < 1) batch = 1;
 	if(batch > 1048576) batch = 1048576;
+
+	/* Never walk past n_range_end (exclusive upper bound used by sequential). */
+	if((FLAGRANGE || FLAGBITRANGE) && key_mpz->IsLower(&n_range_end)) {
+		Int remain;
+		remain.Set(&n_range_end);
+		remain.Sub(key_mpz);
+		if(remain.IsZero() || remain.IsNegative())
+			return 0;
+		if(remain.GetBitLength() <= 31) {
+			uint64_t rem64 = (uint64_t)remain.GetInt64();
+			if(rem64 < (uint64_t)batch)
+				batch = (int)rem64;
+		}
+	} else if((FLAGRANGE || FLAGBITRANGE) && !key_mpz->IsLower(&n_range_end)) {
+		return 0;
+	}
+	if(batch < 1) return 0;
+
 	uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
 	uint8_t *pubs = NULL;
 	uint32_t *matches = NULL;
@@ -7295,17 +7387,42 @@ void *thread_process(void *vargp)	{
 				}
 			}
 			do {
+				if(FLAGKEYFOUND) {
+					continue_flag = 0;
+					break;
+				}
 #if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
-				if(process_secp_gpu_privkey_batch(&key_mpz, &stride, &keyfound,
-						publickeyhashrmd160, &count)) {
-					/* DEBUGCOUNT keys per stats step (same as CPU GRP cycle). */
-					while(count >= DEBUGCOUNT) {
-						steps[thread_number]++;
-						count -= DEBUGCOUNT;
+				/* -U both: even threads CUDA, odd threads CPU SIMD (t=1 → CUDA). */
+				{
+					int allow_gpu = !g_backend_config.gpu_hybrid || NTHREADS <= 1
+						|| ((thread_number % 2) == 0);
+					uint64_t gpu_add = 0;
+					if(allow_gpu && process_secp_gpu_privkey_batch(&key_mpz, &stride, &keyfound,
+							publickeyhashrmd160, &gpu_add)) {
+						count += gpu_add;
+						uint64_t stat = gpu_add;
+						while(stat >= DEBUGCOUNT) {
+							steps[thread_number]++;
+							stat -= DEBUGCOUNT;
+						}
+						if(FLAGKEYFOUND) {
+							continue_flag = 0;
+							break;
+						}
+						if((FLAGRANGE || FLAGBITRANGE) && !key_mpz.IsLower(&n_range_end)) {
+							if(FLAGSEARCHMODE == SEARCHMODE_SEQUENTIAL)
+								continue_flag = 0;
+							break;
+						}
+						continue;
 					}
-					continue;
 				}
 #endif
+				if((FLAGRANGE || FLAGBITRANGE) && !key_mpz.IsLower(&n_range_end)) {
+					if(FLAGSEARCHMODE == SEARCHMODE_SEQUENTIAL)
+						continue_flag = 0;
+					break;
+				}
 				temp_stride.SetInt32(CPU_GRP_SIZE / 2);
 				temp_stride.Mult(&stride);
 				key_mpz.Add(&temp_stride);
@@ -7998,16 +8115,41 @@ void *thread_process_vanity(void *vargp)	{
 				}
 			}
 			do {
+				if(FLAGKEYFOUND) {
+					continue_flag = 0;
+					break;
+				}
 #if defined(ENABLE_CUDA) || defined(ENABLE_OPENCL) || 1
-				if(process_secp_gpu_privkey_batch(&key_mpz, &stride, &keyfound,
-						publickeyhashrmd160, &count)) {
-					while(count >= DEBUGCOUNT) {
-						steps[thread_number]++;
-						count -= DEBUGCOUNT;
+				{
+					int allow_gpu = !g_backend_config.gpu_hybrid || NTHREADS <= 1
+						|| ((thread_number % 2) == 0);
+					uint64_t gpu_add = 0;
+					if(allow_gpu && process_secp_gpu_privkey_batch(&key_mpz, &stride, &keyfound,
+							publickeyhashrmd160, &gpu_add)) {
+						count += gpu_add;
+						uint64_t stat = gpu_add;
+						while(stat >= DEBUGCOUNT) {
+							steps[thread_number]++;
+							stat -= DEBUGCOUNT;
+						}
+						if(FLAGKEYFOUND) {
+							continue_flag = 0;
+							break;
+						}
+						if((FLAGRANGE || FLAGBITRANGE) && !key_mpz.IsLower(&n_range_end)) {
+							if(FLAGSEARCHMODE == SEARCHMODE_SEQUENTIAL)
+								continue_flag = 0;
+							break;
+						}
+						continue;
 					}
-					continue;
 				}
 #endif
+				if((FLAGRANGE || FLAGBITRANGE) && !key_mpz.IsLower(&n_range_end)) {
+					if(FLAGSEARCHMODE == SEARCHMODE_SEQUENTIAL)
+						continue_flag = 0;
+					break;
+				}
 				temp_stride.SetInt32(CPU_GRP_SIZE / 2);
 				temp_stride.Mult(&stride);
 				key_mpz.Add(&temp_stride);
@@ -12598,7 +12740,8 @@ void writekey(bool compressed,Int *key)	{
 	}
 	append_found_file("BTC", block);
 	printf("\nHit! Private Key: %s\npubkey: %s\nAddress %s\nrmd160 %s\n",hextemp,public_key_hex,address,hexrmd);
-	
+	FLAGKEYFOUND = 1;
+
 #if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
@@ -12635,6 +12778,7 @@ void writekeyeth(Int *key)	{
 	}
 	append_found_file("ETH", block);
 	printf("\n Hit!!!! Private Key: %s\naddress: %s\n",hextemp,address);
+	FLAGKEYFOUND = 1;
 #if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
@@ -13165,7 +13309,8 @@ bool forceReadFileAddressEth(char *fileName)	{
 	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
 	fflush(stdout);
 	if(bf_build(&bf_filter) != 0) {
-		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		/* Expected for tiny target sets (<256); bloom path is correct. */
+		printf("\n[!] Binary fuse skipped/failed (small set or allocate); using bloom filter\n");
 		bf_filter.use_bloom_fallback = 1;
 	}
 	else {
@@ -13279,7 +13424,8 @@ bool forceReadFileXPoint(char *fileName)	{
 	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
 	fflush(stdout);
 	if(bf_build(&bf_filter) != 0) {
-		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		/* Expected for tiny target sets (<256); bloom path is correct. */
+		printf("\n[!] Binary fuse skipped/failed (small set or allocate); using bloom filter\n");
 		bf_filter.use_bloom_fallback = 1;
 	}
 	else {

@@ -173,9 +173,18 @@ int gpu_dispatcher_init(struct GpuDispatcher* disp, const struct BackendConfig* 
     memset(&disp->host_bloom, 0, sizeof(disp->host_bloom));
 
     if (cfg->gpu_backend == GPU_BACKEND_CUDA) {
+#if !defined(ENABLE_CUDA)
+        std::fprintf(stderr,
+            "[E] This binary was built WITHOUT CUDA (CPU-only keyhunt).\n"
+            "[E] Use keyhunt_cuda.exe for -U cuda / both, or rebuild with ENABLE_CUDA.\n");
+        return 0;
+#endif
         disp->device_count = tcuda_device_count();
         if (disp->device_count <= 0) {
-            std::fprintf(stderr, "[E] CUDA backend requested but no CUDA devices were found.\n");
+            std::fprintf(stderr,
+                "[E] CUDA backend requested but no CUDA devices were found.\n"
+                "[E] Check: nvidia-smi works, NVIDIA driver installed, and you launched "
+                "keyhunt_cuda.exe (not CPU-only keyhunt.exe).\n");
             return 0;
         }
         tcuda_hello();

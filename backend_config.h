@@ -38,12 +38,13 @@ struct BackendConfig {
     int cpu_vector;
     int cpu_vector_auto;  /* 1 = pick best available at runtime */
 
-    /* GPU (-U cuda/opencl or none). */
+    /* GPU (-U cuda/opencl/both or none). */
     int gpu_enabled;
     int gpu_backend;
     int gpu_device;
     uint32_t gpu_batch_size;
     int gpu_batch_user_set; /* 1 if -G was given */
+    int gpu_hybrid; /* 1 = -U both: split CPU SIMD + CUDA across threads */
 
     /* Memory budget for GPU/search buffers (-M MB|auto). 0 = unset. */
     uint64_t memory_budget_bytes;
