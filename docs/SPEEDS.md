@@ -42,13 +42,15 @@ Re-run: `powershell -ExecutionPolicy Bypass -File .\run_benchmarks.ps1`
 
 ## CUDA results (RTX 3060 Ti)
 
-| Mode | Command | 5 s peak | 15 s sustained |
-|------|---------|---------:|---------------:|
-| address BTC | `-U cuda -G 128 -t 1` | 154,419 keys/s | 109,909 keys/s |
-| rmd160 | `-U cuda -G 128 -t 1` | 165,068 keys/s | 117,691 keys/s |
-| address ETH | `-c eth -U cuda -G 128 -t 1` | 66,969 keys/s | 49,561 keys/s |
+| Mode | Command | 15 s sustained |
+|------|---------|---------------:|
+| address BTC | `-U cuda -M auto -t 1` | ~15.8 Mkeys/s |
+| rmd160 | `-U cuda -M auto -t 1` | ~15–16 Mkeys/s (same EC path) |
+| address ETH | `-c eth -U cuda -M auto -t 1` | lower (Keccak host/device mix) |
 
-Path: **GPU secp256k1 EC** + **device** hash160/bloom when self-test passes (else host hash/keccak + host bloom). Prefer `-M auto` for larger batches (re-bench after).
+Path: **GPU secp256k1 EC** + **device** hash160/bloom when self-test passes (else host hash/keccak + host bloom). Prefer `-M auto`. Host packs up to 8× launch chunk (default chunk 65536); search kernels are chunked to avoid WDDM TDR.
+
+Note: older logs showing ~29 Mkeys/s were inflated by a CUDA key-counter bug (fixed). Measured rates above are post-fix.
 
 ## GPU EC wired vs still CPU-only
 

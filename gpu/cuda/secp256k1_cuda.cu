@@ -37,6 +37,7 @@ static uint64_t  g_mem_budget_bytes = 0;
 static uint32_t  g_recommended_batch = 8192;
 static uint8_t  *g_h_pin_priv = NULL;
 static uint8_t  *g_h_pin_pub = NULL;
+static uint8_t  *g_h_pin_hit = NULL;
 static int       g_pin_cap = 0;
 static const int kCudaThreads = 256;
 
@@ -1083,16 +1084,21 @@ static void host_bloom_set(uint8_t *bf, uint64_t bits, uint8_t hashes,
 static void free_pin_bufs(void) {
     if (g_h_pin_priv) { cudaFreeHost(g_h_pin_priv); g_h_pin_priv = NULL; }
     if (g_h_pin_pub) { cudaFreeHost(g_h_pin_pub); g_h_pin_pub = NULL; }
+    if (g_h_pin_hit) { cudaFreeHost(g_h_pin_hit); g_h_pin_hit = NULL; }
     g_pin_cap = 0;
 }
 
 static int ensure_pin_bufs(int count) {
-    if (count <= g_pin_cap && g_h_pin_priv && g_h_pin_pub)
+    if (count <= g_pin_cap && g_h_pin_priv && g_h_pin_pub && g_h_pin_hit)
         return 1;
     free_pin_bufs();
     if (cudaHostAlloc((void **)&g_h_pin_priv, (size_t)count * 32, cudaHostAllocDefault) != cudaSuccess)
         return 0;
     if (cudaHostAlloc((void **)&g_h_pin_pub, (size_t)count * 65, cudaHostAllocDefault) != cudaSuccess) {
+        free_pin_bufs();
+        return 0;
+    }
+    if (cudaHostAlloc((void **)&g_h_pin_hit, (size_t)count, cudaHostAllocDefault) != cudaSuccess) {
         free_pin_bufs();
         return 0;
     }
@@ -1230,7 +1236,13 @@ extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes) {
     }
     ensure_pin_bufs(g_launch_chunk);
 
-    g_recommended_batch = (uint32_t)keys;
+    /* Host packs this many keys per call; device processes in launch_chunk slices.
+       Cap at 8 chunks so host Int packing does not dominate GPU time. */
+    uint64_t host_batch = (uint64_t)g_launch_chunk * 8ull;
+    if (host_batch > keys) host_batch = keys;
+    if (host_batch < (uint64_t)g_launch_chunk) host_batch = (uint64_t)g_launch_chunk;
+    if (host_batch > 1048576ull) host_batch = 1048576ull;
+    g_recommended_batch = (uint32_t)host_batch;
 
     fprintf(stderr,
             "[+] GPU memory plan: budget %.1f MB (%s) | VRAM free %.1f / total %.1f MB | "
@@ -1320,39 +1332,64 @@ extern "C" int tcuda_secp_search_batch(const uint8_t *privkeys, int count, int c
     if (g_host_filter)
         return -2; /* use tcuda_secp_pubkey_batch + host filter */
 
-    if (!ensure_batch_bufs(count))
+    /* Chunk like pubkey_batch — never launch 1M-wide kernels (TDR / realloc thrash). */
+    int chunk = g_launch_chunk > 0 ? g_launch_chunk : 16384;
+    if (chunk > count) chunk = count;
+    if (chunk < 1) chunk = 1;
+    if (chunk >= kCudaThreads)
+        chunk = (chunk / kCudaThreads) * kCudaThreads;
+    if (chunk < 1) chunk = count < kCudaThreads ? count : kCudaThreads;
+
+    if (!ensure_batch_bufs(chunk))
         return -1;
-
-    size_t key_bytes = (size_t)count * 32;
-    if (cudaMemcpy(g_d_privkeys, privkeys, key_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
-        return -1;
-
-    int threads = (count < 256) ? count : 256;
-    if (threads < 1) threads = 1;
-    int blocks = (count + threads - 1) / threads;
-
-    secp_search_kernel<<<blocks, threads>>>(
-        g_d_privkeys, count, compressed ? 1 : 0,
-        g_d_bloom, g_bloom_bits, g_bloom_hashes, g_d_hitmask);
-    if (cudaGetLastError() != cudaSuccess) return -1;
-    if (cudaDeviceSynchronize() != cudaSuccess) return -1;
-
-    uint8_t *hitmask = (uint8_t *)malloc((size_t)count);
-    if (!hitmask) return -1;
-    if (cudaMemcpy(hitmask, g_d_hitmask, (size_t)count, cudaMemcpyDeviceToHost) != cudaSuccess) {
-        free(hitmask);
-        return -1;
-    }
+    int use_pin = ensure_pin_bufs(chunk);
 
     uint32_t hits = 0;
     uint32_t stored = 0;
-    for (int i = 0; i < count; i++) {
-        if (!hitmask[i]) continue;
-        hits++;
-        if (match_indices && stored < (uint32_t)max_matches)
-            match_indices[stored++] = (uint32_t)i;
+
+    for (int off = 0; off < count; off += chunk) {
+        int n = count - off;
+        if (n > chunk) n = chunk;
+        size_t key_bytes = (size_t)n * 32;
+
+        const uint8_t *src = privkeys + (size_t)off * 32;
+        if (use_pin) {
+            memcpy(g_h_pin_priv, src, key_bytes);
+            src = g_h_pin_priv;
+        }
+        if (cudaMemcpy(g_d_privkeys, src, key_bytes, cudaMemcpyHostToDevice) != cudaSuccess)
+            return -1;
+
+        int threads = (n < kCudaThreads) ? n : kCudaThreads;
+        if (threads < 1) threads = 1;
+        int blocks = (n + threads - 1) / threads;
+        secp_search_kernel<<<blocks, threads>>>(
+            g_d_privkeys, n, compressed ? 1 : 0,
+            g_d_bloom, g_bloom_bits, g_bloom_hashes, g_d_hitmask);
+        if (cudaGetLastError() != cudaSuccess) return -1;
+        if (cudaDeviceSynchronize() != cudaSuccess) return -1;
+
+        uint8_t *hit_scratch = use_pin && g_h_pin_hit ? g_h_pin_hit : NULL;
+        uint8_t *hit_heap = NULL;
+        if (!hit_scratch) {
+            hit_heap = (uint8_t *)malloc((size_t)n);
+            if (!hit_heap) return -1;
+            hit_scratch = hit_heap;
+        }
+        if (cudaMemcpy(hit_scratch, g_d_hitmask, (size_t)n, cudaMemcpyDeviceToHost) != cudaSuccess) {
+            free(hit_heap);
+            return -1;
+        }
+
+        for (int i = 0; i < n; i++) {
+            if (!hit_scratch[i]) continue;
+            hits++;
+            if (match_indices && stored < (uint32_t)max_matches)
+                match_indices[stored++] = (uint32_t)(off + i);
+        }
+        free(hit_heap);
     }
-    free(hitmask);
+
     if (out_hit_count)
         *out_hit_count = hits;
     return (int)hits;

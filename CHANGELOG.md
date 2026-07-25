@@ -1,3 +1,11 @@
+# TrueCollider 2026-07-25
+- Fix bit-range overshoot / CUDA infinite walk; auto-clamp N to range; stop on Hit
+- `-U both` hybrid: even threads CUDA, odd threads CPU SIMD
+- CUDA search_batch now chunks like pubkey path (TDR-safe); reuse host staging buffers
+- Fast stride=1 privkey packing for GPU batches; quieter bloom fallback for tiny target sets
+- Track `keyhunt.exe` + `keyhunt_cuda.exe` in git for ready-to-run clones
+- Smoke 21/21 and mode harness 0 FAIL on maintainer host
+
 # Version 0.2.230519 Satoshi Quest
 - Speed x2 in BSGS mode for main version
 

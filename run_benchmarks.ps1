@@ -1,6 +1,7 @@
 # Benchmark TrueCollider modes; write JSON + CSV of measured rates.
 $ErrorActionPreference = "Continue"
-$Root = "C:\Users\loulo\Desktop\updayingkeyunt\TrueCollider-master"
+$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $Root) { $Root = (Get-Location).Path }
 Set-Location $Root
 $OutDir = Join-Path $Root "_bench_out"
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null

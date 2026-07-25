@@ -5520,7 +5520,10 @@ bool forceReadFileTroot(char *fileName) {
 	printf("[+] Building taproot binary fuse filter from %" PRIu64 " keys... ", N_TROOT);
 	fflush(stdout);
 	if(bf_build(&troot_bf_filter) != 0) {
-		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		if(N_TROOT < 256)
+			printf("skipped (<%u keys) — using bloom\n", 256u);
+		else
+			printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
 		troot_bf_filter.use_bloom_fallback = 1;
 	} else {
 		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&troot_bf_filter) / (double)1048576);
@@ -5812,7 +5815,10 @@ bool forceReadFileAddressSol(char *fileName) {
 	printf("[+] Building Solana binary fuse filter from %" PRIu64 " keys... ", N_SOL);
 	fflush(stdout);
 	if(bf_build(&sol_bf_filter) != 0) {
-		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		if(N_SOL < 256)
+			printf("skipped (<%u keys) — using bloom\n", 256u);
+		else
+			printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
 		sol_bf_filter.use_bloom_fallback = 1;
 	} else {
 		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&sol_bf_filter) / (double)1048576);
@@ -7015,24 +7021,65 @@ static int process_secp_gpu_privkey_batch(
 	}
 	if(batch < 1) return 0;
 
-	uint8_t *privs = (uint8_t*)malloc((size_t)batch * 32);
+	/* Reuse per-thread staging buffers — avoid malloc/free of multi-MB batches. */
+#if defined(_MSC_VER)
+	static __declspec(thread) uint8_t *tls_privs = NULL;
+	static __declspec(thread) uint32_t *tls_matches = NULL;
+	static __declspec(thread) uint8_t *tls_pubs = NULL;
+	static __declspec(thread) int tls_priv_cap = 0;
+	static __declspec(thread) int tls_match_cap = 0;
+	static __declspec(thread) int tls_pub_cap = 0;
+#else
+	static __thread uint8_t *tls_privs = NULL;
+	static __thread uint32_t *tls_matches = NULL;
+	static __thread uint8_t *tls_pubs = NULL;
+	static __thread int tls_priv_cap = 0;
+	static __thread int tls_match_cap = 0;
+	static __thread int tls_pub_cap = 0;
+#endif
+	if(batch > tls_priv_cap) {
+		free(tls_privs);
+		tls_privs = (uint8_t*)malloc((size_t)batch * 32);
+		tls_priv_cap = tls_privs ? batch : 0;
+	}
+	uint8_t *privs = tls_privs;
 	uint8_t *pubs = NULL;
 	uint32_t *matches = NULL;
 	if(!privs) return 0;
 
 	Int ktmp;
 	ktmp.Set(key_mpz);
-	for(int i = 0; i < batch; i++) {
-		ktmp.Get32Bytes(privs + (size_t)i * 32);
-		ktmp.Add(stride);
+	/* Fast path: stride == 1 → big-endian +1 on last 8 bytes (common sequential/rseq). */
+	int stride_one = stride->IsOne();
+	if(stride_one) {
+		uint8_t base[32];
+		ktmp.Get32Bytes(base);
+		memcpy(privs, base, 32);
+		for(int i = 1; i < batch; i++) {
+			uint8_t *dst = privs + (size_t)i * 32;
+			memcpy(dst, privs + (size_t)(i - 1) * 32, 32);
+			for(int b = 31; b >= 0; b--) {
+				if(++dst[b] != 0) break;
+			}
+		}
+	} else {
+		for(int i = 0; i < batch; i++) {
+			ktmp.Get32Bytes(privs + (size_t)i * 32);
+			ktmp.Add(stride);
+		}
 	}
 
 	/* --- xpoint: GPU EC → compare X to target table --- */
 	if(FLAGMODE == MODE_XPOINT) {
-		pubs = (uint8_t*)malloc((size_t)batch * 65);
-		if(!pubs) { free(privs); return 0; }
+		if(batch > tls_pub_cap) {
+			free(tls_pubs);
+			tls_pubs = (uint8_t*)malloc((size_t)batch * 65);
+			tls_pub_cap = tls_pubs ? batch : 0;
+		}
+		pubs = tls_pubs;
+		if(!pubs) return 0;
 		if(!gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, 1, pubs)) {
-			free(privs); free(pubs); return 0;
+			return 0;
 		}
 		for(int i = 0; i < batch; i++) {
 			const uint8_t *pub = pubs + (size_t)i * 65;
@@ -7052,14 +7099,18 @@ static int process_secp_gpu_privkey_batch(
 		Int advance; advance.SetInt32(batch); advance.Mult(stride);
 		key_mpz->Add(&advance);
 		if(count_out) *count_out += (uint64_t)batch;
-		free(privs); free(pubs);
 		return 1;
 	}
 
 	/* --- vanity: GPU EC → host hash160 → vanityrmdmatch --- */
 	if(FLAGMODE == MODE_VANITY) {
-		pubs = (uint8_t*)malloc((size_t)batch * 65);
-		if(!pubs) { free(privs); return 0; }
+		if(batch > tls_pub_cap) {
+			free(tls_pubs);
+			tls_pubs = (uint8_t*)malloc((size_t)batch * 65);
+			tls_pub_cap = tls_pubs ? batch : 0;
+		}
+		pubs = tls_pubs;
+		if(!pubs) return 0;
 		int passes[2], npass = 0;
 		if(FLAGSEARCH == SEARCH_COMPRESS || FLAGSEARCH == SEARCH_BOTH) passes[npass++] = 1;
 		if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) passes[npass++] = 0;
@@ -7093,13 +7144,17 @@ static int process_secp_gpu_privkey_batch(
 		Int advance; advance.SetInt32(batch); advance.Mult(stride);
 		key_mpz->Add(&advance);
 		if(count_out) *count_out += (uint64_t)batch;
-		free(privs); free(pubs);
 		return 1;
 	}
 
 	/* --- address / rmd160 / pubkey2addr: bloom search path --- */
-	matches = (uint32_t*)malloc((size_t)batch * sizeof(uint32_t));
-	if(!matches) { free(privs); return 0; }
+	if(batch > tls_match_cap) {
+		free(tls_matches);
+		tls_matches = (uint32_t*)malloc((size_t)batch * sizeof(uint32_t));
+		tls_match_cap = tls_matches ? batch : 0;
+	}
+	matches = tls_matches;
+	if(!matches) return 0;
 
 	int passes[2];
 	int npass = 0;
@@ -7122,7 +7177,14 @@ static int process_secp_gpu_privkey_batch(
 			continue;
 		if(hits == 0 && FLAGMODE == MODE_PUB2ADDR) {
 			/* Ensure bloom path: if no hits, still OK; try host filter via pubs */
-			if(!pubs) pubs = (uint8_t*)malloc((size_t)batch * 65);
+			if(!pubs) {
+				if(batch > tls_pub_cap) {
+					free(tls_pubs);
+					tls_pubs = (uint8_t*)malloc((size_t)batch * 65);
+					tls_pub_cap = tls_pubs ? batch : 0;
+				}
+				pubs = tls_pubs;
+			}
 			if(pubs && gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], pubs)) {
 				for(int i = 0; i < batch; i++) {
 					const uint8_t *pub = pubs + (size_t)i * 65;
@@ -7176,10 +7238,6 @@ static int process_secp_gpu_privkey_batch(
 	advance.Mult(stride);
 	key_mpz->Add(&advance);
 	if(count_out) *count_out += (uint64_t)batch;
-
-	free(privs);
-	free(matches);
-	free(pubs);
 	return 1;
 }
 
@@ -13065,7 +13123,10 @@ bool readFileAddress(char *fileName)	{
 		bf_build(&bf_filter_mid);
 	}
 	if(bf_build(&bf_filter) != 0) {
-				printf("\n[!] Binary fuse failed for cached data, falling back to bloom filter\n");
+				if(N < 256)
+					printf("skipped (<%u keys) — using bloom\n", 256u);
+				else
+					printf("\n[!] Binary fuse failed for cached data, falling back to bloom filter\n");
 				bf_filter.use_bloom_fallback = 1;
 			}
 			else {
@@ -13219,9 +13280,11 @@ bool forceReadFileAddress(char *fileName)	{
 	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
 	fflush(stdout);
 	if(bf_build(&bf_filter) != 0) {
-		printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+		if(N < 256)
+			printf("skipped (<%u keys) — using bloom\n", 256u);
+		else
+			printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
 		bf_filter.use_bloom_fallback = 1;
-		bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
 	}
 	else {
 		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);

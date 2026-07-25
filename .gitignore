@@ -1,7 +1,9 @@
 # Build artifacts
 keyhunt
-keyhunt.exe
-keyhunt_cuda.exe
+# Windows release binaries are tracked so clones can run without rebuilding.
+# Rebuild locally with build.bat / build_cuda_msvc.bat when sources change.
+# keyhunt.exe
+# keyhunt_cuda.exe
 *.o
 *.obj
 *.a
@@ -26,12 +28,30 @@ _upstream_check/
 *.swo
 *~
 
-# Test / cache / local scratch
-*.cache
-*.log
+# Runtime / search junk (checkpoints, hits, scratch)
+*.rck
+*.tmp
+RESULTS.TXT
+results.txt
+FOUND_WALLET.txt
 KEYFOUNDKEYFOUND.txt
 VANITYKEYFOUND.txt
 FOUND_*.txt
+foreign_dp_fossils.bin
+glasscannon_freeze.tmp
+collider_pb_target.txt
+_b.bat
+_t_*.txt
+_cleanup_*.txt
+
+# Local-only research dumps (not part of upstream TrueCollider)
+RCKangaroo-research/
+taproot.txt
+tests/taproot.txt
+
+# Test / cache / local scratch
+*.cache
+*.log
 smoke_*.txt
 build_cuda_log*.txt
 *.bloom
@@ -41,7 +61,6 @@ _cuda_*
 _cpu_*
 _e.txt
 _o.txt
-_t_*
 _bench_out/
 _mode_test_out/
 _build_*
@@ -55,14 +74,13 @@ out.txt
 output.txt
 stderr.txt
 stdout.txt
-# Generated pad/scratch only â€” keep tracking demo fixtures (_btc_1to2, _eth_1, _pubkey_g, _xpoint_g)
+# Generated pad/scratch only ï¿½ keep tracking demo fixtures (_btc_1to2, _eth_1, _pubkey_g, _xpoint_g)
 tests/_btc_pad.txt
 tests/_rmd*.txt
-
 
 # OS
 .DS_Store
 Thumbs.db
-# Local research notes — do not publish
-README_IDEAS_FOR_IMPROVEMENT.md
 
+# Local research notes - do not publish
+README_IDEAS_FOR_IMPROVEMENT.md
