@@ -1,4 +1,4 @@
-# Benchmark TrueCollider modes; write JSON + CSV of measured rates.
+﻿# Benchmark TrueCollider modes; write JSON + CSV of measured rates.
 $ErrorActionPreference = "Continue"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $Root) { $Root = (Get-Location).Path }
@@ -10,7 +10,7 @@ Get-Process keyhunt* -EA SilentlyContinue | Stop-Process -Force -EA SilentlyCont
 $btc = "tests\_btc_pad.txt"
 if (-not (Test-Path $btc)) {
 @"
-1BgGZ9tcN4rm9KBzDnJfSATsodMBcWLvRj
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
 1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
 1PWo3JeB9jrGwfHDNpdGK54CRas7fsVz9
 1JTK7s9YVYywfm5XUH7RPhH8VSHSokJEV
@@ -18,12 +18,12 @@ if (-not (Test-Path $btc)) {
 1PWo3JeB9jrGwfHDNpdGK54CRas7fsVz9
 1JTK7s9YVYywfm5XUH7RPhH8VSHSokJEV
 1MVDYgVaSN6iKKEsbzRUAYFrYJadLYZvx
-1BgGZ9tcN4rm9KBzDnJfSATsodMBcWLvRj
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
 1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
 1PWo3JeB9jrGwfHDNpdGK54CRas7fsVz9
 1JTK7s9YVYywfm5XUH7RPhH8VSHSokJEV
 1MVDYgVaSN6iKKEsbzRUAYFrYJadLYZvx
-1BgGZ9tcN4rm9KBzDnJfSATsodMBcWLvRj
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
 1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
 1PWo3JeB9jrGwfHDNpdGK54CRas7fsVz9
 "@ | Set-Content -Encoding ascii $btc

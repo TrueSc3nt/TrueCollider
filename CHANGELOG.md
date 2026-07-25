@@ -1,3 +1,9 @@
+# TrueCollider 2026-07-25 (final audit)
+- Minikeys: stop on HIT (`FLAGKEYFOUND`); fix non-SSE SHA256(22/23) path (was wrongly `sha256_33`)
+- Reject Base58Check-invalid BTC addresses (was silently searching wrong hash160)
+- Auto-clamp N keeps ≥1024 / 1024-aligned for CPU_GRP_SIZE
+- Correct key-1 fixture address (`…Dn7KprQz87SZ26SAMH`); final audit **32/32 PASS**
+
 # TrueCollider 2026-07-25
 - Fix bit-range overshoot / CUDA infinite walk; auto-clamp N to range; stop on Hit
 - `-U both` hybrid: even threads CUDA, odd threads CPU SIMD

@@ -1,4 +1,4 @@
-# Thorough TrueCollider / KeyCollider mode test harness
+﻿# Thorough TrueCollider / KeyCollider mode test harness
 # PASS = known hit | SMOKE = clean start | SKIP = unavailable | FAIL = error/no hit
 
 $ErrorActionPreference = "Continue"
@@ -143,7 +143,7 @@ function Invoke-Keyhunt {
 
 # --- fixtures ---
 @"
-1BgGZ9tcN4rm9KBzDnJfSATsodMBcWLvRj
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
 1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
 1PWo3JeB9jrGwfHDNpdGK54CRas7fsVz9
 1JTK7s9YVYywfm5XUH7RPhH8VSHSokJEV
@@ -161,7 +161,7 @@ function Invoke-Keyhunt {
 19vkiEajfhuZ8bs8Zu2jgmC6oqZbWqMX
 13zb1hQbWVsc2S7ZTZnP2G4undNNpdVu20
 12qGmGi12vvCJPb7Gj4U4BGu92kK3ZtAD
-1BgGZ9tcN4rm9KBzDnJfSATsodMBcWLvRj
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
 1EHNa6Q4Jz2uvNExL497mE43ikXhwF6kZm
 1PWo3JeB9jrGwfHDNpdGK54CRas7fsVz9
 1JTK7s9YVYywfm5XUH7RPhH8VSHSokJEV

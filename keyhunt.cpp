@@ -1036,7 +1036,8 @@ static void enable_random_sequential(const char *via) {
 }
 
 void notify_key_found(Int *found_key) {
-	if(FLAGSEARCHMODE == SEARCHMODE_GRAVITY) {
+	FLAGKEYFOUND = 1;
+	if(FLAGSEARCHMODE == SEARCHMODE_GRAVITY && found_key) {
 		gravity_center.Set(found_key);
 		gravity_found_count++;
 		if(FLAGQUIET == 0) {
@@ -1417,7 +1418,15 @@ void generate_poetry(char *output, int word_count, unsigned int *seed) {
 	}
 }
 
+/* libbase58 checksum hook — argument order is (out_hash, data, len). */
+static bool b58_sha256_bridge(void *hash, const void *data, size_t datasz) {
+	if(!hash || !data) return false;
+	sha256((uint8_t *)data, datasz, (uint8_t *)hash);
+	return true;
+}
+
 int main(int argc, char **argv)	{
+	b58_sha256_impl = b58_sha256_bridge;
 	char buffer[2048];
 	char rawvalue[32];
 	struct tothread *tt;	//tothread
@@ -2590,8 +2599,9 @@ int main(int argc, char **argv)	{
 			printf("[+] -rs default N = %" PRIu64 " (1M keys/chunk; override with -n)\n",
 				N_SEQUENTIAL_MAX);
 		}
-		/* Clamp walk length to the actual search range so -b 20 / tiny -r
-		   cannot scan billions of keys past the end (was default N=2^32). */
+		/* Clamp walk length to the search range so -b 20 / tiny -r cannot
+		   scan billions past the end. Keep N >= 1024 and 1024-aligned for
+		   CPU_GRP_SIZE; range-end checks still stop the walk. */
 		if((FLAGRANGE || FLAGBITRANGE) && !n_range_end.IsZero()) {
 			Int rsz;
 			rsz.Set(&n_range_end);
@@ -2601,9 +2611,10 @@ int main(int argc, char **argv)	{
 				if(range_size == 0) range_size = 1;
 				if(N_SEQUENTIAL_MAX > range_size) {
 					uint64_t clamped = range_size;
-					if(clamped >= 1024ULL)
-						clamped = (clamped / 1024ULL) * 1024ULL;
-					if(clamped < 1ULL) clamped = 1ULL;
+					if(clamped < 1024ULL)
+						clamped = 1024ULL;
+					else
+						clamped = ((clamped + 1023ULL) / 1024ULL) * 1024ULL;
 					N_SEQUENTIAL_MAX = clamped;
 					printf("[+] Auto-clamped N to %" PRIu64 " to fit search range\n",
 						N_SEQUENTIAL_MAX);
@@ -4436,7 +4447,8 @@ void *thread_process_minikeys(void *vargp)	{
 #if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
 						sha256sse_23((uint8_t*)minikey[0],(uint8_t*)minikey[1],(uint8_t*)minikey[2],(uint8_t*)minikey[3],(uint8_t*)rawvalue[0],(uint8_t*)rawvalue[1],(uint8_t*)rawvalue[2],(uint8_t*)rawvalue[3]);
 #else
-						for(k = 0; k < 4; k++) sha256_33((uint8_t*)minikey[k],(uint8_t*)rawvalue[k]);
+						/* Typo-check: SHA256(minikey + '?') — 23 bytes, NOT sha256_33 */
+						for(k = 0; k < 4; k++) sha256((uint8_t*)minikey[k], 23, (uint8_t*)rawvalue[k]);
 #endif
 						for(k = 0; k < 4; k++){
 							if(rawvalue[k][0] == 0x00)	{
@@ -4449,7 +4461,8 @@ void *thread_process_minikeys(void *vargp)	{
 #if !defined(NO_SSE) && (defined(__x86_64__) || defined(_M_X64)) && !defined(TERMUX)
 					sha256sse_22((uint8_t*)minikeys[0],(uint8_t*)minikeys[1],(uint8_t*)minikeys[2],(uint8_t*)minikeys[3],(uint8_t*)rawvalue[0],(uint8_t*)rawvalue[1],(uint8_t*)rawvalue[2],(uint8_t*)rawvalue[3]);
 #else
-					for(k = 0; k < 4; k++) sha256_33((uint8_t*)minikeys[k],(uint8_t*)rawvalue[k]);
+					/* Private key: SHA256(22-char minikey) */
+					for(k = 0; k < 4; k++) sha256((uint8_t*)minikeys[k], 22, (uint8_t*)rawvalue[k]);
 #endif
 					
 					for(k = 0; k < 4; k++)	{
@@ -4509,6 +4522,7 @@ void *thread_process_minikeys(void *vargp)	{
 									fclose(keys);
 								}
 								printf("\nHIT!! Private Key: %s\npubkey: %s\nminikey: %s\naddress: %s\n",hextemp,public_key_uncompressed_hex,minikeys[k],address[k]);
+								fflush(stdout);
 #if defined(_MSC_VER)
 								ReleaseMutex(write_keys);
 #else
@@ -4516,15 +4530,20 @@ void *thread_process_minikeys(void *vargp)	{
 #endif
 								
 								free(hextemp);
+								notify_key_found(&key_mpz[k]);
+								FLAGKEYFOUND = 1;
+								continue_flag = 0;
+								break;
 							}
 						}
 					}
+					if(FLAGKEYFOUND) break;
 				}
 				steps[thread_number]++;
 				count+=1024;
-			}while(count < N_SEQUENTIAL_MAX && continue_flag);
+			}while(count < N_SEQUENTIAL_MAX && continue_flag && !FLAGKEYFOUND);
 		}
-	}while(continue_flag);
+	}while(continue_flag && !FLAGKEYFOUND);
 	return NULL;
 }
 
@@ -12882,6 +12901,7 @@ void writekeysol(Int *key)	{
 	}
 	append_found_file("SOL", block);
 	printf("\nHit! Solana seed: %s\npubkey: %s\nAddress: %s\n", hextemp, pubkey_hex, address);
+	FLAGKEYFOUND = 1;
 #if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
@@ -13227,7 +13247,7 @@ bool forceReadFileAddress(char *fileName)	{
 				if(r<40 && isValidBase58String(aux))	{	//Address
 				raw_value_length = 25;
 				b58tobin(rawvalue,&raw_value_length,aux,r);
-				if(raw_value_length == 25)	{
+				if(raw_value_length == 25 && b58check(rawvalue, raw_value_length, aux, (size_t)r) >= 0)	{
 					if(rawvalue[0] == 0x05 || aux[0] == '3') {
 						FLAGHAS_P2SH_TARGETS = 1;
 					}
@@ -13236,6 +13256,9 @@ bool forceReadFileAddress(char *fileName)	{
 					memcpy(addressTable[i].value,rawvalue+1,sizeof(struct address_value));
 					i++;
 					validAddress = true;
+				}
+				else if(raw_value_length == 25) {
+					fprintf(stderr,"[E] Invalid Base58Check checksum, omitting: %s\n", aux);
 				}
 			}
 			if(r >= 42 && aux[0] == 'b' && aux[1] == 'c' && aux[2] == '1')	{	//bech32 (bc1q... segwit)
