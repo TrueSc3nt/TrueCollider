@@ -6,6 +6,7 @@ Developed & Modified by TrueScent
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
 #include <io.h>
 #else
@@ -242,7 +243,11 @@ char *str_baseminikey = NULL;
 char *raw_baseminikey = NULL;
 char *minikeyN = NULL;
 	
+#if defined(ENABLE_CUDA)
+const char *version = "TrueCollider Custom CUDA Edition (TC modes + KeyHunt-class GPU hunt)";
+#else
 const char *version = "TrueCollider Search Modes + Binary Fuse Filters";
+#endif
 
 #ifndef CPU_GRP_SIZE
 #define CPU_GRP_SIZE 1024
@@ -317,8 +322,26 @@ bool forceReadFileAddressSol(char *fileName);
 bool forceReadFileXPoint(char *fileName);
 bool processOneVanity();
 int autodetect_crypto_from_file(const char *fileName);
+int bech32_decode(const char *addr, uint8_t *program, int *program_len);
+/* Trim, strip trailing # comments; return 0 to skip blank/full-line comments. */
+static int prepare_target_line(char *line);
+static int looks_like_address_line(const char *s);
 
 bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom);
+
+/* Init-phase progress (always shown; -q does not suppress). Impl near initBloomFilter. */
+struct init_progress {
+	const char *label;
+	uint64_t total;
+	uint64_t last_done;
+	time_t last_print;
+	time_t t0;
+	int started;
+};
+static void init_progress_begin(struct init_progress *p, const char *label, uint64_t total);
+static void init_progress_tick(struct init_progress *p, uint64_t done);
+static void init_progress_end(struct init_progress *p, uint64_t done);
+static int bf_build_with_progress(struct binaryfuse_wrapper *bf, uint64_t nkeys, const char *what);
 
 int address_check(const void *buffer, int len);
 
@@ -1809,6 +1832,10 @@ int main(int argc, char **argv)	{
 	
 	
 	printf("[+] Version %s, developed & modified by TrueScent\n",version);
+#if defined(ENABLE_CUDA)
+	printf("[+] Custom CUDA edition: all TrueCollider modes + KeyHunt-class sequential GRP hunt\n");
+	printf("[+]   (MIT clean-room; use scripts/ for addr/eth/xpoint -> .bin packs)\n");
+#endif
 
 	research_consume_long_flags(&argc, argv);
 	collider_consume_flags(&argc, argv);
@@ -1916,7 +1943,7 @@ int main(int argc, char **argv)	{
 						FLAGRANDOM = 1;
 						FLAGSEARCHMODE = SEARCHMODE_RSEQ;
 						FLAGBSGSMODE = 3; /* use random BSGS thread with rseq chunking */
-						printf("[+] BSGS mode rseq: random start → sequential chunk → reseed\n");
+						printf("[+] BSGS mode rseq: random start -> sequential chunk -> reseed\n");
 						printf("[+] Set chunk with --walk 2M|1B|1T (default 1M keys)\n");
 					} else if(strcmp(optarg, "modfan") == 0) {
 						g_research.modfan = 1;
@@ -1925,7 +1952,7 @@ int main(int argc, char **argv)	{
 						FLAGBSGSMODE = 3; /* random giants + per-thread rem */
 						printf("[+] BSGS ModFan: fan workers across residues mod M=%u\n",
 						       g_research.mod_step);
-						printf("[+] Override with --mod-step M (thread tid → rem)\n");
+						printf("[+] Override with --mod-step M (thread tid -> rem)\n");
 					} else if(strcmp(optarg, "shadowledger") == 0) {
 						if(g_research.shadow_mod < 2) g_research.shadow_mod = 16;
 						g_research.mod_step = (uint32_t)g_research.shadow_mod;
@@ -2638,7 +2665,7 @@ int main(int argc, char **argv)	{
 	if(g_research.collider_htsz > 0 && FLAGBLOOMMULTIPLIER <= 1) {
 		FLAGBLOOMMULTIPLIER = g_research.collider_htsz > 1 ? g_research.collider_htsz / 4 : 1;
 		if(FLAGBLOOMMULTIPLIER < 1) FLAGBLOOMMULTIPLIER = 1;
-		printf("[+] Collider --htsz soft-map → bloom multiplier %i\n", FLAGBLOOMMULTIPLIER);
+		printf("[+] Collider --htsz soft-map -> bloom multiplier %i\n", FLAGBLOOMMULTIPLIER);
 	}
 	if(g_research.collider_baby_bits > 0) {
 		printf("[+] Collider --baby-bits %d: prefer large BSGS table (-k auto / -n 0x…)\n",
@@ -2650,7 +2677,7 @@ int main(int argc, char **argv)	{
 	}
 	if(g_research.collider_autosave_sec > 0) {
 		OUTPUTSECONDS.SetInt32(g_research.collider_autosave_sec);
-		printf("[+] Collider --wt → stats/save cadence %d sec\n",
+		printf("[+] Collider --wt -> stats/save cadence %d sec\n",
 		       g_research.collider_autosave_sec);
 	}
 
@@ -2703,7 +2730,7 @@ int main(int argc, char **argv)	{
 				cpu_vector_level_name(clamped));
 		}
 		g_backend_config.cpu_vector = clamped;
-		printf("[+] CPU detect: %s → selected %s → using %s%s\n",
+		printf("[+] CPU detect: %s -> selected %s -> using %s%s\n",
 			cpu_vector_name(),
 			cpu_vector_level_name(clamped),
 			cpu_hash_kernel_name(clamped),
@@ -2779,6 +2806,11 @@ int main(int argc, char **argv)	{
 			} else if(FLAGMODE == MODE_KANGAROO) {
 				fprintf(stderr,"[+] GPU kangaroo enabled (scan / multi-walker DP; batch %u).\n",
 					g_backend_config.gpu_batch_size);
+			} else if(FLAGMODE == MODE_MNEMONIC || FLAGMODE == MODE_POETRY ||
+				  FLAGMODE == MODE_BRAINWALLET) {
+				fprintf(stderr,
+					"[+] GPU seed path: derive then CUDA EC (batch %u). Rate = mnemonics/s, not EC Mk/s.\n",
+					g_backend_config.gpu_batch_size);
 			} else {
 				fprintf(stderr,"[+] GPU EC enabled for mode (batch %u keys; -G / -M to tune).\n",
 					g_backend_config.gpu_batch_size);
@@ -2821,7 +2853,7 @@ int main(int argc, char **argv)	{
 			int rk = 1;
 			const char *rn = "0x100000000000";
 			bsgs_recommend_from_ram(ram ? ram : g_backend_config.memory_budget_bytes, &rk, &rn);
-			printf("    host_RAM≈%.1f GB → BSGS recommend -n %s -k %d%s\n",
+			printf("    host_RAM≈%.1f GB -> BSGS recommend -n %s -k %d%s\n",
 				ram ? (double)ram / (1024.0 * 1024.0 * 1024.0) : 0.0, rn, rk,
 				FLAG_K_AUTO ? " (will apply -k auto)" : "");
 			if(FLAGMODE == MODE_BSGS || FLAG_K_AUTO || FLAG_N)
@@ -2889,7 +2921,7 @@ int main(int argc, char **argv)	{
 	g_handoff_armed = (FLAGMODE == MODE_BSGS &&
 	                   (FLAGBSGSMODE == 15 || strcmp(g_research.bsgs_name, "handoff") == 0));
 	if(g_handoff_armed)
-		printf("[+] HerdHandoff armed: BSGS giants → kangaroo pockets (-H %d bits)\n",
+		printf("[+] HerdHandoff armed: BSGS giants -> kangaroo pockets (-H %d bits)\n",
 		       g_research.handoff_bits);
 	
 	if((FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_PUB2ADDR) && FLAGCRYPTO == CRYPTO_NONE) {	//When none crypto is defined the default search is for Bitcoin
@@ -2995,7 +3027,13 @@ int main(int argc, char **argv)	{
 				}
 			}
 		}
-		printf("[+] N = %" PRIu64 "\n",N_SEQUENTIAL_MAX);
+		if(FLAGMODE == MODE_MNEMONIC || FLAGMODE == MODE_POETRY || FLAGMODE == MODE_BRAINWALLET) {
+			/* N_SEQUENTIAL_MAX is a legacy key-walk batch size; these modes do not use it. */
+			printf("[+] N = %" PRIu64 " (legacy batch display; unused in %s mode)\n",
+				N_SEQUENTIAL_MAX, modes[FLAGMODE]);
+		} else {
+			printf("[+] N = %" PRIu64 "\n",N_SEQUENTIAL_MAX);
+		}
 		if(FLAGMODE == MODE_MINIKEYS)	{
 			BSGS_N.SetInt32(DEBUGCOUNT);
 			if(FLAGBASEMINIKEY)	{
@@ -3069,11 +3107,24 @@ int main(int argc, char **argv)	{
 			break;
 		}
 		
-		if(FLAGMODE != MODE_VANITY && !FLAGREADEDFILE1 &&
+		if(FLAGMODE != MODE_VANITY && FLAGMODE != MODE_KANGAROO && !FLAGREADEDFILE1 &&
 		   FLAGCRYPTO != CRYPTO_SOL && FLAGCRYPTO != CRYPTO_TROOT)	{
 			printf("[+] Sorting data ...");
-			_sort(addressTable,N);
-			printf(" done! %" PRIu64 " values were loaded and sorted\n",N);
+			fflush(stdout);
+			if(N >= 1000000ULL) {
+				printf("\n[+] Sort: %" PRIu64 " addresses (may take several minutes)\n", N);
+				fflush(stdout);
+			}
+			{
+				time_t sort_t0 = time(NULL);
+				_sort(addressTable,N);
+				double sort_elapsed = difftime(time(NULL), sort_t0);
+				if(N >= 1000000ULL || sort_elapsed >= 1.0)
+					printf("[+] Sort done in %.1fs — %" PRIu64 " values were loaded and sorted\n",
+						sort_elapsed, N);
+				else
+					printf(" done! %" PRIu64 " values were loaded and sorted\n",N);
+			}
 			if(FLAGHAS_P2SH_TARGETS) {
 				printf("[+] P2SH (3...) targets detected — script-hash search enabled\n");
 			}
@@ -3093,20 +3144,30 @@ int main(int argc, char **argv)	{
 		}
 		aux = (char*) malloc(1024);
 		checkpointer((void *)aux,__FILE__,"malloc","aux" ,__LINE__ - 1);
-		while(!feof(fd))	{
-			if(fgets(aux,1022,fd) == aux)	{
-				trim(aux," \t\n\r");
-				if(strlen(aux) >= 128)	{	//Length of a full address in hexadecimal without 04
-						N++;
-				}else	{
-					if(strlen(aux) >= 66)	{
-						N++;
-					}
-				}
+		N = 0;
+		int saw_address_line = 0;
+		while(fgets(aux,1022,fd) == aux)	{
+			if(!prepare_target_line(aux))
+				continue;
+			stringtokenizer(aux,&tokenizerbsgs);
+			aux2 = nextToken(&tokenizerbsgs);
+			if(aux2) {
+				size_t toklen = strlen(aux2);
+				if(toklen == 66 || toklen == 130)
+					N++;
+				else if(looks_like_address_line(aux2))
+					saw_address_line = 1;
 			}
+			freetokenizer(&tokenizerbsgs);
 		}
 		if(N == 0)	{
-			fprintf(stderr,"[E] There is no valid data in the file\n");
+			fprintf(stderr,"[E] There is no valid public key data in the file\n");
+			if(saw_address_line) {
+				fprintf(stderr,"[E] BSGS requires pubkey hex (66/130); addresses cannot be used for ECDLP\n");
+			}
+			else {
+				fprintf(stderr,"[E] BSGS needs compressed (66) or uncompressed (130) hex pubkeys per line\n");
+			}
 			exit(EXIT_FAILURE);
 		}
 		bsgs_found = (int*) calloc(N,sizeof(int));
@@ -3120,43 +3181,39 @@ int main(int argc, char **argv)	{
 		checkpointer((void *)pointy_str,__FILE__,"malloc","pointy_str" ,__LINE__ -1 );
 		fseek(fd,0,SEEK_SET);
 		i = 0;
-		while(!feof(fd))	{
-			if(fgets(aux,1022,fd) == aux)	{
-				trim(aux," \t\n\r");
-				if(strlen(aux) >= 66)	{
-					stringtokenizer(aux,&tokenizerbsgs);
-					aux2 = nextToken(&tokenizerbsgs);
-					memset(pointx_str,0,65);
-					memset(pointy_str,0,65);
-					switch(strlen(aux2))	{
-						case 66:	//Compress
-
-							if(secp->ParsePublicKeyHex(aux2,OriginalPointsBSGS[i],OriginalPointsBSGScompressed[i]))	{
-								i++;
-							}
-							else	{
-								N--;
-							}
-
-						break;
-						case 130:	//With the 04
-
-							if(secp->ParsePublicKeyHex(aux2,OriginalPointsBSGS[i],OriginalPointsBSGScompressed[i]))	{
-								i++;
-							}
-							else	{
-								N--;
-							}
-
-						break;
-						default:
-							printf("Invalid length: %s\n",aux2);
-							N--;
-						break;
-					}
-					freetokenizer(&tokenizerbsgs);
-				}
+		while(fgets(aux,1022,fd) == aux)	{
+			if(!prepare_target_line(aux))
+				continue;
+			stringtokenizer(aux,&tokenizerbsgs);
+			aux2 = nextToken(&tokenizerbsgs);
+			if(!aux2) {
+				freetokenizer(&tokenizerbsgs);
+				continue;
 			}
+			memset(pointx_str,0,65);
+			memset(pointy_str,0,65);
+			switch(strlen(aux2))	{
+				case 66:	/* compressed */
+				case 130:	/* uncompressed 04||X||Y */
+					if(secp->ParsePublicKeyHex(aux2,OriginalPointsBSGS[i],OriginalPointsBSGScompressed[i]))	{
+						i++;
+					}
+					else	{
+						printf("[W] Invalid public key, skipping: %s\n",aux2);
+						N--;
+					}
+				break;
+				default:
+					/* Not counted in the first pass — warn only, do not N-- */
+					if(looks_like_address_line(aux2)) {
+						printf("[W] BSGS requires pubkey hex (66/130); address is not enough for ECDLP: %s\n",aux2);
+					}
+					else {
+						printf("[W] Skipping unrecognized BSGS target (need 66/130 hex pubkey): %s\n",aux2);
+					}
+				break;
+			}
+			freetokenizer(&tokenizerbsgs);
 		}
 		fclose(fd);
 		bsgs_point_number = N;
@@ -3189,7 +3246,7 @@ int main(int argc, char **argv)	{
 				Int rsz; rsz.Set(&n_range_end); rsz.Sub(&n_range_start); rsz.AddOne();
 				int rbits = rsz.GetBitLength();
 				double sqrt_ops = pow(2.0, (double)rbits * 0.5);
-				printf("[+] auto-k-eta: range~%d bits → BSGS ≈ %.2e√N ops; if bits≥70 prefer -m kangaroo\n",
+				printf("[+] auto-k-eta: range~%d bits -> BSGS ≈ %.2e√N ops; if bits>=70 prefer -m kangaroo\n",
 				       rbits, sqrt_ops);
 			}
 			if(!FLAG_N && rn) {
@@ -5880,13 +5937,20 @@ bool forceReadFileTroot(char *fileName) {
 
 	uint64_t count = 0;
 	char line[128];
+	uint8_t program[40];
+	int program_len = 0;
 	while(fgets(line, sizeof(line), f)) {
-		int len = strlen(line);
-		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
-		if(len == 64) count++;
+		if(!prepare_target_line(line))
+			continue;
+		int len = (int)strlen(line);
+		if(len == 64 && isValidHex(line))
+			count++;
+		else if(len >= 14 && line[0] == 'b' && line[1] == 'c' && line[2] == '1' &&
+		        bech32_decode(line, program, &program_len) == 0 && program_len == 32)
+			count++;
 	}
 	if(count == 0) {
-		fprintf(stderr, "[E] No valid 64-char hex keys found in %s\n", fileName);
+		fprintf(stderr, "[E] No valid taproot targets (64-char hex or bc1p...) in %s\n", fileName);
 		fclose(f);
 		return false;
 	}
@@ -5901,10 +5965,18 @@ bool forceReadFileTroot(char *fileName) {
 	fseek(f, 0, SEEK_SET);
 	uint64_t i = 0;
 	while(i < count && fgets(line, sizeof(line), f)) {
-		int len = strlen(line);
-		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+		if(!prepare_target_line(line))
+			continue;
+		int len = (int)strlen(line);
 		if(len == 64 && isValidHex(line)) {
 			hexs2bin(line, trootTable[i].value);
+			bloom_add(&troot_bloom, trootTable[i].value, 32);
+			bf_add(&troot_bf_filter, trootTable[i].value, 32);
+			i++;
+		}
+		else if(len >= 14 && line[0] == 'b' && line[1] == 'c' && line[2] == '1' &&
+		        bech32_decode(line, program, &program_len) == 0 && program_len == 32) {
+			memcpy(trootTable[i].value, program, 32);
 			bloom_add(&troot_bloom, trootTable[i].value, 32);
 			bf_add(&troot_bf_filter, trootTable[i].value, 32);
 			i++;
@@ -6168,9 +6240,8 @@ bool forceReadFileAddressSol(char *fileName) {
 	char line[128];
 	uint8_t tmp[32];
 	while(fgets(line, sizeof(line), f)) {
-		int len = strlen(line);
-		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
-		if(len == 0) continue;
+		if(!prepare_target_line(line))
+			continue;
 		if(sol_parse_target_line(line, tmp)) count++;
 	}
 	if(count == 0) {
@@ -6195,9 +6266,8 @@ bool forceReadFileAddressSol(char *fileName) {
 	fseek(f, 0, SEEK_SET);
 	uint64_t i = 0;
 	while(i < count && fgets(line, sizeof(line), f)) {
-		int len = strlen(line);
-		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
-		if(len == 0) continue;
+		if(!prepare_target_line(line))
+			continue;
 		if(sol_parse_target_line(line, solTable[i].value)) {
 			bloom_add(&sol_bloom, solTable[i].value, 32);
 			bf_add(&sol_bf_filter, solTable[i].value, 32);
@@ -7449,22 +7519,28 @@ static int process_secp_gpu_privkey_batch(
 	ktmp.Set(key_mpz);
 	/* Fast path: stride == 1 → big-endian +1 on last 8 bytes (common sequential/rseq). */
 	int stride_one = stride->IsOne();
-	if(stride_one) {
-		uint8_t base[32];
-		ktmp.Get32Bytes(base);
-		memcpy(privs, base, 32);
-		for(int i = 1; i < batch; i++) {
-			uint8_t *dst = privs + (size_t)i * 32;
-			memcpy(dst, privs + (size_t)(i - 1) * 32, 32);
-			for(int b = 31; b >= 0; b--) {
-				if(++dst[b] != 0) break;
+	uint8_t base_priv[32];
+	ktmp.Get32Bytes(base_priv);
+	/* Sequential GRP path only needs the base key; skip packing full priv streams. */
+	int use_grp = stride_one && !is_eth && gpu_dispatcher_secp_grp_ready(g_gpu_dispatcher);
+	if(!use_grp) {
+		if(stride_one) {
+			memcpy(privs, base_priv, 32);
+			for(int i = 1; i < batch; i++) {
+				uint8_t *dst = privs + (size_t)i * 32;
+				memcpy(dst, privs + (size_t)(i - 1) * 32, 32);
+				for(int b = 31; b >= 0; b--) {
+					if(++dst[b] != 0) break;
+				}
+			}
+		} else {
+			for(int i = 0; i < batch; i++) {
+				ktmp.Get32Bytes(privs + (size_t)i * 32);
+				ktmp.Add(stride);
 			}
 		}
 	} else {
-		for(int i = 0; i < batch; i++) {
-			ktmp.Get32Bytes(privs + (size_t)i * 32);
-			ktmp.Add(stride);
-		}
+		memcpy(privs, base_priv, 32); /* base only; GRP walks on device */
 	}
 
 	/* --- xpoint: GPU EC → compare X to target table --- */
@@ -7476,8 +7552,23 @@ static int process_secp_gpu_privkey_batch(
 		}
 		pubs = tls_pubs;
 		if(!pubs) return 0;
-		if(!gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, 1, pubs)) {
-			return 0;
+		int ok_pub = 0;
+		if(use_grp)
+			ok_pub = gpu_dispatcher_pubkey_grp(g_gpu_dispatcher, base_priv, (uint32_t)batch, 1, pubs);
+		if(!ok_pub) {
+			if(use_grp) {
+				/* Fall back: pack consecutive privs then legacy kernel */
+				memcpy(privs, base_priv, 32);
+				for(int i = 1; i < batch; i++) {
+					uint8_t *dst = privs + (size_t)i * 32;
+					memcpy(dst, privs + (size_t)(i - 1) * 32, 32);
+					for(int b = 31; b >= 0; b--) {
+						if(++dst[b] != 0) break;
+					}
+				}
+			}
+			if(!gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, 1, pubs))
+				return 0;
 		}
 		for(int i = 0; i < batch; i++) {
 			const uint8_t *pub = pubs + (size_t)i * 65;
@@ -7514,8 +7605,23 @@ static int process_secp_gpu_privkey_batch(
 		if(FLAGSEARCH == SEARCH_UNCOMPRESS || FLAGSEARCH == SEARCH_BOTH) passes[npass++] = 0;
 		if(npass == 0) passes[npass++] = 1;
 		for(int p = 0; p < npass; p++) {
-			if(!gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], pubs))
-				continue;
+			int ok_pub = 0;
+			if(use_grp)
+				ok_pub = gpu_dispatcher_pubkey_grp(g_gpu_dispatcher, base_priv, (uint32_t)batch, passes[p], pubs);
+			if(!ok_pub) {
+				if(use_grp) {
+					memcpy(privs, base_priv, 32);
+					for(int i = 1; i < batch; i++) {
+						uint8_t *dst = privs + (size_t)i * 32;
+						memcpy(dst, privs + (size_t)(i - 1) * 32, 32);
+						for(int b = 31; b >= 0; b--) {
+							if(++dst[b] != 0) break;
+						}
+					}
+				}
+				if(!gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], pubs))
+					continue;
+			}
 			for(int i = 0; i < batch; i++) {
 				const uint8_t *pub = pubs + (size_t)i * 65;
 				if(pub[0] == 0) continue;
@@ -7566,10 +7672,31 @@ static int process_secp_gpu_privkey_batch(
 	}
 
 	Point publickey;
+	int packed_privs = !use_grp;
 	for(int p = 0; p < npass; p++) {
-		uint32_t hits = gpu_dispatcher_search_privkeys(
-			g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], encode,
-			matches, (uint32_t)batch);
+		uint32_t hits = 0;
+		int grp_ok = 0;
+		if(use_grp && encode == GPU_ENCODE_HASH160) {
+			grp_ok = gpu_dispatcher_search_privkeys_grp(
+				g_gpu_dispatcher, base_priv, (uint32_t)batch, passes[p], encode,
+				matches, (uint32_t)batch, &hits);
+		}
+		if(!grp_ok) {
+			if(!packed_privs) {
+				memcpy(privs, base_priv, 32);
+				for(int i = 1; i < batch; i++) {
+					uint8_t *dst = privs + (size_t)i * 32;
+					memcpy(dst, privs + (size_t)(i - 1) * 32, 32);
+					for(int b = 31; b >= 0; b--) {
+						if(++dst[b] != 0) break;
+					}
+				}
+				packed_privs = 1;
+			}
+			hits = gpu_dispatcher_search_privkeys(
+				g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], encode,
+				matches, (uint32_t)batch);
+		}
 		/* If bloom not loaded (e.g. pubkey2addr before bloom), fall back to pubkey+host. */
 		if(hits == 0 && !gpu_dispatcher_secp_ready(g_gpu_dispatcher))
 			continue;
@@ -7582,6 +7709,17 @@ static int process_secp_gpu_privkey_batch(
 					tls_pub_cap = tls_pubs ? batch : 0;
 				}
 				pubs = tls_pubs;
+			}
+			if(!packed_privs) {
+				memcpy(privs, base_priv, 32);
+				for(int i = 1; i < batch; i++) {
+					uint8_t *dst = privs + (size_t)i * 32;
+					memcpy(dst, privs + (size_t)(i - 1) * 32, 32);
+					for(int b = 31; b >= 0; b--) {
+						if(++dst[b] != 0) break;
+					}
+				}
+				packed_privs = 1;
 			}
 			if(pubs && gpu_dispatcher_pubkey_batch(g_gpu_dispatcher, privs, (uint32_t)batch, passes[p], pubs)) {
 				for(int i = 0; i < batch; i++) {
@@ -9953,7 +10091,7 @@ pn.y.ModAdd(&GSn[i].y);
 				n_range_start.Set(&pstart);
 				n_range_end.Set(&pend);
 				FLAGRANGE = 1;
-				printf("[+] HerdHandoff → kangaroo (pocket <= 28 bits)\n");
+				printf("[+] HerdHandoff -> kangaroo (pocket <= 28 bits)\n");
 				run_kangaroo_search(g_handoff_pubkey_file);
 				n_range_start.Set(&save_s);
 				n_range_end.Set(&save_e);
@@ -10777,9 +10915,9 @@ int autodetect_crypto_from_file(const char *fileName) {
 	int xrp_count = 0, btg_count = 0, troot_count = 0, sol_count = 0;
 
 	while(fgets(line, sizeof(line), f)) {
-		int len = strlen(line);
-		while(len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
-		if(len == 0) continue;
+		if(!prepare_target_line(line))
+			continue;
+		int len = (int)strlen(line);
 
 		if(len >= 2 && line[0] == '0' && line[1] == 'x') {
 			eth_count++;
@@ -10805,8 +10943,13 @@ int autodetect_crypto_from_file(const char *fileName) {
 		else if(line[0] == '1' || line[0] == '3') {
 			btc_count++;
 		}
-		else if(len == 40) {
+		else if(len == 64 && isValidHex(line)) {
+			/* x-only taproot output key (hex), not hash160 (40 hex) */
 			troot_count++;
+		}
+		else if(len == 40 && isValidHex(line)) {
+			/* raw hash160 / rmd160 — treat as BTC filter target */
+			btc_count++;
 		}
 		else if(len >= 32 && len <= 44 && isValidBase58String(line)) {
 			uint8_t raw[32];
@@ -12384,15 +12527,21 @@ void menu() {
 	printf("PERFORMANCE:\n");
 	printf("  -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)\n");
 	printf("  -A mode      CPU vectorization (default: auto):\n");
-	printf("                 auto   - Detect best: AVX-512 → AVX2 → SSE → scalar\n");
+	printf("                 auto   - Detect best: AVX-512 -> AVX2 -> SSE -> scalar\n");
 	printf("                 none, sse, avx, avx2, avx512\n");
 	printf("               AVX2 = 8-wide hash160; AVX-512 = 16-wide; AVX1/SSE = 4-wide SSE.\n");
 	printf("  -U backend   GPU backend: none, cuda, opencl, both (default: none)\n");
-	printf("                 cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)\n");
+	printf("                 cuda   = Custom CUDA edition (all -m modes; sequential GRP\n");
+	printf("                          address/rmd160/xpoint toward KeyHunt-class Mk/s)\n");
 	printf("                 opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU\n");
 	printf("                 both   = CPU threads + CUDA GPU together (hybrid)\n");
+	printf("               keyhunt_cuda.exe: prefer -U cuda -M auto -t 1 -x sequential\n");
+	printf("               Mnemonic/poetry use GPU EC (+ CUDA PBKDF2 when available);\n");
+	printf("               rates are mnemonics/s, not EC Mk/s.\n");
 	printf("  -G N         GPU batch size hint (keys). Default: auto from -M / VRAM\n");
 	printf("  -M MB|auto   GPU/search memory budget in megabytes (KeyHunt-Cuda style).\n");
+	printf("  -f FILE      Targets: text addresses/hex OR packed .bin/.hash160/.keccak160\n");
+	printf("               (20-byte records). Convert with scripts/addr_to_hash160.py etc.\n");
 	printf("               Examples: -M 512  -M 2048  -M 2G  -M auto\n");
 	printf("               Under CUDA, default is auto (size from free VRAM).\n");
 	printf("               Larger budget => larger privkey/pubkey batches (TDR-safe chunks).\n");
@@ -12413,15 +12562,17 @@ void menu() {
 	printf("===============================================================\n\n");
 
 	printf("  Address targets:    One address per line (auto-detected format):\n");
-	printf("                      BTC:   1..., 3..., bc1q..., bc1p...\n");
+	printf("                      BTC:   1..., 3..., bc1q... (bc1p... needs -c troot)\n");
 	printf("                      ETH:   0x...\n");
 	printf("                      LTC:   L...\n");
 	printf("                      DOGE:  D...\n");
 	printf("                      XRP:   r...\n");
 	printf("                      BTG:   G...\n");
-	printf("  RMD160 targets:     One 40-char hex RIPEMD-160 hash per line\n");
-	printf("  Public key targets: One hex public key per line (64/66/130 chars)\n");
-	printf("  Taproot targets:    One 64-char hex x-only output key per line\n");
+	printf("                      SOL:   base58 pubkey (-c sol)\n");
+	printf("                      Lines starting with # are comments (also blank lines)\n");
+	printf("  RMD160 targets:     40-char hex hash160 AND/OR addresses (decoded to hash160)\n");
+	printf("  Public key targets: One hex public key per line (66/130 chars) for BSGS/kangaroo\n");
+	printf("  Taproot targets:    64-char hex x-only key OR bc1p... address (-c troot)\n");
 	printf("  Vanity targets:     Via -v flag, not file\n\n");
 
 	printf("===============================================================\n");
@@ -12864,9 +13015,24 @@ int run_kangaroo_search(const char *pubkey_file) {
 	bool compressed = true;
 	int got = 0;
 	while(fgets(line, sizeof(line), fd)) {
-		trim(line, (char*)" \t\n\r");
+		if(!prepare_target_line(line))
+			continue;
+		/* First token only. */
+		{
+			char *sp = strpbrk(line, " \t");
+			if(sp) *sp = '\0';
+		}
 		size_t L = strlen(line);
-		if(L < 66) continue;
+		if(L != 66 && L != 130)
+			continue;
+		if(line[0] != '0' || (line[1] != '2' && line[1] != '3' && line[1] != '4'))
+			continue;
+		int hex_ok = 1;
+		for(size_t i = 0; i < L; i++) {
+			if(!isxdigit((unsigned char)line[i])) { hex_ok = 0; break; }
+		}
+		if(!hex_ok)
+			continue;
 		if(secp->ParsePublicKeyHex(line, target, compressed)) {
 			got = 1;
 			break;
@@ -12991,11 +13157,18 @@ int run_kangaroo_search(const char *pubkey_file) {
 		}
 	}
 
-	/* Pollard's kangaroo with distinguished points. */
-	int dp_bits = bits / 2;
-	if(dp_bits > 18) dp_bits = 18;
-	if(dp_bits < 6) dp_bits = 6;
+	/* Pollard's kangaroo with distinguished points.
+	 * Jump lengths are scaled to ~sqrt(N) (not fixed 2^0..2^31), otherwise
+	 * small/medium ranges almost never collide in practice.
+	 */
+	int dp_bits = bits / 2 - 2;
+	if(dp_bits > 16) dp_bits = 16;
+	if(dp_bits < 4) dp_bits = 4;
 	uint64_t dp_mask = (1ULL << dp_bits) - 1ULL;
+
+	int max_jump_bits = bits / 2 + 1;
+	if(max_jump_bits < 1) max_jump_bits = 1;
+	if(max_jump_bits > 31) max_jump_bits = 31;
 
 	Point jump_pts[32];
 	Int jump_len[32];
@@ -13003,8 +13176,9 @@ int run_kangaroo_search(const char *pubkey_file) {
 	uint8_t jump_len_be[32 * 32];
 	memset(jump_len_be, 0, sizeof(jump_len_be));
 	for(int i = 0; i < 32; i++) {
+		int jb = i % (max_jump_bits + 1);
 		jump_len[i].SetInt32(1);
-		jump_len[i].ShiftL(i);
+		jump_len[i].ShiftL(jb);
 		jump_pts[i] = secp->ComputePublicKey(&jump_len[i]);
 		jump_pts[i].x.Get32Bytes(jump_xy + (size_t)i * 64);
 		jump_pts[i].y.Get32Bytes(jump_xy + (size_t)i * 64 + 32);
@@ -13019,21 +13193,27 @@ int run_kangaroo_search(const char *pubkey_file) {
 	auto is_dp = [&](Point &p) -> bool {
 		unsigned char b[32];
 		p.x.Get32Bytes(b);
-		uint64_t lo = 0;
-		memcpy(&lo, b + 24, 8);
-		return (lo & dp_mask) == 0;
+		/* Low 32 bits of x (BE → take last 4 bytes as big-endian). */
+		uint32_t lo = ((uint32_t)b[28] << 24) | ((uint32_t)b[29] << 16) |
+			((uint32_t)b[30] << 8) | (uint32_t)b[31];
+		return (lo & (uint32_t)dp_mask) == 0;
 	};
 	auto xkey = [](Point &p) -> uint64_t {
 		unsigned char b[32];
 		p.x.Get32Bytes(b);
 		uint64_t k = 0;
-		memcpy(&k, b, 8);
+		for(int i = 0; i < 8; i++)
+			k = (k << 8) | b[i];
 		return k;
 	};
 	auto xkey_bytes = [](const uint8_t *xy64) -> uint64_t {
 		uint64_t k = 0;
-		memcpy(&k, xy64, 8);
+		for(int i = 0; i < 8; i++)
+			k = (k << 8) | xy64[i];
 		return k;
+	};
+	auto same_pub = [](Point &a, Point &b) -> bool {
+		return a.x.IsEqual(&b.x) && a.y.IsEqual(&b.y);
 	};
 
 	struct HerdEntry { Int dist; int herd; };
@@ -13135,7 +13315,7 @@ int run_kangaroo_search(const char *pubkey_file) {
 						if(kfound.IsLower(&n_range_start) || kfound.IsGreater(&n_range_end))
 							continue;
 						Point check = secp->ComputePublicKey(&kfound);
-						if(check.equals(target)) {
+						if(same_pub(check, target)) {
 							writekey(compressed, &kfound);
 							printf("[+] Kangaroo (GPU) solved in %" PRIu64 " ops (DP table %zu)\n",
 								ops, table.size());
@@ -13158,56 +13338,79 @@ int run_kangaroo_search(const char *pubkey_file) {
 		}
 	}
 
-	printf("[+] Using Pollard's kangaroo (dp_bits=%d)\n", dp_bits);
+	printf("[+] Using Pollard's kangaroo (dp_bits=%d, max_jump_bits=%d)\n",
+		dp_bits, max_jump_bits);
+	fflush(stdout);
 
-	Point tame_pos = secp->ComputePublicKey(&mid);
-	Int tame_dist;
-	tame_dist.Set(&mid);
-	Point wild_pos;
-	wild_pos.Set(target);
-	Int wild_dist;
-	wild_dist.SetInt32(0);
+	/* A few tame/wild pairs reduce variance vs a single pair. */
+	const int n_pairs = 8;
+	Point tame_pos[8], wild_pos[8];
+	Int tame_dist[8], wild_dist[8];
+	for(int i = 0; i < n_pairs; i++) {
+		Int td;
+		td.Set(&mid);
+		td.Add((uint64_t)i);
+		tame_pos[i] = secp->ComputePublicKey(&td);
+		tame_dist[i].Set(&td);
+
+		Int wd;
+		wd.SetInt32(i);
+		if(i == 0) {
+			wild_pos[i].Set(target);
+		} else {
+			Point off = secp->ComputePublicKey(&wd);
+			wild_pos[i] = secp->AddDirect(target, off);
+		}
+		wild_dist[i].Set(&wd);
+	}
 
 	uint64_t ops = 0;
-	const uint64_t max_ops = 1ULL << (bits < 40 ? (bits + 2) : 42);
+	const uint64_t max_ops = 1ULL << (bits < 40 ? (bits + 4) : 44);
 	while(ops < max_ops) {
-		for(int herd = 0; herd < 2; herd++) {
-			Point *pos = (herd == 0) ? &wild_pos : &tame_pos;
-			Int *dist = (herd == 0) ? &wild_dist : &tame_dist;
-			int ji = jump_idx(*pos);
-			*pos = secp->AddDirect(*pos, jump_pts[ji]);
-			dist->Add(&jump_len[ji]);
-			ops++;
-			if(!is_dp(*pos)) continue;
-			uint64_t key = xkey(*pos);
-			auto it = table.find(key);
-			if(it == table.end()) {
-				HerdEntry e;
-				e.dist.Set(dist);
-				e.herd = herd;
-				table[key] = e;
-			} else if(it->second.herd != herd) {
-				Int kfound;
-				if(herd == 1) {
-					kfound.Set(dist);
-					kfound.Sub(&it->second.dist);
-				} else {
-					kfound.Set(&it->second.dist);
-					kfound.Sub(dist);
-				}
-				if(kfound.IsLower(&n_range_start) || kfound.IsGreater(&n_range_end))
-					continue;
-				Point check = secp->ComputePublicKey(&kfound);
-				if(check.equals(target)) {
-					writekey(compressed, &kfound);
-					printf("[+] Kangaroo solved in %" PRIu64 " ops (DP table %zu)\n",
-						ops, table.size());
-					return 0;
+		for(int pi = 0; pi < n_pairs; pi++) {
+			for(int herd = 0; herd < 2; herd++) {
+				Point *pos = (herd == 0) ? &wild_pos[pi] : &tame_pos[pi];
+				Int *dist = (herd == 0) ? &wild_dist[pi] : &tame_dist[pi];
+				int ji = jump_idx(*pos);
+				/* Deterministic fallback if AddDirect would hit dx=0 */
+				if(pos->x.IsEqual(&jump_pts[ji].x))
+					ji = (ji + 1) & 31;
+				*pos = secp->AddDirect(*pos, jump_pts[ji]);
+				dist->Add(&jump_len[ji]);
+				ops++;
+				if(!is_dp(*pos)) continue;
+				uint64_t key = xkey(*pos);
+				auto it = table.find(key);
+				if(it == table.end()) {
+					HerdEntry e;
+					e.dist.Set(dist);
+					e.herd = herd;
+					table[key] = e;
+				} else if(it->second.herd != herd) {
+					Int kfound;
+					if(herd == 1) {
+						kfound.Set(dist);
+						kfound.Sub(&it->second.dist);
+					} else {
+						kfound.Set(&it->second.dist);
+						kfound.Sub(dist);
+					}
+					if(kfound.IsLower(&n_range_start) || kfound.IsGreater(&n_range_end))
+						continue;
+					Point check = secp->ComputePublicKey(&kfound);
+					if(same_pub(check, target)) {
+						writekey(compressed, &kfound);
+						printf("[+] Kangaroo solved in %" PRIu64 " ops (DP table %zu)\n",
+							ops, table.size());
+						return 0;
+					}
 				}
 			}
 		}
-		if(!FLAGQUIET && (ops & 0xFFFFFull) == 0)
+		if(!FLAGQUIET && (ops & 0xFFFFFull) == 0) {
 			printf("\r[+] kangaroo ops %" PRIu64 " DPs %zu", ops, table.size());
+			fflush(stdout);
+		}
 	}
 	fprintf(stderr,"\n[E] Kangaroo: not found within op limit (try tighter -r)\n");
 	return 1;
@@ -13352,6 +13555,39 @@ bool isValidBase58String(char *str)	{
 	return continuar;
 }
 
+/* Trim whitespace, strip trailing "# comment"; return 0 if blank / full-line comment. */
+static int prepare_target_line(char *line) {
+	if(!line)
+		return 0;
+	trim(line, (char*)" \t\n\r");
+	if(line[0] == '\0' || line[0] == '#' || line[0] == ';')
+		return 0;
+	char *hash = strchr(line, '#');
+	if(hash) {
+		*hash = '\0';
+		trim(line, (char*)" \t\n\r");
+		if(line[0] == '\0')
+			return 0;
+	}
+	return 1;
+}
+
+static int looks_like_address_line(const char *s) {
+	size_t L;
+	if(!s || !s[0])
+		return 0;
+	L = strlen(s);
+	if(L >= 42 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+		return 1;
+	if(L >= 14 && s[0] == 'b' && s[1] == 'c' && s[2] == '1')
+		return 1;
+	if(L >= 25 && L <= 44 &&
+	   (s[0] == '1' || s[0] == '3' || s[0] == 'L' || s[0] == 'M' ||
+	    s[0] == 'D' || s[0] == 'G' || s[0] == 'r' || s[0] == 'Q'))
+		return 1;
+	return 0;
+}
+
 bool processOneVanity()	{
 	int i,k;
 	if(vanity_rmd_targets == 0)	{
@@ -13387,7 +13623,8 @@ bool readFileVanity(char *fileName)	{
 		while(!feof(fileDescriptor))	{
 			hextemp = fgets(aux,100,fileDescriptor);
 			if(hextemp == aux)	{
-				trim(aux," \t\n\r");
+				if(!prepare_target_line(aux))
+					continue;
 				len = strlen(aux);
 				if(len > 0 && len < 36){
 					if(isValidBase58String(aux))	{
@@ -13552,31 +13789,27 @@ bool readFileAddress(char *fileName)	{
 			fclose(fileDescriptor);
 			MAXLENGTHADDRESS = sizeof(struct address_value);
 			bf_init(&bf_filter, (uint32_t)N, 0.000001);
-			for(uint64_t bi = 0; bi < N; bi++) {
-				bf_add(&bf_filter, addressTable[bi].value, sizeof(struct address_value));
-				if(FLAG_FUSE_CASCADE) {
-					uint64_t _k48 = research_hash_key48((const uint8_t*)addressTable[bi].value);
-					uint64_t _k96 = research_hash_key96((const uint8_t*)addressTable[bi].value);
-					bf_add(&bf_filter_coarse, &_k48, 8);
-					bf_add(&bf_filter_mid, &_k96, 8);
+			{
+				struct init_progress prog;
+				init_progress_begin(&prog, "Collecting keys (cache)", N);
+				for(uint64_t bi = 0; bi < N; bi++) {
+					bf_add(&bf_filter, addressTable[bi].value, sizeof(struct address_value));
+					if(FLAG_FUSE_CASCADE) {
+						uint64_t _k48 = research_hash_key48((const uint8_t*)addressTable[bi].value);
+						uint64_t _k96 = research_hash_key96((const uint8_t*)addressTable[bi].value);
+						bf_add(&bf_filter_coarse, &_k48, 8);
+						bf_add(&bf_filter_mid, &_k96, 8);
+					}
+					init_progress_tick(&prog, bi + 1);
 				}
+				init_progress_end(&prog, N);
 			}
-			printf("[+] Building binary fuse filter from %" PRIu64 " cached keys... ", N);
-			fflush(stdout);
 			if(FLAG_FUSE_CASCADE) {
-		bf_build(&bf_filter_coarse);
-		bf_build(&bf_filter_mid);
-	}
-	if(bf_build(&bf_filter) != 0) {
-				if(N < 256)
-					printf("skipped (<%u keys) — using bloom\n", 256u);
-				else
-					printf("\n[!] Binary fuse failed for cached data, falling back to bloom filter\n");
+				bf_build_with_progress(&bf_filter_coarse, N, "cached coarse keys");
+				bf_build_with_progress(&bf_filter_mid, N, "cached mid keys");
+			}
+			if(bf_build_with_progress(&bf_filter, N, "cached keys") != 0)
 				bf_filter.use_bloom_fallback = 1;
-			}
-			else {
-				printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
-			}
 		}
 	}
 	if(FLAGVANITY)	{
@@ -13622,6 +13855,110 @@ bool readFileAddress(char *fileName)	{
 	return true;
 }
 
+/* Raw packed 20-byte hash160 / keccak160 targets (KeyHunt-Cuda -i style; MIT loader). */
+static int filename_suggests_raw20(const char *fileName) {
+	size_t n;
+	if(!fileName) return 0;
+	n = strlen(fileName);
+#if defined(_WIN32) || defined(__CYGWIN__)
+	if(n >= 8 && _stricmp(fileName + n - 8, ".hash160") == 0) return 1;
+	if(n >= 10 && _stricmp(fileName + n - 10, ".keccak160") == 0) return 1;
+	if(n >= 4 && _stricmp(fileName + n - 4, ".bin") == 0) return 1;
+#else
+	if(n >= 8 && strcasecmp(fileName + n - 8, ".hash160") == 0) return 1;
+	if(n >= 10 && strcasecmp(fileName + n - 10, ".keccak160") == 0) return 1;
+	if(n >= 4 && strcasecmp(fileName + n - 4, ".bin") == 0) return 1;
+#endif
+	return 0;
+}
+
+static int filename_suggests_xpoint_bin(const char *fileName) {
+	size_t n;
+	if(!fileName) return 0;
+	n = strlen(fileName);
+#if defined(_WIN32) || defined(__CYGWIN__)
+	if(n >= 11 && _stricmp(fileName + n - 11, ".xpoint.bin") == 0) return 1;
+	if(n >= 7 && _stricmp(fileName + n - 7, ".xpoint") == 0) return 1;
+#else
+	if(n >= 11 && strcasecmp(fileName + n - 11, ".xpoint.bin") == 0) return 1;
+	if(n >= 7 && strcasecmp(fileName + n - 7, ".xpoint") == 0) return 1;
+#endif
+	return 0;
+}
+
+static bool try_load_raw20_bin(char *fileName) {
+	FILE *fd;
+	long sz;
+	uint64_t numberItems, i;
+	uint8_t rec[20];
+	if(filename_suggests_xpoint_bin(fileName))
+		return false;
+	if(!filename_suggests_raw20(fileName))
+		return false;
+	fd = fopen(fileName, "rb");
+	if(!fd)
+		return false;
+	if(fseek(fd, 0, SEEK_END) != 0) { fclose(fd); return false; }
+	sz = ftell(fd);
+	/* Bare .bin that is also a multiple of 32 may be xpoints — refuse unless .hash160/.keccak160 */
+	if(sz < 20 || (sz % 20) != 0) {
+		fclose(fd);
+		return false;
+	}
+	{
+		size_t n = strlen(fileName);
+		int explicit20 = 0;
+#if defined(_WIN32) || defined(__CYGWIN__)
+		explicit20 = (n >= 8 && _stricmp(fileName + n - 8, ".hash160") == 0) ||
+			(n >= 10 && _stricmp(fileName + n - 10, ".keccak160") == 0);
+#else
+		explicit20 = (n >= 8 && strcasecmp(fileName + n - 8, ".hash160") == 0) ||
+			(n >= 10 && strcasecmp(fileName + n - 10, ".keccak160") == 0);
+#endif
+		if(!explicit20 && (sz % 32) == 0) {
+			fclose(fd);
+			return false; /* ambiguous packed xpoints vs hash160 */
+		}
+	}
+	numberItems = (uint64_t)sz / 20ULL;
+	rewind(fd);
+	FLAGHAS_P2SH_TARGETS = 0;
+	MAXLENGTHADDRESS = 20;
+	printf("[+] Loading binary hash160 pack %s (%" PRIu64 " x 20-byte records)\n",
+	       fileName, numberItems);
+	fflush(stdout);
+	addressTable = (struct address_value*) malloc(sizeof(struct address_value) * numberItems);
+	checkpointer((void *)addressTable, __FILE__, "malloc", "addressTable", __LINE__ - 1);
+	if(!initBloomFilter(&bloom, numberItems)) {
+		fclose(fd);
+		return false;
+	}
+	{
+		struct init_progress prog;
+		init_progress_begin(&prog, "Collecting keys", numberItems);
+		for(i = 0; i < numberItems; i++) {
+			if(fread(rec, 1, 20, fd) != 20) {
+				fprintf(stderr, "[E] Short read in binary pack %s at record %" PRIu64 "\n",
+					fileName, i);
+				fclose(fd);
+				return false;
+			}
+			bloom_add(&bloom, rec, sizeof(struct address_value));
+			bf_add(&bf_filter, rec, sizeof(struct address_value));
+			memcpy(addressTable[i].value, rec, 20);
+			init_progress_tick(&prog, i + 1);
+		}
+		init_progress_end(&prog, numberItems);
+	}
+	fclose(fd);
+	N = numberItems;
+	if(bf_build_with_progress(&bf_filter, N, "keys") != 0)
+		bf_filter.use_bloom_fallback = 1;
+	printf("[+] Binary pack loaded and sorted path ready (%" PRIu64 " targets)\n", N);
+	fflush(stdout);
+	return true;
+}
+
 bool forceReadFileAddress(char *fileName)	{
 	/* Here we read the original file as usual */
 	FILE *fileDescriptor;
@@ -13629,114 +13966,134 @@ bool forceReadFileAddress(char *fileName)	{
 	uint64_t numberItems,i;
 	size_t r,raw_value_length;
 	uint8_t rawvalue[50];
-	char aux[100],*hextemp;
+	char aux[128];
 
 	FLAGHAS_P2SH_TARGETS = 0;
+	if(try_load_raw20_bin(fileName))
+		return true;
 	fileDescriptor = fopen(fileName,"r");	
 	if(fileDescriptor == NULL)	{
 		fprintf(stderr,"[E] Error opening the file %s, line %i\n",fileName,__LINE__ - 2);
 		return false;
 	}
 
-	/*Count lines in the file*/
+	/*Count candidate target lines (skip blanks / # comments)*/
 	numberItems = 0;
-	while(!feof(fileDescriptor))	{
-		hextemp = fgets(aux,100,fileDescriptor);
-		trim(aux," \t\n\r");
-		if(hextemp == aux)	{			
+	{
+		uint64_t lines_seen = 0;
+		time_t count_t0 = time(NULL), count_last = count_t0;
+		printf("[+] Counting target lines in %s...\n", fileName);
+		fflush(stdout);
+		while(fgets(aux,sizeof(aux),fileDescriptor) == aux)	{
+			lines_seen++;
+			if(!prepare_target_line(aux))
+				continue;
 			r = strlen(aux);
-			if(r > 20)	{ 
+			if(r > 20)	{
 				numberItems++;
 			}
+			time_t now = time(NULL);
+			if(now - count_last >= 2) {
+				printf("\r[+] Counting targets: %" PRIu64 " candidate lines (%" PRIu64 " raw)...",
+					numberItems, lines_seen);
+				fflush(stdout);
+				count_last = now;
+			}
+		}
+		if(difftime(time(NULL), count_t0) >= 1.0 || numberItems >= 100000ULL) {
+			printf("\r[+] Counted %" PRIu64 " targets (%" PRIu64 " lines) in %.1fs\n",
+				numberItems, lines_seen, difftime(time(NULL), count_t0));
+			fflush(stdout);
 		}
 	}
 	fseek(fileDescriptor,0,SEEK_SET);
 	MAXLENGTHADDRESS = 20;		/*20 bytes beacuase we only need the data in binary*/
 	
 	printf("[+] Allocating memory for %" PRIu64 " elements: %.2f MB\n",numberItems,(double)(((double) sizeof(struct address_value)*numberItems)/(double)1048576));
+	fflush(stdout);
 	addressTable = (struct address_value*) malloc(sizeof(struct address_value)*numberItems);
 	checkpointer((void *)addressTable,__FILE__,"malloc","addressTable" ,__LINE__ -1 );
 		
 	if(!initBloomFilter(&bloom,numberItems))
 		return false;
 
-	i = 0;
-	while(i < numberItems)	{
-		validAddress = false;
-		memset(aux,0,100);
-		memset(addressTable[i].value,0,sizeof(struct address_value));
-		hextemp = fgets(aux,100,fileDescriptor);
-		trim(aux," \t\n\r");			
-		r = strlen(aux);
-		if(r > 0 && r <= 62)	{
-				if(r<40 && isValidBase58String(aux))	{	//Address
-				raw_value_length = 25;
-				b58tobin(rawvalue,&raw_value_length,aux,r);
-				if(raw_value_length == 25 && b58check(rawvalue, raw_value_length, aux, (size_t)r) >= 0)	{
-					if(rawvalue[0] == 0x05 || aux[0] == '3') {
-						FLAGHAS_P2SH_TARGETS = 1;
+	{
+		struct init_progress prog;
+		init_progress_begin(&prog, "Collecting keys", numberItems);
+		i = 0;
+		while(i < numberItems && fgets(aux,sizeof(aux),fileDescriptor) == aux)	{
+			validAddress = false;
+			memset(addressTable[i].value,0,sizeof(struct address_value));
+			if(!prepare_target_line(aux))
+				continue;
+			r = strlen(aux);
+			if(r > 0 && r <= 90)	{
+				if(r < 40 && isValidBase58String(aux))	{	/* P2PKH / P2SH Base58Check */
+					raw_value_length = 25;
+					b58tobin(rawvalue,&raw_value_length,aux,r);
+					if(raw_value_length == 25 && b58check(rawvalue, raw_value_length, aux, (size_t)r) >= 0)	{
+						if(rawvalue[0] == 0x05 || aux[0] == '3') {
+							FLAGHAS_P2SH_TARGETS = 1;
+						}
+						bloom_add(&bloom, rawvalue+1 ,sizeof(struct address_value));
+						bf_add(&bf_filter, rawvalue+1 ,sizeof(struct address_value));
+						memcpy(addressTable[i].value,rawvalue+1,sizeof(struct address_value));
+						i++;
+						validAddress = true;
 					}
-					bloom_add(&bloom, rawvalue+1 ,sizeof(struct address_value));
-					bf_add(&bf_filter, rawvalue+1 ,sizeof(struct address_value));
-					memcpy(addressTable[i].value,rawvalue+1,sizeof(struct address_value));
+					else if(raw_value_length == 25) {
+						fprintf(stderr,"[E] Invalid Base58Check checksum, omitting: %s\n", aux);
+					}
+				}
+				if(!validAddress && r >= 14 && aux[0] == 'b' && aux[1] == 'c' && aux[2] == '1')	{
+					/* bech32 P2WPKH (bc1q, 20-byte) — bc1p taproot needs -c troot */
+					uint8_t program[40];
+					int program_len = 0;
+					int bech_ret = bech32_decode(aux, program, &program_len);
+					if(FLAGDEBUG) fprintf(stderr,"[D] bech32_decode(%s) = %d, program_len = %d\n", aux, bech_ret, program_len);
+					if(bech_ret == 0 && program_len == 20)	{
+						bloom_add(&bloom, program ,sizeof(struct address_value));
+						bf_add(&bf_filter, program ,sizeof(struct address_value));
+						memcpy(addressTable[i].value,program,sizeof(struct address_value));
+						i++;
+						validAddress = true;
+					}
+					else if(bech_ret == 0 && program_len == 32) {
+						fprintf(stderr,"[W] Taproot bc1p... needs -c troot (not hash160 address mode): %s\n", aux);
+					}
+				}
+				if(!validAddress && r >= 42 && aux[0] == '0' && (aux[1] == 'x' || aux[1] == 'X'))	{
+					if(isValidHex(aux + 2) && strlen(aux + 2) == 40)	{
+						uint8_t eth_addr[20];
+						hexs2bin(aux + 2, eth_addr);
+						bloom_add(&bloom, eth_addr ,sizeof(struct address_value));
+						bf_add(&bf_filter, eth_addr ,sizeof(struct address_value));
+						memcpy(addressTable[i].value,eth_addr,sizeof(struct address_value));
+						i++;
+						validAddress = true;
+					}
+				}
+				if(!validAddress && r == 40 && isValidHex(aux))	{	/* raw rmd160 / hash160 */
+					hexs2bin(aux,rawvalue);
+					bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
+					bf_add(&bf_filter, rawvalue ,sizeof(struct address_value));
+					memcpy(addressTable[i].value,rawvalue,sizeof(struct address_value));
 					i++;
 					validAddress = true;
 				}
-				else if(raw_value_length == 25) {
-					fprintf(stderr,"[E] Invalid Base58Check checksum, omitting: %s\n", aux);
-				}
 			}
-			if(r >= 42 && aux[0] == 'b' && aux[1] == 'c' && aux[2] == '1')	{	//bech32 (bc1q... segwit)
-				uint8_t program[40];
-				int program_len = 0;
-				int bech_ret = bech32_decode(aux, program, &program_len);
-				if(FLAGDEBUG) fprintf(stderr,"[D] bech32_decode(%s) = %d, program_len = %d\n", aux, bech_ret, program_len);
-				if(bech_ret == 0 && program_len == 20)	{
-					bloom_add(&bloom, program ,sizeof(struct address_value));
-					bf_add(&bf_filter, program ,sizeof(struct address_value));
-					memcpy(addressTable[i].value,program,sizeof(struct address_value));
-					i++;
-					validAddress = true;
-				}
+			if(!validAddress)	{
+				fprintf(stderr,"[I] Omitting invalid line %s\n",aux);
+				numberItems--;
 			}
-			if(r >= 42 && aux[0] == '0' && aux[1] == 'x')	{	//ETH/ETC address
-				if(isValidHex(aux + 2) && strlen(aux + 2) == 40)	{
-					uint8_t eth_addr[20];
-					hexs2bin(aux + 2, eth_addr);
-					bloom_add(&bloom, eth_addr ,sizeof(struct address_value));
-					bf_add(&bf_filter, eth_addr ,sizeof(struct address_value));
-					memcpy(addressTable[i].value,eth_addr,sizeof(struct address_value));
-					i++;
-					validAddress = true;
-				}
-			}
-			if(r == 40 && isValidHex(aux))	{	//RMD
-				hexs2bin(aux,rawvalue);
-				bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
-				bf_add(&bf_filter, rawvalue ,sizeof(struct address_value));
-				memcpy(addressTable[i].value,rawvalue,sizeof(struct address_value));
-				i++;
-				validAddress = true;
-			}
+			init_progress_tick(&prog, i);
 		}
-		if(!validAddress)	{
-			fprintf(stderr,"[I] Ommiting invalid line %s\n",aux);
-			numberItems--;
-		}
+		init_progress_end(&prog, i);
 	}
+	fclose(fileDescriptor);
 	N = numberItems;
-	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
-	fflush(stdout);
-	if(bf_build(&bf_filter) != 0) {
-		if(N < 256)
-			printf("skipped (<%u keys) — using bloom\n", 256u);
-		else
-			printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+	if(bf_build_with_progress(&bf_filter, N, "keys") != 0)
 		bf_filter.use_bloom_fallback = 1;
-	}
-	else {
-		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
-	}
 	return true;
 }
 
@@ -13747,22 +14104,22 @@ bool forceReadFileAddressEth(char *fileName)	{
 	uint64_t numberItems,i;
 	size_t r;
 	uint8_t rawvalue[50];
-	char aux[100],*hextemp;
+	char aux[100];
+	if(try_load_raw20_bin(fileName))
+		return true;
 	fileDescriptor = fopen(fileName,"r");	
 	if(fileDescriptor == NULL)	{
 		fprintf(stderr,"[E] Error opening the file %s, line %i\n",fileName,__LINE__ - 2);
 		return false;
 	}
-	/*Count lines in the file*/
+	/*Count candidate lines (skip blanks / # comments)*/
 	numberItems = 0;
-	while(!feof(fileDescriptor))	{
-		hextemp = fgets(aux,100,fileDescriptor);
-		trim(aux," \t\n\r");
-		if(hextemp == aux)	{			
-			r = strlen(aux);
-			if(r >= 40)	{ 
-				numberItems++;
-			}
+	while(fgets(aux,sizeof(aux),fileDescriptor) == aux)	{
+		if(!prepare_target_line(aux))
+			continue;
+		r = strlen(aux);
+		if(r >= 40)	{
+			numberItems++;
 		}
 	}
 	fseek(fileDescriptor,0,SEEK_SET);
@@ -13778,55 +14135,53 @@ bool forceReadFileAddressEth(char *fileName)	{
 	if(!initBloomFilter(&bloom,N))
 		return false;
 	
-	i = 0;
-	while(i < numberItems)	{
-		validAddress = false;
-		memset(aux,0,100);
-		memset(addressTable[i].value,0,sizeof(struct address_value));
-		hextemp = fgets(aux,100,fileDescriptor);
-		trim(aux," \t\n\r");			
-		r = strlen(aux);
-		if(r >= 40 && r <= 42){
-			switch(r)		{
-			case 40:
-				if(isValidHex(aux)){
-					hexs2bin(aux,rawvalue);
-					bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
-					bf_add(&bf_filter, rawvalue ,sizeof(struct address_value));
-					memcpy(addressTable[i].value,rawvalue,sizeof(struct address_value));
-					i++;
-					validAddress = true;
+	{
+		struct init_progress prog;
+		init_progress_begin(&prog, "Collecting keys", numberItems);
+		i = 0;
+		while(i < numberItems && fgets(aux,sizeof(aux),fileDescriptor) == aux)	{
+			validAddress = false;
+			memset(addressTable[i].value,0,sizeof(struct address_value));
+			if(!prepare_target_line(aux))
+				continue;
+			r = strlen(aux);
+			if(r >= 40 && r <= 42){
+				switch(r)		{
+				case 40:
+					if(isValidHex(aux)){
+						hexs2bin(aux,rawvalue);
+						bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
+						bf_add(&bf_filter, rawvalue ,sizeof(struct address_value));
+						memcpy(addressTable[i].value,rawvalue,sizeof(struct address_value));
+						i++;
+						validAddress = true;
+					}
+				break;
+				case 42:
+					if((aux[0] == '0' && (aux[1] == 'x' || aux[1] == 'X')) && isValidHex(aux+2)){
+						hexs2bin(aux+2,rawvalue);
+						bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
+						bf_add(&bf_filter, rawvalue ,sizeof(struct address_value));
+						memcpy(addressTable[i].value,rawvalue,sizeof(struct address_value));
+						i++;
+						validAddress = true;
+					}
+						break;
 				}
-			break;
-			case 42:
-				if(isValidHex(aux+2)){
-					hexs2bin(aux+2,rawvalue);
-					bloom_add(&bloom, rawvalue ,sizeof(struct address_value));
-					bf_add(&bf_filter, rawvalue ,sizeof(struct address_value));
-					memcpy(addressTable[i].value,rawvalue,sizeof(struct address_value));
-					i++;
-					validAddress = true;
-				}
-					break;
 			}
+			if(!validAddress)	{
+				fprintf(stderr,"[I] Omitting invalid line %s\n",aux);
+				numberItems--;
+			}
+			init_progress_tick(&prog, i);
 		}
-		if(!validAddress)	{
-			fprintf(stderr,"[I] Ommiting invalid line %s\n",aux);
-			numberItems--;
-		}
+		init_progress_end(&prog, i);
 	}
 	
 	fclose(fileDescriptor);
-	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
-	fflush(stdout);
-	if(bf_build(&bf_filter) != 0) {
-		/* Expected for tiny target sets (<256); bloom path is correct. */
-		printf("\n[!] Binary fuse skipped/failed (small set or allocate); using bloom filter\n");
+	N = numberItems;
+	if(bf_build_with_progress(&bf_filter, N, "keys") != 0)
 		bf_filter.use_bloom_fallback = 1;
-	}
-	else {
-		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
-	}
 	return true;
 }
 
@@ -13845,16 +14200,14 @@ bool forceReadFileXPoint(char *fileName)	{
 		fprintf(stderr,"[E] Error opening the file %s, line %i\n",fileName,__LINE__ - 2);
 		return false;
 	}
-	/*Count lines in the file*/
+	/*Count candidate lines (skip blanks / # comments)*/
 	numberItems = 0;
-	while(!feof(fileDescriptor))	{
-		hextemp = fgets(aux,1000,fileDescriptor);
-		trim(aux," \t\n\r");
-		if(hextemp == aux)	{			
-			r = strlen(aux);
-			if(r >= 40)	{ 
-				numberItems++;
-			}
+	while(fgets(aux,sizeof(aux),fileDescriptor) == aux)	{
+		if(!prepare_target_line(aux))
+			continue;
+		r = strlen(aux);
+		if(r >= 40)	{
+			numberItems++;
 		}
 	}
 	fseek(fileDescriptor,0,SEEK_SET);
@@ -13870,20 +14223,27 @@ bool forceReadFileXPoint(char *fileName)	{
 	if(!initBloomFilter(&bloom,N))
 		return false;
 	
-	i= 0;
-	while(i < N)	{
-		memset(aux,0,1000);
-		hextemp = fgets(aux,1000,fileDescriptor);
-		memset((void *)&addressTable[i],0,sizeof(struct address_value));
-		if(hextemp == aux)	{
-			trim(aux," \t\n\r");
+	{
+		struct init_progress prog;
+		init_progress_begin(&prog, "Collecting keys", N);
+		i= 0;
+		while(i < N && fgets(aux,sizeof(aux),fileDescriptor) == aux)	{
+			memset((void *)&addressTable[i],0,sizeof(struct address_value));
+			if(!prepare_target_line(aux))
+				continue;
 			stringtokenizer(aux,&tokenizer_xpoint);
 			hextemp = nextToken(&tokenizer_xpoint);
+			if(!hextemp) {
+				freetokenizer(&tokenizer_xpoint);
+				fprintf(stderr,"[E] Omiting line : %s\n",aux);
+				N--;
+				continue;
+			}
 			lenaux = strlen(hextemp);
 			if(isValidHex(hextemp)) {
 				switch(lenaux)	{
 					case 64:	/*X value*/
-						r = hexs2bin(aux,(uint8_t*) rawvalue);
+						r = hexs2bin(hextemp,(uint8_t*) rawvalue);
 						if(r)	{
 							memcpy(addressTable[i].value,rawvalue,20);
 							bloom_add(&bloom,rawvalue,MAXLENGTHADDRESS);
@@ -13894,7 +14254,7 @@ bool forceReadFileXPoint(char *fileName)	{
 						}
 					break;
 					case 66:	/*Compress publickey*/
-						r = hexs2bin(aux+2, (uint8_t*)rawvalue);
+						r = hexs2bin(hextemp+2, (uint8_t*)rawvalue);
 						if(r)	{
 							memcpy(addressTable[i].value,rawvalue,20);
 							bloom_add(&bloom,rawvalue,MAXLENGTHADDRESS);
@@ -13905,7 +14265,7 @@ bool forceReadFileXPoint(char *fileName)	{
 						}
 					break;
 					case 130:	/* Uncompress publickey length*/
-						r = hexs2bin(aux, (uint8_t*) rawvalue);
+						r = hexs2bin(hextemp, (uint8_t*) rawvalue);
 						if(r)	{
 								memcpy(addressTable[i].value,rawvalue+2,20);
 								bloom_add(&bloom,rawvalue,MAXLENGTHADDRESS);
@@ -13924,24 +14284,14 @@ bool forceReadFileXPoint(char *fileName)	{
 				fprintf(stderr,"[E] Ignoring invalid hexvalue %s\n",aux);
 			}
 			freetokenizer(&tokenizer_xpoint);
+			i++;
+			init_progress_tick(&prog, i);
 		}
-		else	{
-			fprintf(stderr,"[E] Omiting line : %s\n",aux);
-			N--;
-		}
-		i++;
+		init_progress_end(&prog, i);
 	}
 	fclose(fileDescriptor);
-	printf("[+] Building binary fuse filter from %" PRIu64 " keys... ", N);
-	fflush(stdout);
-	if(bf_build(&bf_filter) != 0) {
-		/* Expected for tiny target sets (<256); bloom path is correct. */
-		printf("\n[!] Binary fuse skipped/failed (small set or allocate); using bloom filter\n");
+	if(bf_build_with_progress(&bf_filter, N, "keys") != 0)
 		bf_filter.use_bloom_fallback = 1;
-	}
-	else {
-		printf("done! %.2f MB\n", (double)bf_size_in_bytes(&bf_filter)/(double)1048576);
-	}
 	return true;
 }
 
@@ -13973,9 +14323,94 @@ int address_check(const void *buffer, int len) {
 	return r;
 }
 
+/*
+ * Init-phase progress (target load / fuse / sort). Always printed — FLAGQUIET only
+ * suppresses per-thread search spam, not multi-minute startup on large address files.
+ */
+static void init_progress_begin(struct init_progress *p, const char *label, uint64_t total) {
+	p->label = label ? label : "Progress";
+	p->total = total;
+	p->last_done = 0;
+	p->t0 = time(NULL);
+	p->last_print = p->t0;
+	p->started = 1;
+	if(total >= 100000ULL) {
+		printf("[+] %s: 0/%" PRIu64 " (large set — may take several minutes)\n",
+			p->label, total);
+		fflush(stdout);
+	}
+}
+
+static void init_progress_tick(struct init_progress *p, uint64_t done) {
+	/* Skip spam on tiny target files; large-set init is what looked "hung". */
+	if(!p || !p->started || p->total < 10000ULL)
+		return;
+	time_t now = time(NULL);
+	int pct = (int)((done * 100ULL) / p->total);
+	int last_pct = (int)((p->last_done * 100ULL) / p->total);
+	if(now - p->last_print < 2 && pct < last_pct + 5 && done < p->total)
+		return;
+	double elapsed = difftime(now, p->t0);
+	double rate = (elapsed > 0.5) ? ((double)done / elapsed) : 0.0;
+	double eta = (rate > 0.0 && done < p->total) ? ((double)(p->total - done) / rate) : 0.0;
+	printf("\r[+] %s: %" PRIu64 "/%" PRIu64 " (%d%%)", p->label, done, p->total, pct);
+	if(eta >= 1.0 && done < p->total)
+		printf(" ETA ~%.0fs", eta);
+	printf("   ");
+	fflush(stdout);
+	p->last_print = now;
+	p->last_done = done;
+}
+
+static void init_progress_end(struct init_progress *p, uint64_t done) {
+	if(!p || !p->started)
+		return;
+	double elapsed = difftime(time(NULL), p->t0);
+	uint64_t shown_total = p->total > 0 ? p->total : done;
+	if(shown_total >= 10000ULL) {
+		printf("\r[+] %s: %" PRIu64 "/%" PRIu64 " (100%%) in %.1fs\n",
+			p->label, done, shown_total, elapsed);
+		fflush(stdout);
+	}
+	p->started = 0;
+}
+
+/* bf_build with timing / large-set warning (always printed; ignores -q). */
+static int bf_build_with_progress(struct binaryfuse_wrapper *bf, uint64_t nkeys, const char *what) {
+	const char *label = what ? what : "keys";
+	printf("[+] Building binary fuse filter from %" PRIu64 " %s...", nkeys, label);
+	if(nkeys >= 1000000ULL) {
+		printf("\n[+] Fuse populate may take several minutes for large sets; please wait...\n");
+	} else {
+		printf(" ");
+	}
+	fflush(stdout);
+	time_t t0 = time(NULL);
+	int rc = bf_build(bf);
+	double elapsed = difftime(time(NULL), t0);
+	if(rc != 0) {
+		if(nkeys < 256)
+			printf("skipped (<%u keys) — using bloom\n", 256u);
+		else
+			printf("\n[!] Binary fuse failed, falling back to bloom filter\n");
+	} else if(nkeys >= 1000000ULL || elapsed >= 1.0) {
+		printf("[+] Fuse build done! %.2f MB in %.1fs\n",
+			(double)bf_size_in_bytes(bf) / (double)1048576, elapsed);
+	} else {
+		printf("done! %.2f MB\n", (double)bf_size_in_bytes(bf) / (double)1048576);
+	}
+	fflush(stdout);
+	return rc;
+}
+
 bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom)	{
 	bool r = true;
 	printf("[+] Binary fuse filter for %" PRIu64 " elements.\n",items_bloom);
+	if(items_bloom >= 1000000ULL) {
+		printf("[+] Large target file (%" PRIu64 " addresses): collect + fuse + sort may take several minutes.\n",
+			items_bloom);
+		fflush(stdout);
+	}
 	uint32_t bf_count = (items_bloom > 10000) ? (uint32_t)(FLAGBLOOMMULTIPLIER * items_bloom) : 10000;
 	if(g_research.filter_strategy == RFILTER_FUSE16) {
 		bf_init_fuse16(&bf_filter, bf_count, 0.000001);
@@ -13999,6 +14434,11 @@ bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom)	{
 	else	{
 		size_t mem_est = bf_count * sizeof(uint64_t);
 		printf("[+] Collecting keys: %.2f MB temp memory\n",(double)mem_est/(double)1048576);
+		fflush(stdout);
+	}
+	if(items_bloom >= 100000ULL) {
+		printf("[+] Allocating bloom filter bitset...\n");
+		fflush(stdout);
 	}
 	if(items_bloom <= 10000)	{
 		if(bloom_init2(bloom_arg,10000,0.000001) == 1){
@@ -14011,6 +14451,11 @@ bool initBloomFilter(struct bloom *bloom_arg,uint64_t items_bloom)	{
 			fprintf(stderr,"[E] error bloom_init for %" PRIu64 " elements.\n",items_bloom);
 			r = false;
 		}
+	}
+	if(r && bloom_arg->ready && items_bloom >= 100000ULL) {
+		printf("[+] Bloom ready: %.2f MB — reading & hashing targets next\n",
+			(double)bloom_arg->bytes / (double)1048576);
+		fflush(stdout);
 	}
 	return r;
 }

@@ -9,13 +9,40 @@
 </p>
 
 <p align="center">
-  <i>CPU SIMD · optional NVIDIA CUDA / OpenCL · puzzles · research · education</i>
+  <i>CPU SIMD · Custom CUDA edition · OpenCL · puzzles · research · education</i>
 </p>
 
 Based on [Keyhunt](https://github.com/albertobsd/keyhunt) by Alberto · Developed & modified by **TrueScent**  
 Repo: **[github.com/TrueSc3nt/TrueCollider](https://github.com/TrueSc3nt/TrueCollider)**
 
-> [Getting started](docs/GETTING_STARTED.md) · [Command cookbook](docs/COMMANDS.md) · [Full `-h` dump](docs/HELP_DUMP.txt) · [Speeds](docs/SPEEDS.md) · [GPU honesty](gpu/README.md) · [Full mode bats](bats/) · [Windows examples](examples/) · [Roadmap](docs/ROADMAP.md)
+> [Getting started](docs/GETTING_STARTED.md) · [Command cookbook](docs/COMMANDS.md) · [Full `-h` dump](docs/HELP_DUMP.txt) · [Speeds](docs/SPEEDS.md) · [GPU honesty](gpu/README.md) · [Converters](scripts/README.md) · [Full mode bats](bats/) · [Windows examples](examples/) · [Roadmap](docs/ROADMAP.md)
+
+---
+
+## Custom CUDA edition (TrueCollider ∪ KeyHunt-class hunt)
+
+One GPU binary — **`keyhunt_cuda.exe`** — is the **fully customised CUDA edition**: every TrueCollider `-m` mode/flag, plus KeyHunt-Cuda–class **device sequential GRP** for address / rmd160 / xpoint (MIT clean-room; **no GPLv3 code** from [KeyHunt-Cuda](https://github.com/Qalander/KeyHunt-Cuda)).
+
+| Binary | Role |
+|--------|------|
+| `keyhunt.exe` | Full **CPU** edition (SIMD hash160, all modes) |
+| `keyhunt_cuda.exe` | **Custom CUDA edition** — same modes + device EC/GRP/kangaroo/BSGS |
+
+```bat
+REM Sequential EC hunt (GRP on device) — use for max Mk/s
+keyhunt_cuda.exe -m address -f tests\66.txt -b 66 -l compress -U cuda -M auto -t 1 -x sequential -q -s 5
+
+REM Huge address lists: convert once, then load packed hash160
+python scripts\addr_to_hash160.py tests\big.txt -o tests\big.hash160 --sort
+keyhunt_cuda.exe -m address -f tests\big.hash160 -U cuda -M auto -t 1 -x sequential -q
+
+REM Mnemonic still uses CUDA EC (and PBKDF2 when available) — rate is mnemonics/s, not EC Mk/s
+keyhunt_cuda.exe -m mnemonic -f tests\66.txt -w 12 -U cuda -M auto -t 1 -q
+```
+
+**Speed honesty:** ~Gkeys/s-class figures are for **sequential secp address/xpoint** (device GRP). They do **not** apply to mnemonic/poetry (PBKDF2-bound). `cudart*.dll` is a runtime dependency, not the speed secret — the algorithm is.
+
+See [docs/SPEEDS.md](docs/SPEEDS.md), [gpu/README.md](gpu/README.md), [scripts/README.md](scripts/README.md), [docs/CUDA_RUNTIME.md](docs/CUDA_RUNTIME.md).
 
 ---
 
@@ -123,9 +150,9 @@ keyhunt.exe -m bsgs -f tests\125.txt -B shadowledger --shadow-mod 32 -t 8
 |-------|---------|
 | [`bats/`](bats/README.md) | 100+ per-mode scripts (`01_address` … `17_puzzles`) |
 | `bats\RUN_ALL_SMOKE.bat` | Quick known-hit / dry smoke |
-| `run_deep_audit.ps1` | Full known-hit matrix → [`docs/DEEP_AUDIT.md`](docs/DEEP_AUDIT.md) |
+| `scripts\run_deep_audit.ps1` | Full known-hit matrix → [`docs/DEEP_AUDIT.md`](docs/DEEP_AUDIT.md) |
 | [`docs/COMMANDS.md`](docs/COMMANDS.md) | Cookbook + attribution |
-| [`COLLIDER_MODES_README.md`](COLLIDER_MODES_README.md) | `-x` pattern details |
+| [`docs/COLLIDER_MODES_README.md`](docs/COLLIDER_MODES_README.md) | `-x` pattern details |
 
 ---
 
@@ -143,8 +170,8 @@ Build scripts auto-detect MinGW / VS / CUDA when present and print clear errors 
 ### Build CPU
 
 ```bat
-build_mingw_native.bat
-REM or: build.bat
+bats\00_build\build_mingw_native.bat
+REM or: bats\00_build\build.bat
 REM or: examples\build_cpu.bat
 REM → keyhunt.exe
 ```
@@ -152,8 +179,8 @@ REM → keyhunt.exe
 ### Build CUDA
 
 ```bat
-build_cuda_vs2022.bat
-REM or: build_cuda_msvc.bat
+bats\00_build\build_cuda_vs2022.bat
+REM or: bats\00_build\build_cuda_msvc.bat
 REM or: examples\build_cuda.bat
 REM → keyhunt_cuda.exe
 ```
@@ -313,7 +340,7 @@ Parsed from `getopt` in `keyhunt.cpp` and `menu()` / `-h`. **Do not invent flags
 
 **`-rs` vs plain `-R`:** `-R` is a convenience that sets `FLAGRANDOM` (and BSGS random giant-steps). Address/rmd160 workers already walk N keys after each base pick when not using `-x sequential`. **`-rs` / `-x rseq`** make that habit explicit, force random-base resampling, and default the chunk size to **1 048 576** keys (Mivvvy `group_size²`) unless you pass `-n`.
 
-Works with essentially all modes including BSGS. See also [`COLLIDER_MODES_README.md`](COLLIDER_MODES_README.md) and [What's new](#whats-new-walk--bsgs-helpers).
+Works with essentially all modes including BSGS. See also [`docs/COLLIDER_MODES_README.md`](docs/COLLIDER_MODES_README.md) and [What's new](#whats-new-walk--bsgs-helpers).
 
 ### Performance / backends
 
@@ -356,6 +383,7 @@ Works with essentially all modes including BSGS. See also [`COLLIDER_MODES_READM
 | `-N` balance check | **Wired**: on each hit, `writekey` / `writekeyeth` / `writekeysol` call `node_check_balance` (curl → public APIs or BTC Core RPC). Needs `curl` on PATH; live RPC for `-Nhttp://...`. See [Balance checking](#online-balance-checking--n). |
 | `pub2rmd` mode | Removed; use `-m rmd160` |
 | Device CUDA hash160 + on-GPU bloom | **Shipped** — self-test must pass; otherwise host-filter fallback |
+| Sequential CUDA GRP address/rmd160/xpoint | **Shipped** — stride-1 batches; ~10× vs per-key scalar×G on 3060-class |
 | Full GPU GRP BSGS loop | **Shipped** (device GRP + host bloom); not yet throughput-tuned |
 | Kangaroo on GPU | **Shipped** (`-U cuda`): small ranges GPU batch EC scan; larger ranges multi-walker DP (device jumps, host DP table). CPU fallback always. |
 
@@ -415,7 +443,7 @@ keyhunt.exe -m bsgs -f tests\125.txt -B residue --mod-step 2 --mod-rem 1 -t 4
 
 ```bat
 keyhunt.exe -m kangaroo -f tests\_pubkey_g.txt -r 1:1000
-keyhunt.exe -m kangaroo -f tests\125.txt -b 40 -t 4
+keyhunt.exe -m kangaroo -f tests\_pubkey_b40.txt -b 40 -t 4
 keyhunt_cuda.exe -m kangaroo -f tests\_pubkey_g.txt -r 1:1000 -U cuda
 ```
 
@@ -480,7 +508,7 @@ keyhunt.exe -m address -f tests\66.txt -b 72 -l compress -t 8 -x keyhole --windo
 keyhunt.exe -m address -f tests\66.txt -b 66 -x pocket --pocket-bits 16 -t 8
 ```
 
-Also see `run_puzzle66_example.bat`, [`bats/17_puzzles/`](bats/17_puzzles/), and [`PUZZLE_SEARCH_README.md`](PUZZLE_SEARCH_README.md).
+Also see `examples\run_puzzle66_example.bat`, [`bats/17_puzzles/`](bats/17_puzzles/), and [`docs/PUZZLE_SEARCH_README.md`](docs/PUZZLE_SEARCH_README.md).
 
 ---
 
@@ -536,7 +564,7 @@ Runtime: `-U none` (default) · `-U cuda` · `-U opencl`.
 
 | Path | Status |
 |------|--------|
-| BTC-family `address` / `rmd160` | GPU EC + **device** hash160 + **device** bloom (host fallback) |
+| BTC-family `address` / `rmd160` | **Sequential GRP** (device G-table + batch inv + hash160/bloom) for stride-1; per-key EC fallback |
 | ETH / ETC `address` | GPU EC + host keccak + host bloom |
 | Taproot `troot` | GPU EC + host tweak + filter |
 | vanity / xpoint / pubkey2addr / minikeys | GPU EC + filter (device when hash160 ready) |
@@ -564,7 +592,7 @@ keyhunt_cuda.exe -m address -c sol -f tests\sol_sample.txt -r 1:8 -U cuda -M aut
 keyhunt_cuda.exe -m address -f tests\66.txt -U cuda -M auto -y
 ```
 
-Details: [`gpu/README.md`](gpu/README.md). Quick sample: `run_gpu_cuda_example.bat`.
+Details: [`gpu/README.md`](gpu/README.md). Quick sample: `examples\run_gpu_cuda_example.bat`.
 
 ### Memory (`-M` / `-G`)
 
@@ -683,8 +711,8 @@ Shorter curated set under [`examples/`](examples/). Edit threads / targets; run 
 
 | Script | What it runs |
 |--------|----------------|
-| [`build_cpu.bat`](examples/build_cpu.bat) | Wrapper → `build_mingw_native.bat` |
-| [`build_cuda.bat`](examples/build_cuda.bat) | Wrapper → `build_cuda_vs2022.bat` |
+| [`build_cpu.bat`](examples/build_cpu.bat) | Wrapper → `bats/00_build/build_mingw_native.bat` |
+| [`build_cuda.bat`](examples/build_cuda.bat) | Wrapper → `bats/00_build/build_cuda_vs2022.bat` |
 | [`search_btc_address.bat`](examples/search_btc_address.bat) | `-m address` puzzle 66 |
 | [`search_rmd160.bat`](examples/search_rmd160.bat) | `-m rmd160` |
 | [`search_eth.bat`](examples/search_eth.bat) | `-c eth` |
@@ -704,7 +732,7 @@ Shorter curated set under [`examples/`](examples/). Edit threads / targets; run 
 | [`gpu_hybrid_both.bat`](examples/gpu_hybrid_both.bat) | Hybrid CPU+CUDA (`-U both`) |
 | [`search_rs_random_sequential.bat`](examples/search_rs_random_sequential.bat) | `-rs` random-sequential (set `USE_CUDA=1` for CUDA) |
 
-Root helpers: `run_keyhunt.bat`, `run_puzzle66_example.bat`, `run_sol_sample.bat`, `run_gpu_cuda_example.bat`.
+Helpers under [`examples/`](examples/): `run_keyhunt.bat`, `run_puzzle66_example.bat`, `run_sol_sample.bat`, `run_gpu_cuda_example.bat`.
 
 Complete mode/settings library: [`bats/`](bats/README.md).
 
@@ -719,13 +747,13 @@ Complete mode/settings library: [`bats/`](bats/README.md).
 | [docs/HELP_DUMP.txt](docs/HELP_DUMP.txt) | Raw `keyhunt.exe -h` |
 | [docs/SPEEDS.md](docs/SPEEDS.md) | Measured rates |
 | [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Smoke PASS/FAIL |
-| [docs/DEEP_AUDIT.md](docs/DEEP_AUDIT.md) | Full known-hit audit (`run_deep_audit.ps1`) |
+| [docs/DEEP_AUDIT.md](docs/DEEP_AUDIT.md) | Full known-hit audit (`scripts/run_deep_audit.ps1`) |
 | [docs/BUILD.md](docs/BUILD.md) | Compilers |
 | [gpu/README.md](gpu/README.md) | CUDA / OpenCL internals |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Future work |
-| [COLLIDER_MODES_README.md](COLLIDER_MODES_README.md) | `-x` search patterns (incl. keyhole/pocket/wave/…) |
+| [docs/COLLIDER_MODES_README.md](docs/COLLIDER_MODES_README.md) | `-x` search patterns (incl. keyhole/pocket/wave/…) |
 | [bats/README.md](bats/README.md) | Full bat library index |
-| [PUZZLE_SEARCH_README.md](PUZZLE_SEARCH_README.md) | Puzzle notes |
+| [docs/PUZZLE_SEARCH_README.md](docs/PUZZLE_SEARCH_README.md) | Puzzle notes |
 
 ---
 

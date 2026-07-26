@@ -1,7 +1,7 @@
 # Build artifacts
 keyhunt
 # Windows release binaries are tracked so clones can run without rebuilding.
-# Rebuild locally with build.bat / build_cuda_msvc.bat when sources change.
+# Rebuild locally with bats/00_build/build.bat / bats/00_build/build_cuda_msvc.bat when sources change.
 # keyhunt.exe
 # keyhunt_cuda.exe
 *.o
@@ -84,3 +84,5 @@ Thumbs.db
 
 # Local research notes - do not publish
 README_IDEAS_FOR_IMPROVEMENT.md
+docs/README_IDEAS_FOR_IMPROVEMENT.md
+tests/btc.txt 

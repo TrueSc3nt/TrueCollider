@@ -1,0 +1,10 @@
+# Mixed address fixture (comments + supported formats)
+# Blank line below is intentional
+
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
+3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy
+bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
+0x7e5f4552091a69125d5dfcb7b8c2659029395bdf
+751e76e8199196d454941c45d1b3a323f1433bd6
+# trailing comment on next line is stripped
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH # puzzle #1

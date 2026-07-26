@@ -14,6 +14,7 @@ Both produce the same binary (`keyhunt` on Linux/macOS, `keyhunt.exe` on Windows
 ### Makefile
 ```bash
 make -j$(nproc)
+# or: bash scripts/build_linux.sh
 ./keyhunt -h
 ```
 
@@ -30,13 +31,13 @@ cmake --build build -j$(nproc)
 
 ### Option A: Makefile script
 ```bash
-bash build_windows.sh
+bash scripts/build_windows.sh
 # Output: keyhunt.exe
 ```
 
 ### Option B: CMake script
 ```bash
-bash build_windows_cmake.sh
+bash scripts/build_windows_cmake.sh
 # Output: build-win/keyhunt.exe
 ```
 
@@ -57,7 +58,7 @@ Run on the Android device inside Termux:
 
 ```bash
 pkg install cmake make clang
-bash build_termux.sh
+bash scripts/build_termux.sh
 # Output: build-termux/keyhunt
 ```
 
@@ -151,7 +152,7 @@ With `-e` (endomorphism) and compress-only search, AVX-512 also accelerates the 
 ## Native Windows CPU (MinGW)
 
 ```bat
-build_mingw_native.bat
+bats\00_build\build_mingw_native.bat
 REM Output: keyhunt.exe
 ```
 
@@ -162,9 +163,9 @@ Auto-detects MSYS2 `mingw64` / `ucrt64` / `clang64` (or `MINGW_HOME`). Falls bac
 Requires **VS 2022 Build Tools** (preferred for `nvcc` host compat) and a **complete** CUDA 12.x toolkit (`nvcc.exe` **and** `include\cuda_runtime.h`). Partial installs are skipped.
 
 ```bat
-build_cuda_vs2022.bat
+bats\00_build\build_cuda_vs2022.bat
 REM Output: keyhunt_cuda.exe  (also build-cuda-vs2022\keyhunt.exe)
-REM Alternate: build_cuda_msvc.bat
+REM Alternate: bats\00_build\build_cuda_msvc.bat
 ```
 
 Scripts auto-detect VS via `vswhere`, prefer VS 2022, then fall back to newer VS with `-allow-unsupported-compiler`.
@@ -218,7 +219,7 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/termux-aarch64.cmake
 ```
 
 ### CUDA build: `nvcc` cannot find MSVC
-Use **VS 2022** `vcvars64.bat`, not only VS 2025/18. See `build_cuda_vs2022.bat`.
+Use **VS 2022** `vcvars64.bat`, not only VS 2025/18. See `bats/00_build/build_cuda_vs2022.bat`.
 
 ### CUDA: `cuda_runtime.h` not found
 The selected toolkit is incomplete. Reinstall CUDA 12.x, or delete partial version folders missing `include\cuda_runtime.h`. The build bats skip those automatically.

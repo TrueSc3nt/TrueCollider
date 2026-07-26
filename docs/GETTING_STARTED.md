@@ -76,7 +76,7 @@ mingw32-make -j4
 ./keyhunt.exe -h
 ```
 
-CUDA build (NVIDIA) is separate — see [BUILD.md](BUILD.md) / `build_cuda_vs2022.bat`.
+CUDA build (NVIDIA) is separate — see [BUILD.md](BUILD.md) / `bats/00_build/build_cuda_vs2022.bat`.
 
 ---
 

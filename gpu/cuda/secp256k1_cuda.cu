@@ -234,9 +234,9 @@ static __device__ void fe_sqr(Fe *r, const Fe *a) {
     fe_mul(r, a, a);
 }
 
-/* r = a^(p-2) mod p via square-and-multiply */
+/* r = a^(p-2) mod p (Fermat). GRP product-tree batch inv removes most calls
+ * on the sequential path; safegcd/divstep remains a follow-up micro-opt. */
 static __device__ void fe_inv(Fe *r, const Fe *a) {
-    /* p-2 limbs LE */
     const uint32_t e[8] = {
         0xFFFFFC2Du, 0xFFFFFFFEu, 0xFFFFFFFFu, 0xFFFFFFFFu,
         0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu
@@ -445,6 +445,142 @@ static __device__ void scalar_mul_g(Fe *ox, Fe *oy, const uint8_t *k32) {
         }
     }
     jp_to_affine(ox, oy, &R);
+}
+
+/* ---- Affine helpers + Montgomery batch inv (IntGroup-style product tree) ---- */
+
+static __device__ void fe_neg(Fe *r, const Fe *a) {
+    Fe z;
+    fe_clear(&z);
+    fe_sub(r, &z, a);
+}
+
+static __device__ void affine_add_xy(Fe *rx, Fe *ry,
+                                     const Fe *ax, const Fe *ay,
+                                     const Fe *bx, const Fe *by,
+                                     const Fe *inv_dx) {
+    Fe dy, s, p, t;
+    fe_sub(&dy, by, ay);
+    fe_mul(&s, &dy, inv_dx);
+    fe_sqr(&p, &s);
+    fe_sub(rx, &p, ax);
+    fe_sub(rx, rx, bx);
+    fe_sub(&t, bx, rx);
+    fe_mul(ry, &s, &t);
+    fe_sub(ry, ry, by);
+}
+
+static __device__ void affine_double_xy(Fe *rx, Fe *ry, const Fe *ax, const Fe *ay) {
+    Fe x2, num, den, inv, s, p, t;
+    fe_sqr(&x2, ax);
+    fe_add(&num, &x2, &x2);
+    fe_add(&num, &num, &x2);       /* 3x^2 */
+    fe_add(&den, ay, ay);          /* 2y */
+    fe_inv(&inv, &den);
+    fe_mul(&s, &num, &inv);
+    fe_sqr(&p, &s);
+    fe_sub(rx, &p, ax);
+    fe_sub(rx, rx, ax);
+    fe_sub(&t, ax, rx);
+    fe_mul(ry, &s, &t);
+    fe_sub(ry, ry, ay);
+}
+
+/* In-place: dx[i] <- inv(dx[i]). Scratch subp must be length n. Textbook product tree. */
+static __device__ void fe_batch_inv(Fe *dx, Fe *subp, int n) {
+    if (n <= 0) return;
+    if (n == 1) {
+        Fe t; fe_set(&t, &dx[0]);
+        fe_inv(&dx[0], &t);
+        return;
+    }
+    /* Replace zeros with 1 so the product tree stays well-defined. */
+    for (int i = 0; i < n; i++) {
+        if (fe_is_zero(&dx[i])) {
+            fe_clear(&dx[i]);
+            dx[i].d[0] = 1;
+        }
+    }
+    fe_set(&subp[0], &dx[0]);
+    for (int i = 1; i < n; i++)
+        fe_mul(&subp[i], &subp[i - 1], &dx[i]);
+    Fe inverse;
+    fe_inv(&inverse, &subp[n - 1]);
+    for (int i = n - 1; i > 0; i--) {
+        Fe newValue;
+        fe_mul(&newValue, &subp[i - 1], &inverse);
+        fe_mul(&inverse, &inverse, &dx[i]);
+        fe_set(&dx[i], &newValue);
+    }
+    fe_set(&dx[0], &inverse);
+}
+
+static __device__ void u256_add_u32_be(uint8_t *k32, uint32_t add) {
+    uint32_t c = add;
+    for (int i = 31; i >= 0 && c; i--) {
+        uint32_t s = (uint32_t)k32[i] + c;
+        k32[i] = (uint8_t)s;
+        c = s >> 8;
+    }
+}
+
+static __device__ void u256_add_u64_be(uint8_t *k32, uint64_t add) {
+    uint64_t c = add;
+    for (int i = 31; i >= 0 && c; i--) {
+        uint64_t s = (uint64_t)k32[i] + c;
+        k32[i] = (uint8_t)s;
+        c = s >> 8;
+    }
+}
+
+/* =========================================================================
+ * Sequential address GRP (device G-table + batch inv; matches CPU CPU_GRP_SIZE)
+ * ========================================================================= */
+
+#ifndef TCUDA_GRP_SIZE
+#define TCUDA_GRP_SIZE 1024
+#endif
+#define TCUDA_GRP_HALF (TCUDA_GRP_SIZE / 2)
+
+static Fe *g_d_gn_x = NULL;
+static Fe *g_d_gn_y = NULL;
+static Fe *g_d_2gn_x = NULL;
+static Fe *g_d_2gn_y = NULL;
+static Fe *g_d_grp_ws = NULL;
+static int g_grp_ws_threads = 0;
+static int g_grp_ready = 0;
+static uint8_t *g_d_grp_hit = NULL;
+static int g_grp_hit_cap = 0;
+static uint8_t *g_d_grp_base = NULL;
+static uint8_t *g_d_grp_pubs = NULL;
+static int g_grp_pub_cap = 0;
+
+/* Build Gn[i]=(i+1)*G and _2Gn = GRP_SIZE*G on device (stride=1 generator). */
+__global__ void secp_grp_build_table_kernel(Fe *gn_x, Fe *gn_y, Fe *twogn_x, Fe *twogn_y,
+                                            int half) {
+    if (threadIdx.x != 0 || blockIdx.x != 0) return;
+    Fe gx, gy, x, y;
+    fe_set_u32(&gx, SECP_GX);
+    fe_set_u32(&gy, SECP_GY);
+    fe_set(&gn_x[0], &gx);
+    fe_set(&gn_y[0], &gy);
+    affine_double_xy(&x, &y, &gx, &gy);
+    fe_set(&gn_x[1], &x);
+    fe_set(&gn_y[1], &y);
+    for (int i = 2; i < half; i++) {
+        /* Gn[i] = Gn[i-1] + G */
+        Fe inv, dx;
+        fe_sub(&dx, &gx, &gn_x[i - 1]);
+        if (fe_is_zero(&dx)) {
+            affine_double_xy(&x, &y, &gn_x[i - 1], &gn_y[i - 1]);
+        } else {
+            fe_inv(&inv, &dx);
+            affine_add_xy(&x, &y, &gn_x[i - 1], &gn_y[i - 1], &gx, &gy, &inv);
+        }
+        fe_set(&gn_x[i], &x);
+        fe_set(&gn_y[i], &y);
+    }
+    affine_double_xy(twogn_x, twogn_y, &gn_x[half - 1], &gn_y[half - 1]);
 }
 
 /* =========================================================================
@@ -978,6 +1114,248 @@ __global__ void secp_search_kernel(const uint8_t *privkeys, int count, int compr
         hitmask[i] = 1;
 }
 
+/*
+ * One GRP cycle around center startP (affine), matching CPU thread_process layout:
+ * pts[j] = (center_priv - HALF + j)*G for j in [0, GRP).
+ * dx/subp length = HALF+1 (Gn diffs + _2Gn for advance).
+ */
+static __device__ void grp_one_cycle_hash(
+    Fe *spx, Fe *spy,
+    const Fe *gn_x, const Fe *gn_y,
+    const Fe *t2x, const Fe *t2y,
+    Fe *dx, Fe *subp,
+    int compressed,
+    const uint8_t *bloom, uint64_t bloom_bits, uint8_t bloom_hashes,
+    uint8_t *hit_grp /* GRP_SIZE bytes */)
+{
+    const int half = TCUDA_GRP_HALF;
+    const int hLength = half - 1;
+    const int ninv = half + 1;
+
+    for (int i = 0; i < hLength; i++)
+        fe_sub(&dx[i], &gn_x[i], spx);
+    fe_sub(&dx[hLength], &gn_x[hLength], spx);
+    fe_sub(&dx[hLength + 1], t2x, spx);
+    fe_batch_inv(dx, subp, ninv);
+
+    /* Center */
+    {
+        uint8_t h160[20];
+        if (compressed) {
+            uint8_t pub[33];
+            pub[0] = fe_is_odd(spy) ? 0x03 : 0x02;
+            fe_to_bytes_be(spx, pub + 1);
+            hash160_compressed33(pub, h160);
+        } else {
+            uint8_t pub[65];
+            pub[0] = 0x04;
+            fe_to_bytes_be(spx, pub + 1);
+            fe_to_bytes_be(spy, pub + 33);
+            hash160_uncompressed65(pub, h160);
+        }
+        hit_grp[half] = bloom_check_dev(bloom, bloom_bits, bloom_hashes, h160, 20) ? 1 : 0;
+    }
+
+    for (int i = 0; i < hLength; i++) {
+        Fe ppx, ppy, pnx, pny, ngsn_y;
+        affine_add_xy(&ppx, &ppy, spx, spy, &gn_x[i], &gn_y[i], &dx[i]);
+        fe_neg(&ngsn_y, &gn_y[i]);
+        affine_add_xy(&pnx, &pny, spx, spy, &gn_x[i], &ngsn_y, &dx[i]);
+
+        int pp_off = half + (i + 1);
+        int pn_off = half - (i + 1);
+        uint8_t h160[20];
+        if (compressed) {
+            uint8_t pub[33];
+            pub[0] = fe_is_odd(&ppy) ? 0x03 : 0x02;
+            fe_to_bytes_be(&ppx, pub + 1);
+            hash160_compressed33(pub, h160);
+            hit_grp[pp_off] = bloom_check_dev(bloom, bloom_bits, bloom_hashes, h160, 20) ? 1 : 0;
+            pub[0] = fe_is_odd(&pny) ? 0x03 : 0x02;
+            fe_to_bytes_be(&pnx, pub + 1);
+            hash160_compressed33(pub, h160);
+            hit_grp[pn_off] = bloom_check_dev(bloom, bloom_bits, bloom_hashes, h160, 20) ? 1 : 0;
+        } else {
+            uint8_t pub[65];
+            pub[0] = 0x04;
+            fe_to_bytes_be(&ppx, pub + 1);
+            fe_to_bytes_be(&ppy, pub + 33);
+            hash160_uncompressed65(pub, h160);
+            hit_grp[pp_off] = bloom_check_dev(bloom, bloom_bits, bloom_hashes, h160, 20) ? 1 : 0;
+            fe_to_bytes_be(&pnx, pub + 1);
+            fe_to_bytes_be(&pny, pub + 33);
+            hash160_uncompressed65(pub, h160);
+            hit_grp[pn_off] = bloom_check_dev(bloom, bloom_bits, bloom_hashes, h160, 20) ? 1 : 0;
+        }
+    }
+    /* pts[0] = startP - Gn[hLength] */
+    {
+        Fe pnx, pny, ngsn_y;
+        fe_neg(&ngsn_y, &gn_y[hLength]);
+        affine_add_xy(&pnx, &pny, spx, spy, &gn_x[hLength], &ngsn_y, &dx[hLength]);
+        uint8_t h160[20];
+        if (compressed) {
+            uint8_t pub[33];
+            pub[0] = fe_is_odd(&pny) ? 0x03 : 0x02;
+            fe_to_bytes_be(&pnx, pub + 1);
+            hash160_compressed33(pub, h160);
+        } else {
+            uint8_t pub[65];
+            pub[0] = 0x04;
+            fe_to_bytes_be(&pnx, pub + 1);
+            fe_to_bytes_be(&pny, pub + 33);
+            hash160_uncompressed65(pub, h160);
+        }
+        hit_grp[0] = bloom_check_dev(bloom, bloom_bits, bloom_hashes, h160, 20) ? 1 : 0;
+    }
+    /* Advance center: startP += _2Gn */
+    {
+        Fe nx, ny;
+        affine_add_xy(&nx, &ny, spx, spy, t2x, t2y, &dx[hLength + 1]);
+        fe_set(spx, &nx);
+        fe_set(spy, &ny);
+    }
+}
+
+static __device__ void grp_write_pub65(uint8_t *pubs_grp, int off, int compressed,
+                                       const Fe *x, const Fe *y) {
+    uint8_t *out = pubs_grp + (size_t)off * 65;
+#pragma unroll
+    for (int j = 0; j < 65; j++) out[j] = 0;
+    if (compressed) {
+        out[0] = fe_is_odd(y) ? 0x03 : 0x02;
+        fe_to_bytes_be(x, out + 1);
+    } else {
+        out[0] = 0x04;
+        fe_to_bytes_be(x, out + 1);
+        fe_to_bytes_be(y, out + 33);
+    }
+}
+
+static __device__ void grp_one_cycle_pubs(
+    Fe *spx, Fe *spy,
+    const Fe *gn_x, const Fe *gn_y,
+    const Fe *t2x, const Fe *t2y,
+    Fe *dx, Fe *subp,
+    int compressed,
+    uint8_t *pubs_grp /* GRP_SIZE * 65 */)
+{
+    const int half = TCUDA_GRP_HALF;
+    const int hLength = half - 1;
+    const int ninv = half + 1;
+
+    for (int i = 0; i < hLength; i++)
+        fe_sub(&dx[i], &gn_x[i], spx);
+    fe_sub(&dx[hLength], &gn_x[hLength], spx);
+    fe_sub(&dx[hLength + 1], t2x, spx);
+    fe_batch_inv(dx, subp, ninv);
+
+    grp_write_pub65(pubs_grp, half, compressed, spx, spy);
+    for (int i = 0; i < hLength; i++) {
+        Fe ppx, ppy, pnx, pny, ngsn_y;
+        affine_add_xy(&ppx, &ppy, spx, spy, &gn_x[i], &gn_y[i], &dx[i]);
+        fe_neg(&ngsn_y, &gn_y[i]);
+        affine_add_xy(&pnx, &pny, spx, spy, &gn_x[i], &ngsn_y, &dx[i]);
+        grp_write_pub65(pubs_grp, half + (i + 1), compressed, &ppx, &ppy);
+        grp_write_pub65(pubs_grp, half - (i + 1), compressed, &pnx, &pny);
+    }
+    {
+        Fe pnx, pny, ngsn_y;
+        fe_neg(&ngsn_y, &gn_y[hLength]);
+        affine_add_xy(&pnx, &pny, spx, spy, &gn_x[hLength], &ngsn_y, &dx[hLength]);
+        grp_write_pub65(pubs_grp, 0, compressed, &pnx, &pny);
+    }
+    {
+        Fe nx, ny;
+        affine_add_xy(&nx, &ny, spx, spy, t2x, t2y, &dx[hLength + 1]);
+        fe_set(spx, &nx);
+        fe_set(spy, &ny);
+    }
+}
+
+/*
+ * Parallel sequential GRP search. Each thread owns cycles_per_thread GRP windows
+ * (GRP_SIZE keys each). Center points advance on-device via _2Gn (no H2D per cycle).
+ * hitmask layout: [tid * cycles * GRP + c * GRP + j]
+ */
+__global__ void secp_grp_search_kernel(
+    const uint8_t *base_priv32,
+    int n_threads,
+    int cycles_per_thread,
+    int compressed,
+    const Fe *gn_x, const Fe *gn_y,
+    const Fe *t2x, const Fe *t2y,
+    Fe *ws_pool,
+    const uint8_t *bloom, uint64_t bloom_bits, uint8_t bloom_hashes,
+    uint8_t *hitmask)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_threads) return;
+
+    const int half = TCUDA_GRP_HALF;
+    const int grp = TCUDA_GRP_SIZE;
+    const int ninv = half + 1;
+    const size_t ws_stride = (size_t)ninv * 2;
+    Fe *ws = ws_pool + (size_t)tid * ws_stride;
+    Fe *dx = ws;
+    Fe *subp = ws + ninv;
+
+    uint8_t center[32];
+#pragma unroll
+    for (int i = 0; i < 32; i++) center[i] = base_priv32[i];
+    /* first key for thread = base + tid * (cycles * GRP); center = first + HALF */
+    u256_add_u64_be(center, (uint64_t)tid * (uint64_t)cycles_per_thread * (uint64_t)grp);
+    u256_add_u32_be(center, (uint32_t)half);
+
+    Fe spx, spy;
+    scalar_mul_g(&spx, &spy, center);
+
+    for (int c = 0; c < cycles_per_thread; c++) {
+        uint8_t *hit_grp = hitmask + ((size_t)tid * (size_t)cycles_per_thread + (size_t)c) * (size_t)grp;
+#pragma unroll
+        for (int j = 0; j < grp; j++) hit_grp[j] = 0;
+        grp_one_cycle_hash(&spx, &spy, gn_x, gn_y, t2x, t2y, dx, subp,
+                           compressed, bloom, bloom_bits, bloom_hashes, hit_grp);
+    }
+}
+
+__global__ void secp_grp_pubkey_kernel(
+    const uint8_t *base_priv32,
+    int n_threads,
+    int cycles_per_thread,
+    int compressed,
+    const Fe *gn_x, const Fe *gn_y,
+    const Fe *t2x, const Fe *t2y,
+    Fe *ws_pool,
+    uint8_t *pubs65)
+{
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_threads) return;
+
+    const int half = TCUDA_GRP_HALF;
+    const int grp = TCUDA_GRP_SIZE;
+    const int ninv = half + 1;
+    const size_t ws_stride = (size_t)ninv * 2;
+    Fe *ws = ws_pool + (size_t)tid * ws_stride;
+    Fe *dx = ws;
+    Fe *subp = ws + ninv;
+
+    uint8_t center[32];
+#pragma unroll
+    for (int i = 0; i < 32; i++) center[i] = base_priv32[i];
+    u256_add_u64_be(center, (uint64_t)tid * (uint64_t)cycles_per_thread * (uint64_t)grp);
+    u256_add_u32_be(center, (uint32_t)half);
+
+    Fe spx, spy;
+    scalar_mul_g(&spx, &spy, center);
+
+    for (int c = 0; c < cycles_per_thread; c++) {
+        uint8_t *pubs_grp = pubs65 +
+            ((size_t)tid * (size_t)cycles_per_thread + (size_t)c) * (size_t)grp * 65;
+        grp_one_cycle_pubs(&spx, &spy, gn_x, gn_y, t2x, t2y, dx, subp, compressed, pubs_grp);
+    }
+}
+
 __global__ void secp_selftest_kernel(uint8_t *pub33, uint8_t *h160) {
     uint8_t k[32];
 #pragma unroll
@@ -1124,6 +1502,8 @@ static int ensure_batch_bufs(int count) {
  * Public C API
  * ========================================================================= */
 
+static int tcuda_secp_grp_init_internal(void);
+
 extern "C" int tcuda_secp_device_filter(void) {
     return g_bloom_ready && !g_host_filter && g_d_bloom != NULL;
 }
@@ -1133,6 +1513,9 @@ extern "C" int tcuda_secp_search_init(const uint8_t *bloom_bf, uint64_t bloom_bi
     if (!bloom_bf || bloom_bits == 0 || bloom_bytes == 0 || bloom_hashes == 0)
         return 0;
     tcuda_secp_search_free();
+    cudaSetDevice(0);
+    cudaFuncSetCacheConfig(secp_grp_search_kernel, cudaFuncCachePreferL1);
+    cudaFuncSetCacheConfig(secp_grp_pubkey_kernel, cudaFuncCachePreferL1);
     /* Keep host bloom always (fallback + ETH path). Upload device copy when hash160 ok. */
     free(g_h_bloom);
     g_h_bloom = (uint8_t*)malloc(bloom_bytes);
@@ -1155,7 +1538,24 @@ extern "C" int tcuda_secp_search_init(const uint8_t *bloom_bf, uint64_t bloom_bi
         }
     }
     g_bloom_ready = 1;
+    /* Ensure GRP table exists after bloom (selftest may have built it already). */
+    (void)tcuda_secp_grp_init_internal();
     return 1;
+}
+
+static void tcuda_secp_grp_free_internal(void) {
+    if (g_d_gn_x) { cudaFree(g_d_gn_x); g_d_gn_x = NULL; }
+    if (g_d_gn_y) { cudaFree(g_d_gn_y); g_d_gn_y = NULL; }
+    if (g_d_2gn_x) { cudaFree(g_d_2gn_x); g_d_2gn_x = NULL; }
+    if (g_d_2gn_y) { cudaFree(g_d_2gn_y); g_d_2gn_y = NULL; }
+    if (g_d_grp_ws) { cudaFree(g_d_grp_ws); g_d_grp_ws = NULL; }
+    if (g_d_grp_hit) { cudaFree(g_d_grp_hit); g_d_grp_hit = NULL; }
+    if (g_d_grp_base) { cudaFree(g_d_grp_base); g_d_grp_base = NULL; }
+    if (g_d_grp_pubs) { cudaFree(g_d_grp_pubs); g_d_grp_pubs = NULL; }
+    g_grp_ws_threads = 0;
+    g_grp_hit_cap = 0;
+    g_grp_pub_cap = 0;
+    g_grp_ready = 0;
 }
 
 extern "C" void tcuda_secp_search_free(void) {
@@ -1163,6 +1563,9 @@ extern "C" void tcuda_secp_search_free(void) {
     if (g_d_privkeys) { cudaFree(g_d_privkeys); g_d_privkeys = NULL; }
     if (g_d_pubs) { cudaFree(g_d_pubs); g_d_pubs = NULL; }
     if (g_d_hitmask) { cudaFree(g_d_hitmask); g_d_hitmask = NULL; }
+    /* Keep sequential GRP G-table across bloom reloads (rebuilt in selftest / lazy init). */
+    if (g_d_grp_hit) { cudaFree(g_d_grp_hit); g_d_grp_hit = NULL; g_grp_hit_cap = 0; }
+    if (g_d_grp_pubs) { cudaFree(g_d_grp_pubs); g_d_grp_pubs = NULL; g_grp_pub_cap = 0; }
     free_pin_bufs();
     free(g_h_bloom); g_h_bloom = NULL;
     g_bloom_bits = 0;
@@ -1170,6 +1573,70 @@ extern "C" void tcuda_secp_search_free(void) {
     g_bloom_hashes = 0;
     g_bloom_ready = 0;
     g_cap_count = 0;
+}
+
+static int ensure_grp_ws(int n_threads) {
+    if (n_threads <= g_grp_ws_threads && g_d_grp_ws)
+        return 1;
+    if (g_d_grp_ws) { cudaFree(g_d_grp_ws); g_d_grp_ws = NULL; }
+    g_grp_ws_threads = 0;
+    const int ninv = TCUDA_GRP_HALF + 1;
+    size_t need = (size_t)n_threads * (size_t)ninv * 2 * sizeof(Fe);
+    if (cudaMalloc(&g_d_grp_ws, need) != cudaSuccess)
+        return 0;
+    g_grp_ws_threads = n_threads;
+    return 1;
+}
+
+static int ensure_grp_hit(int keys) {
+    if (keys <= g_grp_hit_cap && g_d_grp_hit)
+        return 1;
+    if (g_d_grp_hit) { cudaFree(g_d_grp_hit); g_d_grp_hit = NULL; }
+    g_grp_hit_cap = 0;
+    if (cudaMalloc(&g_d_grp_hit, (size_t)keys) != cudaSuccess)
+        return 0;
+    g_grp_hit_cap = keys;
+    return 1;
+}
+
+static int ensure_grp_pubs(int keys) {
+    if (keys <= g_grp_pub_cap && g_d_grp_pubs)
+        return 1;
+    if (g_d_grp_pubs) { cudaFree(g_d_grp_pubs); g_d_grp_pubs = NULL; }
+    g_grp_pub_cap = 0;
+    if (cudaMalloc(&g_d_grp_pubs, (size_t)keys * 65) != cudaSuccess)
+        return 0;
+    g_grp_pub_cap = keys;
+    return 1;
+}
+
+static int tcuda_secp_grp_init_internal(void) {
+    if (g_grp_ready)
+        return 1;
+    const int half = TCUDA_GRP_HALF;
+    if (cudaMalloc(&g_d_gn_x, (size_t)half * sizeof(Fe)) != cudaSuccess ||
+        cudaMalloc(&g_d_gn_y, (size_t)half * sizeof(Fe)) != cudaSuccess ||
+        cudaMalloc(&g_d_2gn_x, sizeof(Fe)) != cudaSuccess ||
+        cudaMalloc(&g_d_2gn_y, sizeof(Fe)) != cudaSuccess ||
+        cudaMalloc(&g_d_grp_base, 32) != cudaSuccess) {
+        tcuda_secp_grp_free_internal();
+        return 0;
+    }
+    secp_grp_build_table_kernel<<<1, 1>>>(g_d_gn_x, g_d_gn_y, g_d_2gn_x, g_d_2gn_y, half);
+    if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess) {
+        tcuda_secp_grp_free_internal();
+        return 0;
+    }
+    g_grp_ready = 1;
+    fprintf(stderr,
+            "[+] CUDA custom edition: sequential GRP ready (GRP=%d, PreferL1, batch-inv G-table).\n",
+            TCUDA_GRP_SIZE);
+    fflush(stderr);
+    return 1;
+}
+
+extern "C" int tcuda_secp_grp_ready(void) {
+    return g_grp_ready;
 }
 
 extern "C" int tcuda_memory_info(uint64_t *free_bytes, uint64_t *total_bytes) {
@@ -1217,11 +1684,12 @@ extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes) {
     const uint64_t bytes_per_key = 160ull;
     uint64_t keys = budget_bytes / bytes_per_key;
     if (keys < 1024ull) keys = 1024ull;
-    if (keys > 1048576ull) keys = 1048576ull; /* 1M host batch ceiling */
+    /* Larger ceiling so sequential GRP can keep thousands of centers in flight
+       (GRP=1024 needs ~8M keys for ~8192 parallel windows). */
+    if (keys > (16ull << 20)) keys = (16ull << 20); /* 16M host batch ceiling */
 
     /* Launch chunk: large enough for occupancy, small enough for Windows TDR. */
-    int chunk = (int)keys;
-    if (chunk > 65536) chunk = 65536;
+    int chunk = (int)((keys > 65536ull) ? 65536ull : keys);
     if (chunk < 1024) chunk = 1024;
     /* Align to thread block size */
     chunk = (chunk / kCudaThreads) * kCudaThreads;
@@ -1236,12 +1704,20 @@ extern "C" uint32_t tcuda_apply_memory_budget(uint64_t budget_bytes) {
     }
     ensure_pin_bufs(g_launch_chunk);
 
-    /* Host packs this many keys per call; device processes in launch_chunk slices.
-       Cap at 8 chunks so host Int packing does not dominate GPU time. */
-    uint64_t host_batch = (uint64_t)g_launch_chunk * 8ull;
+    /* Host packs this many keys per GRP/search call.
+       Target >= 8192 GRP windows so the GPU is not under-subscribed. */
+    uint64_t min_grp_batch = (uint64_t)TCUDA_GRP_SIZE * 8192ull;
+    uint64_t host_batch = keys;
+    if (host_batch < min_grp_batch && keys >= min_grp_batch)
+        host_batch = min_grp_batch;
+    if (host_batch < (uint64_t)g_launch_chunk)
+        host_batch = (uint64_t)g_launch_chunk;
     if (host_batch > keys) host_batch = keys;
-    if (host_batch < (uint64_t)g_launch_chunk) host_batch = (uint64_t)g_launch_chunk;
-    if (host_batch > 1048576ull) host_batch = 1048576ull;
+    /* Align down to GRP size for clean sequential windows. */
+    host_batch = (host_batch / (uint64_t)TCUDA_GRP_SIZE) * (uint64_t)TCUDA_GRP_SIZE;
+    if (host_batch < (uint64_t)TCUDA_GRP_SIZE)
+        host_batch = (uint64_t)TCUDA_GRP_SIZE;
+    if (host_batch > (16ull << 20)) host_batch = (16ull << 20);
     g_recommended_batch = (uint32_t)host_batch;
 
     fprintf(stderr,
@@ -1395,6 +1871,238 @@ extern "C" int tcuda_secp_search_batch(const uint8_t *privkeys, int count, int c
     return (int)hits;
 }
 
+static void host_u256_add_u64(uint8_t *k32, uint64_t add) {
+    for (int b = 31; b >= 0 && add; b--) {
+        uint64_t s = (uint64_t)k32[b] + add;
+        k32[b] = (uint8_t)s;
+        add = s >> 8;
+    }
+}
+
+/* Launch GRP search for n_threads * cycles windows starting at base_priv. */
+static int grp_search_launch(const uint8_t *base_priv32, int n_threads, int cycles,
+                             int compressed, int key_index_base,
+                             uint32_t *match_indices, int max_matches,
+                             uint32_t *hits, uint32_t *stored) {
+    const int grp = TCUDA_GRP_SIZE;
+    const int max_thr = (TCUDA_GRP_SIZE >= 1024) ? 2048 : 4096;
+    uint8_t base_chunk[32];
+    memcpy(base_chunk, base_priv32, 32);
+    int thr_done = 0;
+    while (thr_done < n_threads) {
+        int thr = n_threads - thr_done;
+        if (thr > max_thr) thr = max_thr;
+        int chunk_keys = thr * cycles * grp;
+        if (!ensure_grp_ws(thr) || !ensure_grp_hit(chunk_keys))
+            return -1;
+        if (cudaMemcpy(g_d_grp_base, base_chunk, 32, cudaMemcpyHostToDevice) != cudaSuccess)
+            return -1;
+        int threads = (thr < kCudaThreads) ? thr : kCudaThreads;
+        if (threads < 1) threads = 1;
+        int blocks = (thr + threads - 1) / threads;
+        secp_grp_search_kernel<<<blocks, threads>>>(
+            g_d_grp_base, thr, cycles, compressed ? 1 : 0,
+            g_d_gn_x, g_d_gn_y, g_d_2gn_x, g_d_2gn_y, g_d_grp_ws,
+            g_d_bloom, g_bloom_bits, g_bloom_hashes, g_d_grp_hit);
+        if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
+            return -1;
+        uint8_t *hit_host = (uint8_t *)malloc((size_t)chunk_keys);
+        if (!hit_host) return -1;
+        if (cudaMemcpy(hit_host, g_d_grp_hit, (size_t)chunk_keys, cudaMemcpyDeviceToHost) != cudaSuccess) {
+            free(hit_host);
+            return -1;
+        }
+        int idx_base = key_index_base + thr_done * cycles * grp;
+        for (int i = 0; i < chunk_keys; i++) {
+            if (!hit_host[i]) continue;
+            (*hits)++;
+            if (match_indices && *stored < (uint32_t)max_matches)
+                match_indices[(*stored)++] = (uint32_t)(idx_base + i);
+        }
+        free(hit_host);
+        host_u256_add_u64(base_chunk, (uint64_t)chunk_keys);
+        thr_done += thr;
+    }
+    return 0;
+}
+
+extern "C" int tcuda_secp_search_grp(const uint8_t *base_priv32, int count, int compressed,
+                                     uint32_t *match_indices, int max_matches,
+                                     uint32_t *out_hit_count) {
+    if (!g_bloom_ready || !base_priv32 || count <= 0)
+        return -1;
+    if (g_host_filter)
+        return -2;
+    if (!tcuda_secp_grp_init_internal())
+        return -1;
+
+    const int grp = TCUDA_GRP_SIZE;
+    uint32_t hits = 0, stored = 0;
+    int done = 0;
+    int full = (count / grp) * grp;
+
+    if (full > 0) {
+        /*
+         * Prefer high thread count (occupancy). Only add multi-cycle when we
+         * already have plenty of parallel centers; amortize scalar_mul_g then.
+         */
+        int n_groups = full / grp;
+        int cycles = 1;
+        if (n_groups >= 8192)
+            cycles = 4;
+        else if (n_groups >= 4096)
+            cycles = 2;
+        int kpt = grp * cycles;
+        int n_threads = full / kpt;
+        if (n_threads > 0) {
+            if (grp_search_launch(base_priv32, n_threads, cycles, compressed, 0,
+                                  match_indices, max_matches, &hits, &stored) != 0)
+                return -1;
+            done = n_threads * kpt;
+        }
+        int left_full = full - done;
+        if (left_full >= grp) {
+            uint8_t base_rem[32];
+            memcpy(base_rem, base_priv32, 32);
+            host_u256_add_u64(base_rem, (uint64_t)done);
+            int n1 = left_full / grp;
+            if (grp_search_launch(base_rem, n1, 1, compressed, done,
+                                  match_indices, max_matches, &hits, &stored) != 0)
+                return -1;
+            done += left_full;
+        }
+    }
+
+    int rem = count - done;
+    if (rem > 0) {
+        uint8_t *privs = (uint8_t *)malloc((size_t)rem * 32);
+        if (!privs) return -1;
+        memcpy(privs, base_priv32, 32);
+        host_u256_add_u64(privs, (uint64_t)done);
+        for (int i = 1; i < rem; i++) {
+            memcpy(privs + (size_t)i * 32, privs + (size_t)(i - 1) * 32, 32);
+            for (int b = 31; b >= 0; b--) {
+                if (++privs[(size_t)i * 32 + b] != 0) break;
+            }
+        }
+        uint32_t sub_hits = 0;
+        uint32_t *sub_idx = NULL;
+        int sub_max = 0;
+        if (match_indices && stored < (uint32_t)max_matches) {
+            sub_max = rem;
+            sub_idx = (uint32_t *)malloc((size_t)rem * sizeof(uint32_t));
+            if (!sub_idx) { free(privs); return -1; }
+        }
+        int rc = tcuda_secp_search_batch(privs, rem, compressed, sub_idx, sub_max, &sub_hits);
+        free(privs);
+        if (rc < 0) {
+            free(sub_idx);
+            return rc;
+        }
+        hits += sub_hits;
+        if (sub_idx) {
+            for (uint32_t h = 0; h < sub_hits && stored < (uint32_t)max_matches; h++)
+                match_indices[stored++] = (uint32_t)done + sub_idx[h];
+            free(sub_idx);
+        }
+    }
+
+    if (out_hit_count)
+        *out_hit_count = hits;
+    return (int)hits;
+}
+
+static int grp_pubkey_launch(const uint8_t *base_priv32, int n_threads, int cycles,
+                             int compressed, uint8_t *out_pubs65) {
+    const int grp = TCUDA_GRP_SIZE;
+    const int max_thr = 1024; /* pubs are large; keep launches smaller than search */
+    uint8_t base_chunk[32];
+    memcpy(base_chunk, base_priv32, 32);
+    int thr_done = 0;
+    int off = 0;
+    while (thr_done < n_threads) {
+        int thr = n_threads - thr_done;
+        if (thr > max_thr) thr = max_thr;
+        int chunk_keys = thr * cycles * grp;
+        if (!ensure_grp_ws(thr) || !ensure_grp_pubs(chunk_keys))
+            return -1;
+        if (cudaMemcpy(g_d_grp_base, base_chunk, 32, cudaMemcpyHostToDevice) != cudaSuccess)
+            return -1;
+        int threads = (thr < kCudaThreads) ? thr : kCudaThreads;
+        if (threads < 1) threads = 1;
+        int blocks = (thr + threads - 1) / threads;
+        secp_grp_pubkey_kernel<<<blocks, threads>>>(
+            g_d_grp_base, thr, cycles, compressed ? 1 : 0,
+            g_d_gn_x, g_d_gn_y, g_d_2gn_x, g_d_2gn_y, g_d_grp_ws, g_d_grp_pubs);
+        if (cudaGetLastError() != cudaSuccess || cudaDeviceSynchronize() != cudaSuccess)
+            return -1;
+        if (cudaMemcpy(out_pubs65 + (size_t)off * 65, g_d_grp_pubs,
+                       (size_t)chunk_keys * 65, cudaMemcpyDeviceToHost) != cudaSuccess)
+            return -1;
+        host_u256_add_u64(base_chunk, (uint64_t)chunk_keys);
+        off += chunk_keys;
+        thr_done += thr;
+    }
+    return 0;
+}
+
+extern "C" int tcuda_secp_pubkey_grp(const uint8_t *base_priv32, int count, int compressed,
+                                     uint8_t *out_pubs65) {
+    if (!base_priv32 || !out_pubs65 || count <= 0)
+        return -1;
+    if (!tcuda_secp_grp_init_internal())
+        return -1;
+
+    const int grp = TCUDA_GRP_SIZE;
+    int done = 0;
+    int full = (count / grp) * grp;
+
+    if (full > 0) {
+        int n_groups = full / grp;
+        int cycles = 1;
+        if (n_groups >= 8192)
+            cycles = 4;
+        else if (n_groups >= 4096)
+            cycles = 2;
+        int kpt = grp * cycles;
+        int n_threads = full / kpt;
+        if (n_threads > 0) {
+            if (grp_pubkey_launch(base_priv32, n_threads, cycles, compressed, out_pubs65) != 0)
+                return -1;
+            done = n_threads * kpt;
+        }
+        int left_full = full - done;
+        if (left_full >= grp) {
+            uint8_t base_rem[32];
+            memcpy(base_rem, base_priv32, 32);
+            host_u256_add_u64(base_rem, (uint64_t)done);
+            int n1 = left_full / grp;
+            if (grp_pubkey_launch(base_rem, n1, 1, compressed,
+                                  out_pubs65 + (size_t)done * 65) != 0)
+                return -1;
+            done += left_full;
+        }
+    }
+
+    int rem = count - done;
+    if (rem > 0) {
+        uint8_t *privs = (uint8_t *)malloc((size_t)rem * 32);
+        if (!privs) return -1;
+        memcpy(privs, base_priv32, 32);
+        host_u256_add_u64(privs, (uint64_t)done);
+        for (int i = 1; i < rem; i++) {
+            memcpy(privs + (size_t)i * 32, privs + (size_t)(i - 1) * 32, 32);
+            for (int b = 31; b >= 0; b--) {
+                if (++privs[(size_t)i * 32 + b] != 0) break;
+            }
+        }
+        int rc = tcuda_secp_pubkey_batch(privs, rem, compressed, out_pubs65 + (size_t)done * 65);
+        free(privs);
+        if (rc != 0) return rc;
+    }
+    return 0;
+}
+
 extern "C" int tcuda_secp_selftest(void) {
     /* Known compressed pubkey for privkey = 1 (secp256k1 G) */
     static const uint8_t expect_pub[33] = {
@@ -1446,6 +2154,12 @@ extern "C" int tcuda_secp_selftest(void) {
     g_host_filter = 0;
     fprintf(stderr, "[+] CUDA secp256k1 self-test passed (GPU EC + device hash160).\n");
     fflush(stderr);
+
+    /* Build sequential GRP table (clean-room; matches CPU CPU_GRP_SIZE walk). */
+    if (!tcuda_secp_grp_init_internal()) {
+        fprintf(stderr, "[W] CUDA sequential GRP table init failed; using per-key scalar path.\n");
+        fflush(stderr);
+    }
     return 1;
 }
 
@@ -1458,21 +2172,6 @@ static uint8_t *g_d_twogsn = NULL;
 static Fe      *g_d_bsgs_ws = NULL; /* scratch: half Fe dx + half Fe gsn_x + half Fe gsn_y */
 static int      g_bsgs_half = 0;
 static int      g_bsgs_ready = 0;
-
-static __device__ void affine_add_xy(Fe *rx, Fe *ry,
-                                     const Fe *ax, const Fe *ay,
-                                     const Fe *bx, const Fe *by,
-                                     const Fe *inv_dx) {
-    Fe dy, s, p, t;
-    fe_sub(&dy, by, ay);
-    fe_mul(&s, &dy, inv_dx);
-    fe_sqr(&p, &s);
-    fe_sub(rx, &p, ax);
-    fe_sub(rx, rx, bx);
-    fe_sub(&t, bx, rx);
-    fe_mul(ry, &s, &t);
-    fe_sub(ry, ry, by);
-}
 
 /*
  * One GRP cycle per launch (serial on thread 0). Matches keyhunt thread_process_bsgs

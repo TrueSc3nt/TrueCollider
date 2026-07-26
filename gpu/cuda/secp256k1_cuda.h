@@ -20,14 +20,37 @@ int tcuda_secp_search_batch(const uint8_t *privkeys, int count, int compressed,
                             uint32_t *match_indices, int max_matches,
                             uint32_t *out_hit_count);
 
+/*
+ * Sequential GRP search (stride-1 keystream): base_priv + [0, count).
+ * Uses device G-table + Montgomery batch inversion; no per-key scalar_mul_g.
+ * count should be a multiple of TCUDA_GRP_SIZE; remainder uses scalar path.
+ * Returns number of bloom hits (>=0), or -1/-2 on error / host-filter fallback.
+ */
+int tcuda_secp_search_grp(const uint8_t *base_priv32, int count, int compressed,
+                          uint32_t *match_indices, int max_matches,
+                          uint32_t *out_hit_count);
+
+/* 1 if sequential GRP search path is armed (table built). */
+int tcuda_secp_grp_ready(void);
+
 /* GPU EC only: writes count*65 pubkey bytes (prefix + X[+Y]) to out_pubs65. */
 int tcuda_secp_pubkey_batch(const uint8_t *privkeys, int count, int compressed,
                             uint8_t *out_pubs65);
+
+/*
+ * Sequential GRP pubkey derivation (stride-1): base_priv + [0, count) → out_pubs65.
+ * Same GRP walk as search; for xpoint / host-filter paths.
+ */
+int tcuda_secp_pubkey_grp(const uint8_t *base_priv32, int count, int compressed,
+                          uint8_t *out_pubs65);
 
 int tcuda_secp_selftest(void);
 
 /* 1 if device hash160+bloom search path is active (after successful self-test + bloom upload). */
 int tcuda_secp_device_filter(void);
+
+/* Device GRP window (power of 2). Aligned with CPU_GRP_SIZE for KH-class sequential hunt. */
+#define TCUDA_GRP_SIZE 1024
 
 /*
  * BSGS giant-step GRP: upload GSn[0..half-1] and _2GSn (each 64B = x||y BE).

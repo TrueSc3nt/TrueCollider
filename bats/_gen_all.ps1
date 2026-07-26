@@ -70,18 +70,16 @@ function Write-Bat($RelPath, $Title, $Need, $BodyLines, $Notes = @()) {
 
 # ---- 00_build ----
 Write-Bat '00_build\build_cpu.bat' 'Build CPU keyhunt.exe (MinGW)' 'cpu' @(
-  'cd /d "%~dp0..\.."',
-  'call build_mingw_native.bat'
-) @('Does not need existing exe â€” calls root build script.') | Out-Null
+  'call "%~dp0build_mingw_native.bat"'
+) @('Does not need existing exe — calls bats/00_build/build_mingw_native.bat.') | Out-Null
 
 # Fix build bats specially â€” they shouldn't require exe first
 @'
 @echo off
-REM Build CPU keyhunt.exe
+REM Build CPU keyhunt.exe (MinGW)
 setlocal
-cd /d "%~dp0..\.."
-if not exist keyhunt.cpp (echo [E] incomplete tree & exit /b 1)
-call build_mingw_native.bat
+if not exist "%~dp0build_mingw_native.bat" (echo [E] missing build_mingw_native.bat & exit /b 1)
+call "%~dp0build_mingw_native.bat"
 exit /b %ERRORLEVEL%
 '@ | Set-Content -Encoding ASCII (Join-Path $Bats '00_build\build_cpu.bat')
 
@@ -89,20 +87,12 @@ exit /b %ERRORLEVEL%
 @echo off
 REM Build CUDA keyhunt_cuda.exe (VS2022 + CUDA Toolkit)
 setlocal
-cd /d "%~dp0..\.."
-if not exist keyhunt.cpp (echo [E] incomplete tree & exit /b 1)
-call build_cuda_vs2022.bat
+if not exist "%~dp0build_cuda_vs2022.bat" (echo [E] missing build_cuda_vs2022.bat & exit /b 1)
+call "%~dp0build_cuda_vs2022.bat"
 exit /b %ERRORLEVEL%
 '@ | Set-Content -Encoding ASCII (Join-Path $Bats '00_build\build_cuda.bat')
 
-@'
-@echo off
-REM Alternate CUDA MSVC build
-setlocal
-cd /d "%~dp0..\.."
-call build_cuda_msvc.bat
-exit /b %ERRORLEVEL%
-'@ | Set-Content -Encoding ASCII (Join-Path $Bats '00_build\build_cuda_msvc.bat')
+# build_cuda_msvc.bat is the real MSVC script (not a thin wrapper) — do not overwrite it here.
 
 # ---- 01_address ----
 Write-Bat '01_address\btc_puzzle66.bat' 'BTC address â€” puzzle #66 range' 'cpu' @(
@@ -239,8 +229,12 @@ Write-Bat '05_kangaroo\tiny_hit.bat' 'Kangaroo tiny range (key 1)' 'cpu' @(
   'keyhunt.exe -m kangaroo -f tests\_pubkey_g.txt -r 1:1000 -t 1 -q'
 )
 
-Write-Bat '05_kangaroo\bit40.bat' 'Kangaroo -b 40 demo' 'cpu' @(
-  'keyhunt.exe -m kangaroo -f tests\125.txt -b 40 -t 4 -q -s 10'
+Write-Bat '05_kangaroo\bit40.bat' 'Kangaroo -b 40 known-hit (DP)' 'cpu' @(
+  'if not exist "tests\_pubkey_b40.txt" (',
+  '  echo [E] Missing fixture: tests\_pubkey_b40.txt',
+  '  exit /b 1',
+  ')',
+  'keyhunt.exe -m kangaroo -f tests\_pubkey_b40.txt -b 40 -t 4 -q'
 )
 
 Write-Bat '05_kangaroo\cuda.bat' 'Kangaroo CUDA' 'cuda' @(

@@ -26,13 +26,17 @@ Double-click or run from **repo root** via `examples\name.bat`. Each script `cd`
 | `dry_run.bat` | `-y` CPU (+ CUDA plan if built) |
 | `gpu_cuda_address.bat` | CUDA address (`-U cuda`) |
 | `gpu_hybrid_both.bat` | Hybrid CPU+CUDA (`-U both`) |
+| `run_keyhunt.bat` | Generic launcher (CPU / `-U` CUDA / WSL fallback) |
+| `run_puzzle66_example.bat` | Tiny address demo via `targets.txt` |
+| `run_sol_sample.bat` | Guaranteed Sol hit (`-r 1:8`) |
+| `run_gpu_cuda_example.bat` | CUDA puzzle-66 sample |
 
 ## Notes
 
 - Scripts reject missing or **0-byte** binaries (common corrupt download).
-- CUDA demos need `keyhunt_cuda.exe` from `build_cuda.bat` / `build_cuda_vs2022.bat`.
+- CUDA demos need `keyhunt_cuda.exe` from `examples/build_cuda.bat` / `bats/00_build/build_cuda_vs2022.bat`.
 - Do **not** pass `-e` with `-U cuda` or `-U both` (endomorphism forces the CPU EC path).
 - `-U both` is hybrid threading (even IDs → CUDA, odd → CPU). It is **not** the same as `-l both` (compress/uncompress).
-- Quick Sol hit demo at repo root: `run_sol_sample.bat` (`-r 1:8`).
+- Quick Sol hit demo: `examples/run_sol_sample.bat` (`-r 1:8`).
 
 Full flag docs: [../README.md](../README.md) · Short recipes: [../docs/COMMANDS.md](../docs/COMMANDS.md)

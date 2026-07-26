@@ -1,4 +1,4 @@
-﻿[+] Version TrueCollider Search Modes + Binary Fuse Filters, developed & modified by TrueScent
+[+] Version TrueCollider Search Modes + Binary Fuse Filters, developed & modified by TrueScent
 
 ===============================================================
   TrueCollider Search Modes + Binary Fuse Filters
@@ -110,13 +110,13 @@ USAGE:
       random     - random giant steps (default)
       dance      - triple: top/bottom/random alternation
       rseq       - random start, sequential giant chunk, reseed (--walk)
-      residue    - snap giants to k Ôëí R (mod M); --mod-step/--mod-rem
+      residue    - snap giants to k ≡ R (mod M); --mod-step/--mod-rem
       modfan     - fan threads across rem = tid%M (ModFan-style)
       shadowledger - speculative fiber mod M (--shadow-mod)
       hybrid     - warmup near range start, then random giants
       freeze-table / compact-dp - tips for -S save + RAM hygiene (-M/-k)
       dual-range - tip: -x wave or two processes on split -r
-      (+ research: grumpy, orbit, handoff, sobol-giant, ÔÇª)
+      (+ research: grumpy, orbit, handoff, sobol-giant, …)
     Honesty: BSGS is NOT Pollard kangaroo sqrt(N); table size (-n/-k) sets work/RAM.
 
     Example:
@@ -357,15 +357,21 @@ THREADING & SEARCH PATTERNS:
 PERFORMANCE:
   -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)
   -A mode      CPU vectorization (default: auto):
-                 auto   - Detect best: AVX-512 ÔåÆ AVX2 ÔåÆ SSE ÔåÆ scalar
+                 auto   - Detect best: AVX-512 -> AVX2 -> SSE -> scalar
                  none, sse, avx, avx2, avx512
                AVX2 = 8-wide hash160; AVX-512 = 16-wide; AVX1/SSE = 4-wide SSE.
   -U backend   GPU backend: none, cuda, opencl, both (default: none)
-                 cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)
+                 cuda   = Custom CUDA edition (all -m modes; sequential GRP
+                          address/rmd160/xpoint toward KeyHunt-class Mk/s)
                  opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU
                  both   = CPU threads + CUDA GPU together (hybrid)
+               keyhunt_cuda.exe: prefer -U cuda -M auto -t 1 -x sequential
+               Mnemonic/poetry use GPU EC (+ CUDA PBKDF2 when available);
+               rates are mnemonics/s, not EC Mk/s.
   -G N         GPU batch size hint (keys). Default: auto from -M / VRAM
   -M MB|auto   GPU/search memory budget in megabytes (KeyHunt-Cuda style).
+  -f FILE      Targets: text addresses/hex OR packed .bin/.hash160/.keccak160
+               (20-byte records). Convert with scripts/addr_to_hash160.py etc.
                Examples: -M 512  -M 2048  -M 2G  -M auto
                Under CUDA, default is auto (size from free VRAM).
                Larger budget => larger privkey/pubkey batches (TDR-safe chunks).
@@ -386,15 +392,17 @@ OUTPUT:
 ===============================================================
 
   Address targets:    One address per line (auto-detected format):
-                      BTC:   1..., 3..., bc1q..., bc1p...
+                      BTC:   1..., 3..., bc1q... (bc1p... needs -c troot)
                       ETH:   0x...
                       LTC:   L...
                       DOGE:  D...
                       XRP:   r...
                       BTG:   G...
-  RMD160 targets:     One 40-char hex RIPEMD-160 hash per line
-  Public key targets: One hex public key per line (64/66/130 chars)
-  Taproot targets:    One 64-char hex x-only output key per line
+                      SOL:   base58 pubkey (-c sol)
+                      Lines starting with # are comments (also blank lines)
+  RMD160 targets:     40-char hex hash160 AND/OR addresses (decoded to hash160)
+  Public key targets: One hex public key per line (66/130 chars) for BSGS/kangaroo
+  Taproot targets:    64-char hex x-only key OR bc1p... address (-c troot)
   Vanity targets:     Via -v flag, not file
 
 ===============================================================

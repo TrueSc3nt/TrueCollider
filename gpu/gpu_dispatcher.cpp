@@ -34,7 +34,10 @@ extern "C" int tcuda_secp_device_filter(void) { return 0; }
 extern "C" int tcuda_secp_search_init(const uint8_t*, uint64_t, uint64_t, uint8_t) { return 0; }
 extern "C" void tcuda_secp_search_free(void) {}
 extern "C" int tcuda_secp_search_batch(const uint8_t*, int, int, uint32_t*, int, uint32_t*) { return 0; }
+extern "C" int tcuda_secp_search_grp(const uint8_t*, int, int, uint32_t*, int, uint32_t*) { return -1; }
+extern "C" int tcuda_secp_grp_ready(void) { return 0; }
 extern "C" int tcuda_secp_pubkey_batch(const uint8_t*, int, int, uint8_t*) { return -1; }
+extern "C" int tcuda_secp_pubkey_grp(const uint8_t*, int, int, uint8_t*) { return -1; }
 extern "C" int tcuda_bsgs_grp_init(const uint8_t*, int, const uint8_t*) { return 0; }
 extern "C" void tcuda_bsgs_grp_free(void) {}
 extern "C" int tcuda_bsgs_grp_run(uint8_t*, int, uint8_t*) { return 0; }
@@ -62,8 +65,14 @@ extern "C" void tcuda_secp_search_free(void);
 extern "C" int tcuda_secp_search_batch(const uint8_t *privkeys, int count, int compressed,
                                        uint32_t *match_indices, int max_matches,
                                        uint32_t *out_hit_count);
+extern "C" int tcuda_secp_search_grp(const uint8_t *base_priv32, int count, int compressed,
+                                     uint32_t *match_indices, int max_matches,
+                                     uint32_t *out_hit_count);
+extern "C" int tcuda_secp_grp_ready(void);
 extern "C" int tcuda_secp_pubkey_batch(const uint8_t *privkeys, int count, int compressed,
                                        uint8_t *out_pubs65);
+extern "C" int tcuda_secp_pubkey_grp(const uint8_t *base_priv32, int count, int compressed,
+                                     uint8_t *out_pubs65);
 extern "C" int tcuda_bsgs_grp_init(const uint8_t *gsn_xy64, int half, const uint8_t *twogsn_xy64);
 extern "C" void tcuda_bsgs_grp_free(void);
 extern "C" int tcuda_bsgs_grp_run(uint8_t *start_xy64, int n_cycles, uint8_t *out_x32);
@@ -443,6 +452,58 @@ uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
     return (rc == 0) ? hits : 0;
 }
 
+int gpu_dispatcher_secp_grp_ready(const struct GpuDispatcher* disp) {
+    if (!disp || !disp->initialized || !disp->secp_ready)
+        return 0;
+#if defined(ENABLE_CUDA)
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA)
+        return 0;
+    return tcuda_secp_grp_ready();
+#else
+    (void)disp;
+    return 0;
+#endif
+}
+
+int gpu_dispatcher_search_privkeys_grp(struct GpuDispatcher* disp,
+                                       const uint8_t* base_priv32,
+                                       uint32_t count,
+                                       int compressed,
+                                       int encode,
+                                       uint32_t* match_indices,
+                                       uint32_t max_matches,
+                                       uint32_t* out_hits) {
+    if (out_hits) *out_hits = 0;
+    if (!disp || !disp->initialized || !disp->secp_ready || !disp->bloom_loaded)
+        return 0;
+    if (!base_priv32 || count == 0 || !disp->host_bloom.ready)
+        return 0;
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA)
+        return 0;
+    if (encode != GPU_ENCODE_HASH160)
+        return 0; /* ETH keccak not on GRP path yet */
+    if (!tcuda_secp_grp_ready() || !tcuda_secp_device_filter())
+        return 0;
+
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+    uint32_t hits = 0;
+    int src = tcuda_secp_search_grp(base_priv32, (int)count, compressed,
+                                    match_indices, (int)max_matches, &hits);
+#ifdef _WIN32
+    LeaveCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+    if (src < 0)
+        return 0;
+    if (out_hits) *out_hits = hits;
+    return 1;
+}
+
 int gpu_dispatcher_pubkey_batch(struct GpuDispatcher* disp,
                                 const uint8_t* privkeys,
                                 uint32_t count,
@@ -460,6 +521,33 @@ int gpu_dispatcher_pubkey_batch(struct GpuDispatcher* disp,
     pthread_mutex_lock(&disp->gpu_lock);
 #endif
     int rc = tcuda_secp_pubkey_batch(privkeys, (int)count, compressed, out_pubs65);
+#ifdef _WIN32
+    LeaveCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_unlock(&disp->gpu_lock);
+#endif
+    return rc == 0 ? 1 : 0;
+}
+
+int gpu_dispatcher_pubkey_grp(struct GpuDispatcher* disp,
+                              const uint8_t* base_priv32,
+                              uint32_t count,
+                              int compressed,
+                              uint8_t* out_pubs65) {
+    if (!disp || !disp->initialized || !disp->secp_ready)
+        return 0;
+    if (!base_priv32 || !out_pubs65 || count == 0)
+        return 0;
+    if (disp->cfg.gpu_backend != GPU_BACKEND_CUDA)
+        return 0;
+    if (!tcuda_secp_grp_ready())
+        return 0;
+#ifdef _WIN32
+    EnterCriticalSection(&disp->gpu_lock);
+#else
+    pthread_mutex_lock(&disp->gpu_lock);
+#endif
+    int rc = tcuda_secp_pubkey_grp(base_priv32, (int)count, compressed, out_pubs65);
 #ifdef _WIN32
     LeaveCriticalSection(&disp->gpu_lock);
 #else

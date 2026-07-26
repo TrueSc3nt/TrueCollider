@@ -54,6 +54,22 @@ uint32_t gpu_dispatcher_search_privkeys(struct GpuDispatcher* disp,
                                         uint32_t max_matches);
 
 /*
+ * Sequential stride-1 GRP search: base_priv + [0, count). Device G-table + batch inv.
+ * Returns 1 on success (writes *out_hits); 0 if GRP unavailable (caller should fall back).
+ */
+int gpu_dispatcher_search_privkeys_grp(struct GpuDispatcher* disp,
+                                       const uint8_t* base_priv32,
+                                       uint32_t count,
+                                       int compressed,
+                                       int encode,
+                                       uint32_t* match_indices,
+                                       uint32_t max_matches,
+                                       uint32_t* out_hits);
+
+/* 1 if sequential CUDA GRP path is armed. */
+int gpu_dispatcher_secp_grp_ready(const struct GpuDispatcher* disp);
+
+/*
  * GPU EC only: privkeys (count*32 BE) -> count*65 pubkey bytes (0x02/03/04 + coords).
  * Returns 1 on success. Used by Taproot / experimental BSGS helpers.
  */
@@ -62,6 +78,13 @@ int gpu_dispatcher_pubkey_batch(struct GpuDispatcher* disp,
                                 uint32_t count,
                                 int compressed,
                                 uint8_t* out_pubs65);
+
+/* Sequential stride-1 GRP pubkey derivation (base + [0,count)). Returns 1 on success. */
+int gpu_dispatcher_pubkey_grp(struct GpuDispatcher* disp,
+                              const uint8_t* base_priv32,
+                              uint32_t count,
+                              int compressed,
+                              uint8_t* out_pubs65);
 
 /* Solana: seeds (count*32) → ed25519 pubs (count*32). Full device ge when CUDA ready. */
 int gpu_dispatcher_ed25519_pubkey_batch(struct GpuDispatcher* disp,

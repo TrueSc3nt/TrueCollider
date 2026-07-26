@@ -1,7 +1,7 @@
 @echo off
 REM =============================================================================
 REM Solana address search — tests\sol_sample.txt (ed25519)
-REM Open-ended scan. Quick guaranteed hit: run_sol_sample.bat (-r 1:8)
+REM Open-ended scan. Quick guaranteed hit: examples\run_sol_sample.bat (-r 1:8)
 REM CUDA: set USE_CUDA=1 (needs keyhunt_cuda.exe; no -e)
 REM Hits -> FOUND_SOL.txt
 REM =============================================================================

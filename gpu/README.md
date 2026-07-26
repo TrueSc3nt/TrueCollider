@@ -4,6 +4,15 @@ Runtime selection: `-U none` (default) · `-U cuda` · `-U opencl`.
 
 Dispatcher: `gpu/gpu_dispatcher.cpp`.
 
+## Custom CUDA edition
+
+`keyhunt_cuda.exe` is the **custom CUDA edition**: all TrueCollider modes on `-U cuda`, plus KeyHunt-class **sequential device GRP** (MIT clean-room). CPU twin remains `keyhunt.exe`.
+
+- GRP window: `TCUDA_GRP_SIZE` (1024) in `gpu/cuda/secp256k1_cuda.h`
+- Packed targets: `scripts/addr_to_hash160.py` → `-f file.hash160`
+- Runtime: NVIDIA driver + CUDA runtime (`cudart64_*.dll` — copy next to the exe on Windows if needed)
+- **Do not** expect EC Mk/s rates from mnemonic mode
+
 ---
 
 ## Status (honest)
@@ -18,12 +27,13 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 
 | Path | Status |
 |------|--------|
-| BTC / LTC / DOGE / XRP / BCH / BTG / `all` — `address` / `rmd160` | GPU EC + **device** hash160 + **device** bloom (host fallback if self-test fails) |
+| BTC / LTC / DOGE / XRP / BCH / BTG / `all` — `address` / `rmd160` | **Sequential GRP=1024** (device G-table + batch inv + hash160/bloom) when stride=1; else per-key `scalar_mul_g` |
 | ETH / ETC — `address` | GPU EC (uncompressed) + host keccak + host bloom |
 | Taproot (`troot`) — `address` | GPU EC + host taproot tweak + filter |
 | Batch size | **`-M auto`/`-M MB`** sizes from free VRAM (Rotor/Collider style); **`-G`** optional override. Device launches use 256-thread grids in TDR-safe chunks (up to 64K) |
-| Device hash160 bloom search | **Shipped** (`secp_search_kernel` when self-test passes; `g_host_filter=0`) |
-| vanity / xpoint / pubkey2addr / minikeys / mnemonic / poetry / brainwallet | GPU EC + filter (device hash160+bloom when ready; else host) |
+| Device hash160 bloom search | **Shipped** (`secp_grp_search_kernel` for stride-1; `secp_search_kernel` fallback) |
+| vanity / xpoint / pubkey2addr | Stride-1 uses GRP pubkey/search; sparse/random lists keep per-key EC |
+| minikeys / mnemonic / poetry / brainwallet | GPU EC + filter (per-key; non-consecutive) |
 | BSGS | Baby-table GPU EC + **device GRP giant-step** (`tcuda_bsgs_grp_*`; host bloom). Currently serial per-cycle launches (correct, not yet throughput-tuned) |
 | SOL (`-c sol`) | **Full device** ed25519 `ge_scalarmult_base` (SHA512+clamp+ge); host-ge fallback |
 | Kangaroo | **CUDA** (`-m kangaroo -U cuda`): ≤2²⁴ GPU batch EC scan; larger multi-walker DP (device jumps, host DP table). CPU fallback |
@@ -52,7 +62,7 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 # NVIDIA CUDA
 cmake -B build-cuda -DENABLE_CUDA=ON
 cmake --build build-cuda -j
-# Windows: build_cuda_vs2022.bat → keyhunt_cuda.exe
+# Windows: bats/00_build/build_cuda_vs2022.bat → keyhunt_cuda.exe
 
 # OpenCL (AMD / NVIDIA / Intel)
 cmake -B build-opencl -DENABLE_OPENCL=ON
@@ -83,7 +93,7 @@ Windows:
 keyhunt_cuda.exe -m address -f tests\66.txt -b 66 -l compress -U cuda -G 128 -t 1 -q -s 5
 ```
 
-Or double-click / run: `run_gpu_cuda_example.bat`.
+Or double-click / run: `examples/run_gpu_cuda_example.bat`.
 
 ---
 

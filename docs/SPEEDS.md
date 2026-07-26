@@ -1,7 +1,7 @@
 # Measured speeds (TrueCollider / KeyCollider)
 
 Real rates captured from live binaries on the maintainer benchmark host.  
-Re-run: `powershell -ExecutionPolicy Bypass -File .\run_benchmarks.ps1`
+Re-run: `powershell -ExecutionPolicy Bypass -File .\scripts\run_benchmarks.ps1`
 
 ## Hardware
 
@@ -40,17 +40,22 @@ Re-run: `powershell -ExecutionPolicy Bypass -File .\run_benchmarks.ps1`
 \* As reported by the binary; not necessarily comparable 1:1 with `address`.  
 † Effective BSGS coverage rate with a 1M baby table.
 
-## CUDA results (RTX 3060 Ti)
+## CUDA results (RTX 3060 Ti) — custom CUDA edition
 
-| Mode | Command | 15 s sustained |
-|------|---------|---------------:|
-| address BTC | `-U cuda -M auto -t 1` | ~15.8 Mkeys/s |
-| rmd160 | `-U cuda -M auto -t 1` | ~15–16 Mkeys/s (same EC path) |
-| address ETH | `-c eth -U cuda -M auto -t 1` | lower (Keccak host/device mix) |
+| Mode | Command | Sustained / peak |
+|------|---------|-----------------:|
+| address BTC (sequential GRP=1024) | `-U cuda -M auto -t 1 -x sequential` | **~90–96 Mkeys/s** peak (large auto batch) |
+| address BTC (prior GRP=256) | same | ~165–166 Mkeys/s (more centers / occupancy) |
+| rmd160 (sequential GRP) | same | ~same EC+hash path |
+| xpoint (sequential GRP) | `-m xpoint -U cuda …` | higher than address when GRP path active |
+| address ETH | `-c eth -U cuda -M auto -t 1` | lower (Keccak often host-side) |
+| mnemonic | `-m mnemonic -U cuda` | mnemonics/s (PBKDF2-bound; **not** EC Mk/s) |
 
-Path: **GPU secp256k1 EC** + **device** hash160/bloom when self-test passes (else host hash/keccak + host bloom). Prefer `-M auto`. Host packs up to 8× launch chunk (default chunk 65536); search kernels are chunked to avoid WDDM TDR.
+Path: **device GRP keystream** (G-table + Montgomery batch inv, **GRP=1024**, PreferL1, auto host batch up to ~8–14M keys so thousands of centers stay in flight). Falls back to per-key `scalar_mul_g` for non-consecutive keys, ETH, endomorphism, or host-filter mode. Prefer `-M auto` / `-t 1`.
 
-Note: older logs showing ~29 Mkeys/s were inflated by a CUDA key-counter bug (fixed). Measured rates above are post-fix.
+KeyHunt-Cuda README ~1013 Mk/s is **XPOINT** on a GTX 1650 with GRP=2048 — not 1:1 with BTC address+hash160 on a 3060 Ti. GRP=1024 trades some occupancy vs GRP=256 on this card; further gain needs less host packing overhead / dual streams.
+
+Measured 2026-07-26: GRP=256 ≈165–166 Mkeys/s; GRP=1024 + larger batches ≈90–96 Mkeys/s peak (was ~15–16 with per-key scalar×G; ~24 with GRP=1024 undersubscribed).
 
 ## GPU EC wired vs still CPU-only
 
@@ -68,6 +73,6 @@ See hub [README.md](../README.md) for commands and BSGS `-n`/`-k` tables.
 ## Notes
 
 - AVX2/AVX-512 CPUs should beat these SSE-only CPU figures substantially for hash160 modes.
-- On this SSE host, CPU `-e` often beats the current CUDA EC+host-hash path for BTC address/rmd160.
+- Sequential CUDA GRP (~165 Mkeys/s) now beats this host's SSE CPU address path; sparse/non-stride-1 modes still use the older per-key GPU EC path.
 - Prefer `-t 1` with CUDA to avoid GPU lock contention.
 - Roadmap leftovers (Kangaroo GPU, BSGS GRP throughput): [ROADMAP.md](ROADMAP.md).
