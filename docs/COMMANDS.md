@@ -20,14 +20,19 @@ Full exhaustive reference: **[README.md](../README.md)**. Raw built-in help: [`H
 | `-l` | `-l compress` | compress / uncompress / both |
 | `-e` | `-e` | GLV endomorphism (CPU secp) |
 | `-A` | `-A auto` | Vector: auto / none / sse / avx / avx2 / avx512 |
-| `-x` | `-x chaos` / `-x rseq` | sequential / random / rseq / chaos / gravity / spiral / reverse / auto |
+| `-x` | `-x chaos` / `-x keyhole` | sequential / random / rseq / chaos / gravity / spiral / reverse / auto / hilbert / sobol / halton / density-map / **keyhole** / **pocket** / **afterimage** / **driftcompass** / **twinflame** / **breadcrumb** / **clockwork** / **lottery** / **wave** (alias `waveroulette`) |
 | `-rs` | `-rs` | Random-sequential (alias `-x rseq`): random start, walk N, reseed. Default N=1M |
+| `--window-bits` | `--window-bits 40` | Keyhole window width (bits) |
+| `--pocket-bits` | `--pocket-bits 16` | PocketRadar buckets = 2^P |
+| `--antiloop-dist` | `--antiloop-dist 12` | Afterimage min XOR-popcount distance |
+| `--shadow-mod` | `--shadow-mod 16` | ShadowLedger fiber modulus (`-B shadowledger`) |
+| `--mod-step` / `--mod-rem` | `--mod-step 16 --mod-rem 3` | Residue snap for BSGS / gaudry / kangaroo-mod |
 | `-U` | `-U cuda` | GPU: none / cuda / opencl |
 | `-G` | `-G 8192` | GPU batch hint (keys) |
 | `-M` | `-M auto` / `-M 2048` / `-M 2G` | Memory budget (VRAM/RAM); `-M matrix` = screen |
 | `-k` | `-k 512` / `-k auto` | BSGS K factor |
 | `-n` | `-n 0x100000000000` | BSGS N (≥ 2^20, exact sqrt) / sequential cycle size |
-| `-B` | `-B dance` | BSGS: sequential / backward / both / random / dance |
+| `-B` | `-B modfan` | BSGS: sequential / backward / both / random / dance / rseq / residue / **modfan** / **shadowledger** / **hybrid** / freeze-table / compact-dp / dual-range (+ research names) |
 | `-S` | `-S` | Save/load BSGS tables |
 | `-z` | `-z 2` | Bloom size multiplier |
 | `-R` | `-R` | Random / BSGS random convenience |
@@ -71,11 +76,38 @@ Full exhaustive reference: **[README.md](../README.md)**. Raw built-in help: [`H
 ```bash
 ./keyhunt -m bsgs -f tests/125.txt -b 125 -R -k 512 -t 8 -S -q -s 10
 ./keyhunt -m bsgs -f tests/125.txt -b 125 -k auto -y
+./keyhunt -m bsgs -f pubkey.txt -b 135 -B modfan --mod-step 16 -t 8 -S
+./keyhunt -m bsgs -f pubkey.txt -b 135 -B hybrid -t 8
+./keyhunt -m bsgs -f pubkey.txt -B shadowledger --shadow-mod 32 -t 8
 ```
 
 - `-n` ≥ `1048576` (2^20), exact square root required  
 - Prefer `-k` power of 2; use `-k auto` for RAM-based pick  
 - Full bits→N→kmax and RAM→k tables: **[README.md](../README.md)** (BSGS section)
+- **Honesty:** BSGS is discrete-log with a baby table — **not** Pollard kangaroo √N. `-B freeze-table` / `compact-dp` print hygiene tips (`-S`, `-M`/`-k`); they do not invent a new algorithm.
+- **Residue / ModFan:** `--mod-step M` + `--mod-rem R` (or `-B modfan` → rem = tid % M) snaps giant starts onto a residue class. Useful for sharding herds, not a complexity miracle.
+
+### Puzzle walks (address / rmd160, bits 72–160)
+
+```bash
+./keyhunt -m address -f targets.txt -b 72 -l compress -t 8 -x keyhole --window-bits 40 -q
+./keyhunt -m rmd160 -f hashes.rmd -b 80 -l compress -t 8 -x pocket --pocket-bits 16 -q
+./keyhunt -m address -f targets.txt -b 66 -x afterimage --antiloop-dist 12 -t 8
+./keyhunt -m address -f targets.txt -b 75 -x sobol -t 8
+./keyhunt -m address -f targets.txt -b 90 -x wave -t 8
+```
+
+- Address/rmd160 search is **hash160 matching** in a bit range — **not** ECDLP kangaroo. Walk modes only change *where* bases are drawn.
+- Do **not** use `-e` on small puzzle `-b` windows; endomorphism rarely helps there.
+- Pubkey-known puzzles → use `-m bsgs` / `-m kangaroo`, not address walk modes.
+
+### Attribution (ideas vs code)
+
+Walk / BSGS helper **names and behaviors** (Keyhole, PocketRadar, Afterimage, DriftCompass, TwinFlame, Breadcrumb, Clockwork, LotteryHerd, WaveRoulette, ModFan, ShadowLedger, HybridBSGS, …) are inspired by public write-ups and the RCKangaroo-Puzzle135 **MODES_GUIDE / echomodes** documentation by RetiredCoder and contributors.
+
+TrueCollider ships **independent MIT-licensed reimplementations** of those *behaviors*. **No GPLv3 source was copied** from RCKangaroo. If you need the original kangaroo engine, use that project under its license; do not mix the trees.
+
+Bats: [`bats/12_patterns/`](../bats/12_patterns/), [`bats/04_bsgs/`](../bats/04_bsgs/), [`bats/17_puzzles/`](../bats/17_puzzles/).
 
 ---
 

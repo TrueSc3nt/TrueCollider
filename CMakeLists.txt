@@ -192,11 +192,14 @@ if(IS_X86 AND ENABLE_AVX512 AND NOT IS_TERMUX)
     endif()
 endif()
 
-if(MSVC)
+if(WIN32)
     list(APPEND CORE_SOURCES
         ${CMAKE_SOURCE_DIR}/compat/getopt.c
     )
     include_directories(${CMAKE_SOURCE_DIR}/compat)
+    add_compile_definitions(TRUECOLLIDER_USE_COMPAT_GETOPT)
+endif()
+if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 

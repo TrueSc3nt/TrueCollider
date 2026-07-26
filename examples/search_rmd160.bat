@@ -3,14 +3,14 @@ REM ============================================================================
 REM RMD160 / hash160 search — tests\66.rmd
 REM Faster than address mode (no Base58 encode on hot path).
 REM =============================================================================
-setlocal
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0.."
-set "EXE=keyhunt.exe"
-if not exist "%EXE%" (
-  echo [E] %EXE% not found. Run examples\build_cpu.bat first.
+call "%~dp0_check_exe.bat" keyhunt.exe "examples\build_cpu.bat" || exit /b 1
+if not exist "tests\66.rmd" (
+  echo [E] Missing fixture: tests\66.rmd
   exit /b 1
 )
 set THREADS=8
-echo [+] %EXE% -m rmd160 -f tests\66.rmd -l compress -e -x gravity -t %THREADS% -q -s 10
-"%EXE%" -m rmd160 -f tests\66.rmd -l compress -e -x gravity -t %THREADS% -q -s 10
+echo [+] keyhunt.exe -m rmd160 -f tests\66.rmd -b 66 -l compress -x sequential -t %THREADS% -q -s 10
+keyhunt.exe -m rmd160 -f tests\66.rmd -b 66 -l compress -x sequential -t %THREADS% -q -s 10
 exit /b %ERRORLEVEL%

@@ -3,6 +3,16 @@ REM TrueCollider CUDA build via CMake + MSVC (prefers VS 2022 for nvcc host comp
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
+if not exist "%~dp0keyhunt.cpp" (
+  echo [E] keyhunt.cpp missing - sources look incomplete/corrupt.
+  echo     Re-clone from https://github.com/TrueSc3nt/TrueCollider
+  exit /b 1
+)
+if not exist "%~dp0CMakeLists.txt" (
+  echo [E] CMakeLists.txt missing - run from TrueCollider source root.
+  exit /b 1
+)
+
 REM ---- Visual Studio / Build Tools (prefer 2022 for CUDA host compiler) ----
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "VCVARS="
@@ -187,8 +197,14 @@ if not exist keyhunt_cuda.exe (
   echo [E] keyhunt_cuda.exe was not produced
   exit /b 1
 )
+for %%F in (keyhunt_cuda.exe) do set "KH_SIZE=%%~zF"
+if "!KH_SIZE!"=="0" (
+  echo [E] keyhunt_cuda.exe is 0 bytes - build output corrupt. Delete it and rebuild.
+  del /Q keyhunt_cuda.exe 2>nul
+  exit /b 1
+)
 
-echo [+] OK: %CD%\keyhunt_cuda.exe
+echo [+] OK: %CD%\keyhunt_cuda.exe ^(!KH_SIZE! bytes^)
 dir keyhunt_cuda.exe
 keyhunt_cuda.exe -h >nul 2>&1
 if errorlevel 1 (

@@ -3,6 +3,16 @@ REM TrueCollider CUDA build (MSVC via vswhere + latest/preferred CUDA)
 setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
+if not exist "%~dp0keyhunt.cpp" (
+  echo [E] keyhunt.cpp missing - sources look incomplete/corrupt.
+  echo     Re-clone from https://github.com/TrueSc3nt/TrueCollider
+  exit /b 1
+)
+if not exist "%~dp0CMakeLists.txt" (
+  echo [E] CMakeLists.txt missing - run from TrueCollider source root.
+  exit /b 1
+)
+
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "!VSWHERE!" (
   echo [E] vswhere.exe not found. Install Visual Studio Installer.
@@ -107,7 +117,17 @@ if exist "!BDIR!\keyhunt.exe" (
   echo [E] keyhunt.exe not found after CUDA build
   exit /b 1
 )
-echo [+] Built keyhunt_cuda.exe
+if not exist keyhunt_cuda.exe (
+  echo [E] keyhunt_cuda.exe was not produced
+  exit /b 1
+)
+for %%F in (keyhunt_cuda.exe) do set "KH_SIZE=%%~zF"
+if "!KH_SIZE!"=="0" (
+  echo [E] keyhunt_cuda.exe is 0 bytes - build output corrupt. Delete it and rebuild.
+  del /Q keyhunt_cuda.exe 2>nul
+  exit /b 1
+)
+echo [+] Built keyhunt_cuda.exe ^(!KH_SIZE! bytes^)
 dir keyhunt_cuda.exe
 echo PASS: CUDA MSVC build
 endlocal

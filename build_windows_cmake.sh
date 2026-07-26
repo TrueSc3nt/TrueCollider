@@ -5,10 +5,21 @@
 # Run in WSL (Ubuntu/Debian) with:
 #   bash build_windows_cmake.sh
 
-set -e
+set -euo pipefail
+cd "$(dirname "$0")"
 
 echo "TrueCollider - Windows .exe CMake Cross-Build"
 echo "=============================================="
+
+if [[ ! -f keyhunt.cpp ]]; then
+    echo "[E] keyhunt.cpp missing - sources look incomplete/corrupt."
+    echo "    Re-clone from https://github.com/TrueSc3nt/TrueCollider"
+    exit 1
+fi
+if [[ ! -f CMakeLists.txt ]]; then
+    echo "[E] CMakeLists.txt missing - run from TrueCollider source root."
+    exit 1
+fi
 
 if ! command -v x86_64-w64-mingw32-g++ &> /dev/null; then
     echo "[+] MinGW-w64 not found. Installing..."
@@ -25,6 +36,11 @@ if ! command -v x86_64-w64-mingw32-g++ &> /dev/null; then
     fi
 fi
 
+if ! command -v cmake &> /dev/null; then
+    echo "[E] cmake not found. Install cmake and re-run."
+    exit 1
+fi
+
 echo "[+] Using cross-compiler:"
 x86_64-w64-mingw32-g++ --version | head -n 1
 
@@ -36,15 +52,28 @@ cmake -B build-win \
     -DCMAKE_BUILD_TYPE=Release
 
 echo "[+] Building static Windows .exe..."
-cmake --build build-win -j$(nproc)
+cmake --build build-win -j"$(nproc 2>/dev/null || echo 4)"
 
-if [ -f build-win/keyhunt.exe ]; then
-    echo ""
-    echo "Build successful!"
-    echo "Output: build-win/keyhunt.exe"
-    file build-win/keyhunt.exe || true
-    ls -lh build-win/keyhunt.exe
-else
-    echo "[E] Build failed: build-win/keyhunt.exe not produced"
+OUT=""
+if [[ -f build-win/keyhunt.exe ]]; then
+    OUT=build-win/keyhunt.exe
+elif [[ -f build-win/Release/keyhunt.exe ]]; then
+    OUT=build-win/Release/keyhunt.exe
+fi
+
+if [[ -z "$OUT" ]]; then
+    echo "[E] Build failed: keyhunt.exe not produced under build-win/"
     exit 1
 fi
+if [[ ! -s "$OUT" ]]; then
+    echo "[E] $OUT is 0 bytes - corrupt output. Delete build-win and rebuild."
+    rm -f "$OUT"
+    exit 1
+fi
+
+echo ""
+echo "Build successful! ($(wc -c < "$OUT") bytes)"
+echo "Output: $OUT"
+file "$OUT" || true
+ls -lh "$OUT"
+echo "PASS: Windows CMake cross-build"

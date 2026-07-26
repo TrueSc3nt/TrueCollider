@@ -109,18 +109,30 @@ USAGE:
       both       - alternate top/bottom of range
       random     - random giant steps (default)
       dance      - triple: top/bottom/random alternation
+      rseq       - random start, sequential giant chunk, reseed (--walk)
+      residue    - snap giants to k Ôëí R (mod M); --mod-step/--mod-rem
+      modfan     - fan threads across rem = tid%M (ModFan-style)
+      shadowledger - speculative fiber mod M (--shadow-mod)
+      hybrid     - warmup near range start, then random giants
+      freeze-table / compact-dp - tips for -S save + RAM hygiene (-M/-k)
+      dual-range - tip: -x wave or two processes on split -r
+      (+ research: grumpy, orbit, handoff, sobol-giant, ÔÇª)
+    Honesty: BSGS is NOT Pollard kangaroo sqrt(N); table size (-n/-k) sets work/RAM.
 
     Example:
       keyhunt -m bsgs -f pubkeys.txt -B sequential -n 0x1000000 -t 4
+      keyhunt -m bsgs -f pubkeys.txt -B modfan --mod-step 16 -t 8
       keyhunt -m bsgs -f pubkeys.txt -x auto -t 8
 
   kangaroo
-    Pollard's kangaroo (CPU) for a single pubkey in a known range.
-    Ranges <= 2^24 use a sequential EC walk; larger ranges use DP kangaroo.
+    Pollard's kangaroo for a single pubkey in a known range.
+    Ranges <= 2^24: sequential walk (GPU batch scan with -U cuda).
+    Larger ranges: DP kangaroo (GPU multi-walker jumps with -U cuda).
     Requires -f pubkey.txt and -r start:end (or -b bits).
 
     Example:
       keyhunt -m kangaroo -f pubkey.txt -r 1:100000
+      keyhunt_cuda -m kangaroo -f pubkey.txt -r 1:100000 -U cuda
 
   vanity
     Searches for a private key whose address starts with a specific
@@ -252,6 +264,11 @@ RANGE:
   -n number    Sequential keys per cycle / BSGS baby-step table size
                Must be divisible by 1024 for BSGS mode
   -b bits      Bit range - only test keys with this many bits
+  -R           Random convenience flag (sets FLAGRANDOM; BSGS giant-step random)
+  -rs          Random-sequential (Mivvvy-style): pick random start in range,
+               walk N keys sequentially, then reseed. Alias: -x rseq
+               Default N=0x100000 (1M) when -n omitted. Works with CPU and -U cuda
+               Differs from plain -R: always random-base + sequential chunk
 
 BSGS OPTIONS (-m bsgs):
   -B mode      BSGS giant-step strategy (sequential/backward/both/random/dance)
@@ -310,13 +327,32 @@ THREADING & SEARCH PATTERNS:
   -t tn        Number of threads. Default: 1
   -x mode      Key generation / search pattern:
                  sequential - Linear walk from start to end of range
-                 random     - Random key selection across full range
+                 random     - Random base key, then sequential walk of N
+                 rseq       - Explicit random-sequential (same as -rs)
                  chaos      - Logistic map chaotic sequence (r=3.99999)
                  gravity    - Adaptive: clusters around previously found keys
                  spiral     - Archimedean spiral from range midpoint
                  reverse    - Inverted BSGS baby/giant step roles
                  auto       - Cycles: spiral->chaos->gravity->reverse
+                 hilbert/sobol/halton/density-map - LDS / density planners
+                 keyhole    - Time-share random 2^W windows (--window-bits)
+                 pocket     - Coarse 2^P pockets + Sobol visit (--pocket-bits)
+                 afterimage - Antiloop reseeds (XOR dist; --antiloop-dist)
+                 driftcompass / twinflame / breadcrumb / clockwork
+                 lottery    - Short random waves then reseed
+                 wave       - Alternate low/high halves (alias: waveroulette)
+               Puzzle walks are MIT reimpls of RCKangaroo ideas (not GPL code).
+               No sqrt(N) kangaroo claim for address/rmd160 hash160 search.
                Works with ALL modes including BSGS.
+  -rs          Same as -x rseq / -B rseq: random start, sequential chunk, reseed
+  --window-bits W   Keyhole window width in bits (default 40)
+  --pocket-bits P   PocketRadar buckets = 2^P (default 16)
+  --shadow-mod M    ShadowLedger / fiber modulus for -B shadowledger
+  --antiloop-dist D Afterimage min XOR popcount distance (default 12)
+  --mod-step M / --mod-rem R   ResidueHerd snap for BSGS/gaudry/kangaroo-mod
+  --mode MODE  Collider BSGS: sequential | random | rseq
+  --walk N     Rseq chunk size in keys: 2M, 1B, 1T, 1000000, 0x100000
+               (also --chunk). Default 1M. Implies --mode rseq if unset.
 
 PERFORMANCE:
   -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)
@@ -324,9 +360,10 @@ PERFORMANCE:
                  auto   - Detect best: AVX-512 ÔåÆ AVX2 ÔåÆ SSE ÔåÆ scalar
                  none, sse, avx, avx2, avx512
                AVX2 = 8-wide hash160; AVX-512 = 16-wide; AVX1/SSE = 4-wide SSE.
-  -U backend   GPU backend: none, cuda, opencl (default: none)
+  -U backend   GPU backend: none, cuda, opencl, both (default: none)
                  cuda   = NVIDIA GPU EC + host hash/bloom (address/rmd160)
                  opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU
+                 both   = CPU threads + CUDA GPU together (hybrid)
   -G N         GPU batch size hint (keys). Default: auto from -M / VRAM
   -M MB|auto   GPU/search memory budget in megabytes (KeyHunt-Cuda style).
                Examples: -M 512  -M 2048  -M 2G  -M auto
@@ -375,6 +412,12 @@ OUTPUT:
 
   keyhunt -m address -f targets.txt -x chaos -e -t 8
     Address search with chaos pattern and endomorphism
+
+  keyhunt -m address -f targets.txt -r 1:100000 -rs -n 0x400 -t 2
+    Random-sequential: random starts in range, walk 1024 keys, reseed
+
+  keyhunt_cuda -m address -f targets.txt -b 66 -rs -U cuda -M auto -t 1
+    Same random-sequential keystream on CUDA EC path
 
   keyhunt -m rmd160 -f hashes.rmd -l compress -x gravity -t 8
     RMD160 hash search with compressed keys and gravity pattern

@@ -151,6 +151,13 @@ typedef struct {
 	int phrase_gravity;          /* bias after near-miss */
 	int seed_cascade;            /* SeedCascadeVerify */
 	double last_eta_seconds;
+	/* Puzzle walk planners (MIT reimpl of RCKangaroo ideas — not GPL code) */
+	int window_bits;             /* keyhole window width (default 40) */
+	int pocket_bits;             /* pocketRadar buckets = 2^P (default 16) */
+	uint64_t shadow_mod;         /* shadowledger fiber modulus */
+	int modfan;                  /* 1 = BSGS ModFan: per-thread rem */
+	int hybrid_warmup;           /* 1 = print HybridBSGS warmup tip */
+	int antiloop_min_dist;       /* afterimage min XOR distance (0=auto) */
 } ResearchConfig;
 
 /* Parse walk size: 1000000, 1e6, 2M, 1B, 1T, 0x100000, … → keys */

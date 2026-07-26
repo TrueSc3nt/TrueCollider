@@ -1,8 +1,14 @@
 @echo off
 REM TrueCollider Windows CPU build entrypoint
 REM Tries native MinGW first, then asks for WSL / MSYS2 if missing.
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
+
+if not exist "%~dp0keyhunt.cpp" (
+    echo [E] keyhunt.cpp missing - sources look incomplete/corrupt.
+    echo     Re-clone from https://github.com/TrueSc3nt/TrueCollider
+    exit /b 1
+)
 
 if exist "%~dp0build_mingw_native.bat" (
   echo [+] Trying build_mingw_native.bat ...
@@ -37,19 +43,24 @@ if %errorlevel% neq 0 (
     set MAKE=make
 )
 
-echo [+] Building with g++ via %MAKE%...
-%MAKE% TARGET=keyhunt.exe OS=MINGW64 ARCH=x86_64
-if %errorlevel% neq 0 (
+echo [+] Building with g++ via !MAKE!...
+!MAKE! TARGET=keyhunt.exe OS=MINGW64 ARCH=x86_64
+if errorlevel 1 (
     echo [E] Build failed.
     exit /b 1
 )
 
-echo [+] Build complete.
-if exist keyhunt.exe (
-    echo Output: keyhunt.exe
-    echo PASS: CPU build
-) else (
-    echo Output: keyhunt
+if not exist keyhunt.exe (
+    echo [E] keyhunt.exe was not produced
+    exit /b 1
 )
+for %%F in (keyhunt.exe) do set "KH_SIZE=%%~zF"
+if "!KH_SIZE!"=="0" (
+    echo [E] keyhunt.exe is 0 bytes - corrupt output. Rebuild with build_mingw_native.bat
+    del /Q keyhunt.exe 2>nul
+    exit /b 1
+)
+echo Output: keyhunt.exe ^(!KH_SIZE! bytes^)
+echo PASS: CPU build
 endlocal
 exit /b 0

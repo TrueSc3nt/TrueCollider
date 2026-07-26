@@ -47,11 +47,21 @@ if "!MAKE!"=="" (
 echo [+] MinGW: !MINGW!
 echo [+] Building keyhunt.exe with MinGW...
 
+if not exist keyhunt.cpp (
+  echo [E] keyhunt.cpp missing - sources look incomplete/corrupt.
+  echo     Re-clone from https://github.com/TrueSc3nt/TrueCollider
+  exit /b 1
+)
+for %%F in (Makefile) do if %%~zF EQU 0 (
+  echo [E] Makefile is empty/corrupt.
+  exit /b 1
+)
+
 REM Windows-safe clean (Makefile `rm` may be missing under cmd.exe)
-del /Q keyhunt.exe keyhunt keyhunt_nolto.o *.o 2>nul
-if exist hash del /Q hash\*.o 2>nul
-if exist gpu del /Q gpu\*.o 2>nul
-if exist ed25519 del /Q ed25519\*.o 2>nul
+del /Q keyhunt.exe keyhunt keyhunt_nolto.o *.o >nul 2>&1
+if exist hash\*.o del /Q hash\*.o >nul 2>&1
+if exist gpu\*.o del /Q gpu\*.o >nul 2>&1
+if exist ed25519\*.o del /Q ed25519\*.o >nul 2>&1
 
 "!MAKE!" -j%NUMBER_OF_PROCESSORS% ^
   OS=MINGW64 ARCH=x86_64 ^
@@ -69,9 +79,15 @@ if not exist keyhunt.exe (
   echo [E] keyhunt.exe was not produced
   exit /b 1
 )
+for %%F in (keyhunt.exe) do set "KH_SIZE=%%~zF"
+if "!KH_SIZE!"=="0" (
+  echo [E] keyhunt.exe is 0 bytes - build output corrupt. Delete it and rebuild.
+  del /Q keyhunt.exe 2>nul
+  exit /b 1
+)
 
 echo.
-echo [+] Build OK: %CD%\keyhunt.exe
+echo [+] Build OK: %CD%\keyhunt.exe ^(!KH_SIZE! bytes^)
 keyhunt.exe -h >nul 2>&1
 if errorlevel 1 (
   echo [!] keyhunt.exe -h returned non-zero ^(binary may still be usable^)

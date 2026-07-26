@@ -5,10 +5,21 @@
 # Run in WSL (Ubuntu/Debian) with:
 #   bash build_windows.sh
 
-set -e
+set -euo pipefail
+cd "$(dirname "$0")"
 
 echo "TrueCollider - Windows .exe Cross-Build"
 echo "========================================="
+
+if [[ ! -f keyhunt.cpp ]]; then
+    echo "[E] keyhunt.cpp missing - sources look incomplete/corrupt."
+    echo "    Re-clone from https://github.com/TrueSc3nt/TrueCollider"
+    exit 1
+fi
+if [[ ! -s Makefile ]]; then
+    echo "[E] Makefile missing or empty/corrupt."
+    exit 1
+fi
 
 # Check for MinGW cross-compiler
 if ! command -v x86_64-w64-mingw32-g++ &> /dev/null; then
@@ -33,14 +44,19 @@ echo "[+] Building static Windows .exe..."
 make clean
 make windows
 
-if [ -f keyhunt.exe ]; then
-    echo ""
-    echo "Build successful!"
-    echo "Output: keyhunt.exe"
-    echo "File info:"
-    file keyhunt.exe || true
-    ls -lh keyhunt.exe
-else
-    echo "Build failed: keyhunt.exe not produced"
+if [[ ! -f keyhunt.exe ]]; then
+    echo "[E] Build failed: keyhunt.exe not produced"
     exit 1
 fi
+if [[ ! -s keyhunt.exe ]]; then
+    echo "[E] keyhunt.exe is 0 bytes - corrupt output. Delete it and rebuild."
+    rm -f keyhunt.exe
+    exit 1
+fi
+
+echo ""
+echo "Build successful! ($(wc -c < keyhunt.exe) bytes)"
+echo "Output: keyhunt.exe"
+file keyhunt.exe || true
+ls -lh keyhunt.exe
+echo "PASS: Windows cross-build"

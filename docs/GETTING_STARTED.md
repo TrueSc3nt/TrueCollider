@@ -19,7 +19,7 @@ You do **not** need to be a programmer. You need:
 3. Put one Bitcoin address per line, for example:
 
 ```text
-1BgGZ9tcN4rm9KBzDn7KprQz87DX02FijI
+1BgGZ9tcN4rm9KBzDn7KprQz87SZ26SAMH
 ```
 
 4. Open **Command Prompt** or **PowerShell**:

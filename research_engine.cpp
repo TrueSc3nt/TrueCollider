@@ -47,6 +47,12 @@ static void research_init_defaults(void) {
 	g_research.phrase_gravity = 0;
 	g_research.seed_cascade = 0;
 	g_research.last_eta_seconds = 0;
+	g_research.window_bits = 40;
+	g_research.pocket_bits = 16;
+	g_research.shadow_mod = 0;
+	g_research.modfan = 0;
+	g_research.hybrid_warmup = 0;
+	g_research.antiloop_min_dist = 0;
 }
 
 static int walk_ieq(const char *a, const char *b) {
@@ -169,7 +175,16 @@ int research_consume_long_flags(int *argc, char **argv) {
 	int i = 1;
 	while(i < *argc) {
 		const char *a = argv[i];
-		if(strcmp(a, "-R") == 0 || strcmp(a, "--research") == 0 || strcmp(a, "--submode") == 0) {
+		/*
+		 * Research submode:
+		 *   --research NAME / --submode NAME  (always)
+		 *   -R NAME only when NAME is a known submode (not a flag like -q).
+		 * Bare -R alone is left for getopt → FLAGRANDOM (legacy KeyHunt).
+		 * This fixes:  ... -R -q ...  → bogus "Unknown -R submode: -q"
+		 */
+		if(strcmp(a, "--research") == 0 || strcmp(a, "--submode") == 0 ||
+		   (strcmp(a, "-R") == 0 && i + 1 < *argc && argv[i + 1][0] != '-' &&
+		    research_parse_submode(argv[i + 1]) >= 0)) {
 			char buf[64] = {0};
 			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
 				int sm = research_parse_submode(buf);
@@ -180,17 +195,43 @@ int research_consume_long_flags(int *argc, char **argv) {
 					if(sm == RSUB_PATHS_ETH) { g_research.path_pack = RPACK_ETH; g_research.eth_coin_type = 1; }
 					if(sm == RSUB_PATHS_ELECTRUM) g_research.path_pack = RPACK_ELECTRUM;
 					if(sm == RSUB_ACCOUNT_SWEEP) g_research.path_pack = RPACK_ACCOUNT_SWEEP;
-					printf("[+] Research submode (-R): %s\n", buf);
+					printf("[+] Research submode: %s\n", buf);
 					touched++;
 					continue;
 				}
-				fprintf(stderr, "[W] Unknown -R submode: %s\n", buf);
+				fprintf(stderr, "[W] Unknown research submode: %s (use --submode NAME)\n", buf);
 				continue;
 			}
 		}
 		if(strcmp(a, "--seed") == 0) {
 			if(take_arg(argc, argv, i, g_research.seed_mask, sizeof(g_research.seed_mask)) == 0) {
 				printf("[+] Seed mask/phrase loaded (%zu chars)\n", strlen(g_research.seed_mask));
+				/* Auto-select mask/lastword when submode still random */
+				if(g_research.submode == RSUB_RANDOM) {
+					const char *p = g_research.seed_mask;
+					int words = 0, qpos = -1, wi = 0, has_q = 0;
+					while(*p) {
+						while(*p == ' ' || *p == '\t') p++;
+						if(!*p) break;
+						const char *start = p;
+						while(*p && *p != ' ' && *p != '\t') p++;
+						if(*start == '?' && (p - start) == 1) { qpos = wi; has_q = 1; }
+						words++;
+						wi++;
+					}
+					if(has_q) {
+						if(words >= 12 && qpos == words - 1)
+							g_research.submode = RSUB_LASTWORD;
+						else
+							g_research.submode = RSUB_MASK;
+					} else if(words >= 12) {
+						/* Fully specified phrase — try once via mask path */
+						g_research.submode = RSUB_MASK;
+					}
+					if(g_research.submode != RSUB_RANDOM)
+						printf("[+] Auto research submode: %s (from --seed)\n",
+						       g_research.submode == RSUB_LASTWORD ? "lastword" : "mask");
+				}
 				touched++;
 				continue;
 			}
@@ -381,6 +422,51 @@ int research_consume_long_flags(int *argc, char **argv) {
 			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
 				g_research.mod_rem = (uint32_t)strtoul(buf, NULL, 0);
 				printf("[+] ResidueHerd mod-rem R=%u\n", g_research.mod_rem);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--window-bits") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.window_bits = atoi(buf);
+				if(g_research.window_bits < 8) g_research.window_bits = 8;
+				if(g_research.window_bits > 160) g_research.window_bits = 160;
+				printf("[+] Keyhole window-bits=%d\n", g_research.window_bits);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--pocket-bits") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.pocket_bits = atoi(buf);
+				if(g_research.pocket_bits < 4) g_research.pocket_bits = 4;
+				if(g_research.pocket_bits > 28) g_research.pocket_bits = 28;
+				printf("[+] PocketRadar pocket-bits=%d (buckets=2^%d)\n",
+				       g_research.pocket_bits, g_research.pocket_bits);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--shadow-mod") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.shadow_mod = strtoull(buf, NULL, 0);
+				if(g_research.shadow_mod < 2) g_research.shadow_mod = 16;
+				printf("[+] ShadowLedger modulus M=%llu\n",
+				       (unsigned long long)g_research.shadow_mod);
+				touched++;
+				continue;
+			}
+		}
+		if(strcmp(a, "--antiloop-dist") == 0) {
+			char buf[32] = {0};
+			if(take_arg(argc, argv, i, buf, sizeof(buf)) == 0) {
+				g_research.antiloop_min_dist = atoi(buf);
+				if(g_research.antiloop_min_dist < 0) g_research.antiloop_min_dist = 0;
+				printf("[+] Afterimage/antiloop min XOR distance=%d\n",
+				       g_research.antiloop_min_dist);
 				touched++;
 				continue;
 			}

@@ -69,16 +69,24 @@ static int rand_r(unsigned int *seed) {
 #if defined(__MINGW32__) || defined(__MINGW64__)
 #include <windows.h>
 #endif
-#if defined(_MSC_VER)
+#if defined(_WIN32) || defined(TRUECOLLIDER_USE_COMPAT_GETOPT)
+/* Local getopt: GNU-style optional args (-N::) consistent on MSVC + MinGW. */
 #include "compat/getopt.h"
+#endif
+#if defined(_MSC_VER)
 #include <windows.h>
 #ifndef strdup
 #define strdup _strdup
 #endif
+#elif defined(_WIN32)
+#include <unistd.h>
+#include <pthread.h>
 #else
 #include <unistd.h>
 #include <pthread.h>
+#ifndef TRUECOLLIDER_USE_COMPAT_GETOPT
 #include <getopt.h>
+#endif
 #endif
 
 #if defined(__linux__) && !defined(__ANDROID__) && !defined(TERMUX)
@@ -136,10 +144,34 @@ static int rand_r(unsigned int *seed) {
 #define SEARCHMODE_SOBOL 9
 #define SEARCHMODE_HALTON 10
 #define SEARCHMODE_DENSITY 11
+#define SEARCHMODE_KEYHOLE 12
+#define SEARCHMODE_POCKET 13
+#define SEARCHMODE_AFTERIMAGE 14
+#define SEARCHMODE_DRIFTCOMPASS 15
+#define SEARCHMODE_TWINFLAME 16
+#define SEARCHMODE_BREADCRUMB 17
+#define SEARCHMODE_CLOCKWORK 18
+#define SEARCHMODE_LOTTERY 19
+#define SEARCHMODE_WAVE 20
+#define SEARCHMODE_COUNT 21
 /* Mivvvy-style default chunk: random start, then walk this many keys before reseed */
 #define RANDOM_SEQUENTIAL_DEFAULT_N 0x100000ULL
 static uint64_t g_lds_step = 0;
 static uint64_t g_milksad_cursor = 0;
+/* Puzzle walk planner state (MIT reimpl of RCKangaroo ideas) */
+static Int g_keyhole_win_lo, g_keyhole_win_hi;
+static int g_keyhole_ready = 0;
+static uint64_t g_keyhole_left = 0;
+static uint64_t g_pocket_active = 0;
+static int g_pocket_ready = 0;
+#define AFTERIMAGE_RING 32
+static uint64_t g_afterimage_ring[AFTERIMAGE_RING];
+static int g_afterimage_n = 0;
+static uint64_t g_drift_bias = 0;
+static uint64_t g_twinflame_H = 0x9E3779B97F4A7C15ULL;
+static uint64_t g_clockwork_slot = 0;
+static int g_lottery_wave = 0;
+static int g_wave_side = 0;
 
 uint32_t  THREADBPWORKLOAD = 1048576;
 
@@ -347,11 +379,16 @@ int THREADOUTPUT = 0;
 char *bit_range_str_min;
 char *bit_range_str_max;
 
-const char *bsgs_modes[22] = {"sequential","backward","both","random","dance","grumpy","interleave","orbit","residue","dual-range","nested","fractal","async-resolve","multi-target","negmap","handoff","gravity-giant","chaos-giant","sobol-giant","freeze-table","compact-dp","rseq"};
+const char *bsgs_modes[25] = {"sequential","backward","both","random","dance","grumpy","interleave","orbit","residue","dual-range","nested","fractal","async-resolve","multi-target","negmap","handoff","gravity-giant","chaos-giant","sobol-giant","freeze-table","compact-dp","rseq","modfan","shadowledger","hybrid"};
 const char *modes[20] = {"xpoint","address","bsgs","rmd160","pub2rmd","minikeys","vanity","mnemonic","poetry","brainwallet","pubkey2addr","kangaroo","shadow160","weakrng","hybrid-dl","gaudry","CreateAccountWithSeed","wif-mask","hex-mask","kangaroo-mod"};
 const char *cryptos[13] = {"btc","eth","all","troot","bch","btg","etc","ltc","doge","xrp","sol","auto"};
 const char *publicsearch[3] = {"uncompress","compress","both"};
-const char *searchmodes[12] = {"sequential","random","chaos","gravity","spiral","reverse","auto","rseq","hilbert","sobol","halton","density-map"};
+const char *searchmodes[SEARCHMODE_COUNT] = {
+	"sequential","random","chaos","gravity","spiral","reverse","auto","rseq",
+	"hilbert","sobol","halton","density-map",
+	"keyhole","pocket","afterimage","driftcompass","twinflame","breadcrumb",
+	"clockwork","lottery","wave"
+};
 const char *default_fileName = "addresses.txt";
 
 int FLAGSEARCHMODE = SEARCHMODE_RANDOM;
@@ -800,9 +837,261 @@ void init_search_mode(Int *range_start, Int *range_end) {
 			printf("[+] Halton LDS coverage\n"); g_lds_step = 0; break;
 		case SEARCHMODE_DENSITY:
 			printf("[+] Density-map mode\n"); g_lds_step = 0; break;
+		case SEARCHMODE_KEYHOLE:
+			g_keyhole_ready = 0; g_keyhole_left = 0;
+			printf("[+] Keyhole: random %d-bit windows inside range (time-share)\n",
+			       g_research.window_bits > 0 ? g_research.window_bits : 40);
+			printf("[+] Inspired by RCKangaroo KeyholeSaw (MIT reimpl; no sqrt(N) claim)\n");
+			break;
+		case SEARCHMODE_POCKET:
+			g_pocket_ready = 0; g_pocket_active = 0; g_lds_step = 0;
+			printf("[+] PocketRadar: 2^%d coarse pockets + Sobol/random visit\n",
+			       g_research.pocket_bits > 0 ? g_research.pocket_bits : 16);
+			break;
+		case SEARCHMODE_AFTERIMAGE:
+			g_afterimage_n = 0;
+			memset(g_afterimage_ring, 0, sizeof(g_afterimage_ring));
+			printf("[+] Afterimage antiloop: reject reseeds too close to recent bases\n");
+			break;
+		case SEARCHMODE_DRIFTCOMPASS:
+			g_drift_bias = 0;
+			printf("[+] DriftCompass: bias next base from previous miss low-bits\n");
+			break;
+		case SEARCHMODE_TWINFLAME:
+			g_twinflame_H = 0x9E3779B97F4A7C15ULL ^ (uint64_t)time(NULL);
+			g_twinflame_H |= 1ULL;
+			printf("[+] TwinFlame: alternate bases k and k⊕H (host secret H)\n");
+			break;
+		case SEARCHMODE_BREADCRUMB:
+			printf("[+] Breadcrumb: prefer pockets near gravity/near-miss centers\n");
+			break;
+		case SEARCHMODE_CLOCKWORK:
+			g_clockwork_slot = 0;
+			printf("[+] Clockwork: deterministic rotating slots across the range\n");
+			break;
+		case SEARCHMODE_LOTTERY:
+			g_lottery_wave = 0; FLAGRS = 1;
+			printf("[+] LotteryHerd-style: short random waves then reseed (uses -rs walk)\n");
+			break;
+		case SEARCHMODE_WAVE:
+			g_wave_side = 0;
+			printf("[+] WaveRoulette: alternate low/high halves of the range\n");
+			break;
 		default:
 			break;
 	}
+}
+
+/* Clamp result into [range_start, range_end) */
+static void clamp_key_to_range(Int *result, Int *range_start, Int *range_end) {
+	if(result->IsLower(range_start)) result->Set(range_start);
+	if(result->IsGreaterOrEqual(range_end)) {
+		result->Set(range_end);
+		Int one; one.SetInt32(1);
+		if(result->IsGreater(range_start)) result->Sub(&one);
+		else result->Set(range_start);
+	}
+}
+
+static void snap_key_mod(Int *result, uint32_t M, uint32_t R) {
+	if(M <= 1) return;
+	R %= M;
+	/* Use low 64 bits when range fits; otherwise leave as-is + Add offset */
+	uint64_t k = result->GetInt64();
+	uint64_t adj = k - (k % M) + R;
+	if(adj < k) result->Sub(k - adj);
+	else if(adj > k) {
+		Int d; d.SetInt64(adj - k);
+		result->Add(&d);
+	}
+}
+
+static uint64_t xor_dist64(uint64_t a, uint64_t b) {
+	uint64_t x = a ^ b;
+	/* popcount */
+	x = x - ((x >> 1) & 0x5555555555555555ULL);
+	x = (x & 0x3333333333333333ULL) + ((x >> 2) & 0x3333333333333333ULL);
+	x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+	return (x * 0x0101010101010101ULL) >> 56;
+}
+
+static void afterimage_remember(uint64_t k) {
+	g_afterimage_ring[g_afterimage_n % AFTERIMAGE_RING] = k;
+	if(g_afterimage_n < AFTERIMAGE_RING) g_afterimage_n++;
+	else g_afterimage_n++; /* keep wrapping */
+}
+
+static int afterimage_too_close(uint64_t k) {
+	/* Stronger default antiloop: Hamming distance + low-bit collision reject */
+	int min_d = g_research.antiloop_min_dist > 0 ? g_research.antiloop_min_dist : 12;
+	int n = g_afterimage_n < AFTERIMAGE_RING ? g_afterimage_n : AFTERIMAGE_RING;
+	for(int i = 0; i < n; i++) {
+		uint64_t prev = g_afterimage_ring[i];
+		if(xor_dist64(k, prev) < (uint64_t)min_d)
+			return 1;
+		if(((k ^ prev) & 0xFFFFFULL) == 0) /* same low 20 bits */
+			return 1;
+	}
+	return 0;
+}
+
+void get_next_key_keyhole(Int *result, Int *range_start, Int *range_end) {
+	int W = g_research.window_bits > 0 ? g_research.window_bits : 40;
+	Int range_size; range_size.Set(range_end); range_size.Sub(range_start);
+	/* Tiny / comparable ranges: full random (windowing would undersample) */
+	uint64_t rs64 = range_size.GetInt64();
+	int fallback_bits = W + 8;
+	if(fallback_bits > 62) fallback_bits = 62;
+	if(rs64 != 0 && (W >= 62 || rs64 <= (1ULL << fallback_bits))) {
+		result->Rand(range_start, range_end);
+		return;
+	}
+	if(!g_keyhole_ready || g_keyhole_left == 0) {
+		/* Pick random base in range, then window of width 2^W */
+		Int base; base.Rand(range_start, range_end);
+		g_keyhole_win_lo.Set(&base);
+		/* Align window start: clear low W bits via (k >> W) << W (works for large Int) */
+		if(W > 0 && W < 256) {
+			g_keyhole_win_lo.ShiftR((uint32_t)W);
+			g_keyhole_win_lo.ShiftL((uint32_t)W);
+			clamp_key_to_range(&g_keyhole_win_lo, range_start, range_end);
+		}
+		g_keyhole_win_hi.Set(&g_keyhole_win_lo);
+		Int win; win.SetInt32(1); win.ShiftL(W);
+		g_keyhole_win_hi.Add(&win);
+		clamp_key_to_range(&g_keyhole_win_hi, range_start, range_end);
+		if(!g_keyhole_win_hi.IsGreater(&g_keyhole_win_lo)) {
+			g_keyhole_win_hi.Set(range_end);
+		}
+		/* One sequential pass covers this window, then reseed another hole */
+		g_keyhole_left = (W < 63) ? (1ULL << W) : (1ULL << 20);
+		if(g_keyhole_left < 1024) g_keyhole_left = 1024;
+		g_keyhole_ready = 1;
+		FLAGRS = 1;
+	}
+	/* Start at window lo so the thread's sequential N walk covers the hole */
+	result->Set(&g_keyhole_win_lo);
+	g_keyhole_ready = 0; /* force new window next reseed */
+	g_keyhole_left = 0;
+}
+
+void get_next_key_pocket(Int *result, Int *range_start, Int *range_end) {
+	int P = g_research.pocket_bits > 0 ? g_research.pocket_bits : 16;
+	uint64_t npockets = 1ULL << (P < 28 ? P : 28);
+	Int range_size; range_size.Set(range_end); range_size.Sub(range_start);
+	uint64_t rs64 = range_size.GetInt64();
+	if(rs64 == 0) { result->Rand(range_start, range_end); return; }
+	/* Prefer gravity pocket after hits */
+	uint64_t pid;
+	if(gravity_found_count > 0 && (rand() % 100) < 55) {
+		uint64_t gc = gravity_center.GetInt64();
+		uint64_t off = (gc > range_start->GetInt64()) ? (gc - range_start->GetInt64()) : 0;
+		pid = (rs64 > 0) ? ((off * npockets) / rs64) % npockets : 0;
+	} else {
+		double u = 0.0;
+		research_sobol_u(g_lds_step++, 0, &u);
+		if((rand() % 5) == 0) u = (double)(rand() % 10000) / 10000.0;
+		pid = (uint64_t)(u * (double)npockets) % npockets;
+	}
+	g_pocket_active = pid;
+	g_pocket_ready = 1;
+	uint64_t pocket_w = rs64 / npockets;
+	if(pocket_w < 1) pocket_w = 1;
+	uint64_t base_off = pid * pocket_w;
+	Int o; o.SetInt64(base_off);
+	result->Set(range_start);
+	result->Add(&o);
+	Int jitter; jitter.SetInt64((uint64_t)(rand() % (int)(pocket_w > 0x7fffffff ? 0x7fffffff : pocket_w)));
+	result->Add(&jitter);
+	clamp_key_to_range(result, range_start, range_end);
+}
+
+void get_next_key_afterimage(Int *result, Int *range_start, Int *range_end) {
+	for(int attempt = 0; attempt < 32; attempt++) {
+		result->Rand(range_start, range_end);
+		uint64_t k = result->GetInt64();
+		if(!afterimage_too_close(k)) {
+			afterimage_remember(k);
+			g_drift_bias = k;
+			return;
+		}
+	}
+	result->Rand(range_start, range_end);
+	afterimage_remember(result->GetInt64());
+}
+
+void get_next_key_driftcompass(Int *result, Int *range_start, Int *range_end) {
+	Int range_size; range_size.Set(range_end); range_size.Sub(range_start);
+	uint64_t rs64 = range_size.GetInt64();
+	if(rs64 == 0) { result->Rand(range_start, range_end); return; }
+	uint64_t drift = (g_drift_bias ^ (g_drift_bias >> 17) ^ (g_lds_step * 0x9E3779B97F4A7C15ULL));
+	uint64_t off = (drift % rs64);
+	Int o; o.SetInt64(off);
+	result->Set(range_start);
+	result->Add(&o);
+	/* small random nudge */
+	Int n; n.SetInt32(rand() % 4096);
+	if(rand() & 1) result->Add(&n); else if(result->IsGreater(range_start)) result->Sub(&n);
+	clamp_key_to_range(result, range_start, range_end);
+	g_drift_bias = result->GetInt64();
+	g_lds_step++;
+}
+
+void get_next_key_twinflame(Int *result, Int *range_start, Int *range_end) {
+	static int side = 0;
+	result->Rand(range_start, range_end);
+	if(side) {
+		uint64_t k = result->GetInt64() ^ g_twinflame_H;
+		result->SetInt64(k);
+		clamp_key_to_range(result, range_start, range_end);
+	}
+	side ^= 1;
+}
+
+void get_next_key_breadcrumb(Int *result, Int *range_start, Int *range_end) {
+	if(gravity_found_count > 0 || g_afterimage_n > 0) {
+		Int center;
+		if(gravity_found_count > 0) center.Set(&gravity_center);
+		else center.SetInt64(g_afterimage_ring[(g_afterimage_n - 1) % AFTERIMAGE_RING]);
+		Int off; off.SetInt32(rand() % 8192);
+		result->Set(&center);
+		if(rand() & 1) result->Add(&off); else result->Sub(&off);
+		clamp_key_to_range(result, range_start, range_end);
+		return;
+	}
+	get_next_key_pocket(result, range_start, range_end);
+}
+
+void get_next_key_clockwork(Int *result, Int *range_start, Int *range_end) {
+	Int range_size; range_size.Set(range_end); range_size.Sub(range_start);
+	uint64_t rs64 = range_size.GetInt64();
+	if(rs64 == 0) { result->Rand(range_start, range_end); return; }
+	const uint64_t slots = 1024;
+	uint64_t slot = g_clockwork_slot++ % slots;
+	uint64_t off = (slot * rs64) / slots;
+	Int o; o.SetInt64(off);
+	result->Set(range_start);
+	result->Add(&o);
+	Int j; j.SetInt32(rand() % 256);
+	result->Add(&j);
+	clamp_key_to_range(result, range_start, range_end);
+}
+
+void get_next_key_lottery(Int *result, Int *range_start, Int *range_end) {
+	/* Random base; wave length varies (fat left-tail farming) */
+	result->Rand(range_start, range_end);
+	g_lottery_wave = 256 + (rand() % 3840);
+	FLAGRS = 1;
+}
+
+void get_next_key_wave(Int *result, Int *range_start, Int *range_end) {
+	Int mid; mid.Set(range_end); mid.Sub(range_start); mid.ShiftR(1);
+	mid.Add(range_start);
+	if(g_wave_side == 0)
+		result->Rand(range_start, &mid);
+	else
+		result->Rand(&mid, range_end);
+	g_wave_side ^= 1;
 }
 
 void get_next_key_chaos(Int *result, Int *range_start, Int *range_end) {
@@ -979,28 +1268,50 @@ void get_next_search_key(Int *result, Int *range_start, Int *range_end) {
 				u = research_density_sample_u(g_lds_step++);
 			else research_hilbert_u(g_lds_step++, &u);
 			Int range_size; range_size.Set(range_end); range_size.Sub(range_start);
-			/* Map u into range via 53-bit fraction of range_size */
-			Int temp; temp.Set(&range_size);
-			/* crude: use low 64 of range if fits */
 			uint64_t rs = range_size.GetInt64();
 			if(rs == 0) { result->Rand(range_start, range_end); break; }
 			uint64_t off = (uint64_t)(u * (double)rs);
 			result->Set(range_start);
 			Int o; o.SetInt64(off);
 			result->Add(&o);
-			if(g_research.mod_step > 1) {
-				/* ResidueHerd: snap to k ≡ R (mod M) */
-				uint64_t k = result->GetInt64();
-				uint64_t M = g_research.mod_step;
-				uint64_t R = g_research.mod_rem % M;
-				k = k - (k % M) + R;
-				result->SetInt64(k);
-			}
 			break;
 		}
+		case SEARCHMODE_KEYHOLE:
+			get_next_key_keyhole(result, range_start, range_end);
+			break;
+		case SEARCHMODE_POCKET:
+			get_next_key_pocket(result, range_start, range_end);
+			break;
+		case SEARCHMODE_AFTERIMAGE:
+			get_next_key_afterimage(result, range_start, range_end);
+			break;
+		case SEARCHMODE_DRIFTCOMPASS:
+			get_next_key_driftcompass(result, range_start, range_end);
+			break;
+		case SEARCHMODE_TWINFLAME:
+			get_next_key_twinflame(result, range_start, range_end);
+			break;
+		case SEARCHMODE_BREADCRUMB:
+			get_next_key_breadcrumb(result, range_start, range_end);
+			break;
+		case SEARCHMODE_CLOCKWORK:
+			get_next_key_clockwork(result, range_start, range_end);
+			break;
+		case SEARCHMODE_LOTTERY:
+			get_next_key_lottery(result, range_start, range_end);
+			break;
+		case SEARCHMODE_WAVE:
+			get_next_key_wave(result, range_start, range_end);
+			break;
 		default:
 			result->Rand(range_start, range_end);
 			break;
+	}
+	if(g_research.mod_step > 1) {
+		uint32_t M = g_research.mod_step;
+		uint32_t R = g_research.mod_rem % M;
+		snap_key_mod(result, M, R);
+		clamp_key_to_range(result, range_start, range_end);
 	}
 }
 
@@ -1594,7 +1905,7 @@ int main(int argc, char **argv)	{
 			}
 		break;
 		case 'B':
-				index_value = indexOf(optarg,bsgs_modes,22);
+				index_value = indexOf(optarg,bsgs_modes,25);
 				if(index_value >= 0)	{
 					FLAGBSGSMODE = index_value;
 					g_research.bsgs_strategy = index_value;
@@ -1607,11 +1918,44 @@ int main(int argc, char **argv)	{
 						FLAGBSGSMODE = 3; /* use random BSGS thread with rseq chunking */
 						printf("[+] BSGS mode rseq: random start → sequential chunk → reseed\n");
 						printf("[+] Set chunk with --walk 2M|1B|1T (default 1M keys)\n");
+					} else if(strcmp(optarg, "modfan") == 0) {
+						g_research.modfan = 1;
+						if(g_research.mod_step < 2) g_research.mod_step = (uint32_t)(NTHREADS > 1 ? NTHREADS : 16);
+						FLAGRANDOM = 1;
+						FLAGBSGSMODE = 3; /* random giants + per-thread rem */
+						printf("[+] BSGS ModFan: fan workers across residues mod M=%u\n",
+						       g_research.mod_step);
+						printf("[+] Override with --mod-step M (thread tid → rem)\n");
+					} else if(strcmp(optarg, "shadowledger") == 0) {
+						if(g_research.shadow_mod < 2) g_research.shadow_mod = 16;
+						g_research.mod_step = (uint32_t)g_research.shadow_mod;
+						FLAGRANDOM = 1;
+						FLAGBSGSMODE = 3;
+						printf("[+] BSGS ShadowLedger: speculative fiber mod M=%llu\n",
+						       (unsigned long long)g_research.shadow_mod);
+						printf("[+] Set with --shadow-mod M (MIT reimpl; no sqrt(N) claim)\n");
+					} else if(strcmp(optarg, "hybrid") == 0) {
+						g_research.hybrid_warmup = 1;
+						FLAGRANDOM = 1;
+						FLAGBSGSMODE = 3;
+						printf("[+] BSGS Hybrid: warmup near range start, then random giants\n");
+						printf("[+] Honesty: not a sqrt(N) kangaroo; BSGS table size still governs RAM/work\n");
+					} else if(strcmp(optarg, "residue") == 0) {
+						if(g_research.mod_step < 2) g_research.mod_step = 16;
+						FLAGRANDOM = 1;
+						FLAGBSGSMODE = 3;
+						printf("[+] BSGS residue: giants snapped to k ≡ R (mod M); M=%u R=%u\n",
+						       g_research.mod_step, g_research.mod_rem);
+						printf("[+] Set with --mod-step M --mod-rem R\n");
 					} else if(index_value > 4) {
 						printf("[+] BSGS research strategy: %s (live engine)\n", optarg);
 						if(strcmp(optarg,"orbit")==0 || strcmp(optarg,"negmap")==0) FLAGENDOMORPHISM = 1;
 						if(strcmp(optarg,"handoff")==0)
 							printf("[+] HerdHandoff pocket bits: %d\n", g_research.handoff_bits);
+						if(strcmp(optarg,"freeze-table")==0 || strcmp(optarg,"compact-dp")==0)
+							printf("[+] Tip: use -S to save/load blooms; -M / RAM guides -k (FreezeCascade-style hygiene)\n");
+						if(strcmp(optarg,"dual-range")==0)
+							printf("[+] Dual-range: use -x wave or split -r with two processes for full dual herds\n");
 					} else {
 						printf("[+] BSGS mode %s\n",optarg);
 						if(index_value == 3) {
@@ -2101,17 +2445,21 @@ int main(int argc, char **argv)	{
 				printf("[+] Bloom Size Multiplier %i\n",FLAGBLOOMMULTIPLIER);
 			break;
 			case 'x':
-				index_value = indexOf(optarg,searchmodes,12);
-				if(index_value >= 0 && index_value <= 11)	{
+				index_value = indexOf(optarg,searchmodes,SEARCHMODE_COUNT);
+				if(index_value < 0 && strcmp(optarg, "waveroulette") == 0)
+					index_value = SEARCHMODE_WAVE;
+				if(index_value >= 0 && index_value < SEARCHMODE_COUNT)	{
 					FLAGSEARCHMODE = index_value;
-					printf("[+] Search mode: %s\n",optarg);
-					if(FLAGSEARCHMODE == SEARCHMODE_RANDOM || FLAGSEARCHMODE == SEARCHMODE_RSEQ)	{
+					printf("[+] Search mode: %s\n",
+					       (strcmp(optarg,"waveroulette")==0) ? "wave (waveroulette)" : optarg);
+					if(FLAGSEARCHMODE != SEARCHMODE_SEQUENTIAL) {
 						FLAGRANDOM = 1;
 						FLAGBSGSMODE = 3;
 					}
-					if(FLAGSEARCHMODE == SEARCHMODE_RSEQ) {
+					if(FLAGSEARCHMODE == SEARCHMODE_RSEQ || FLAGSEARCHMODE == SEARCHMODE_LOTTERY ||
+					   FLAGSEARCHMODE == SEARCHMODE_KEYHOLE) {
 						FLAGRS = 1;
-						printf("[+] Random-sequential: random start, walk N keys, reseed (same as -rs)\n");
+						printf("[+] Random-sequential walk enabled (reseed after N keys)\n");
 					}
 				}
 				else	{
@@ -2309,9 +2657,23 @@ int main(int argc, char **argv)	{
 	if(g_research.submode != RSUB_RANDOM || g_research.collider_force_bsgs)
 		research_print_banner();
 	
-	if(  FLAGBSGSMODE == MODE_BSGS && FLAGENDOMORPHISM)	{
+	if(FLAGMODE == MODE_BSGS && FLAGENDOMORPHISM)	{
 		fprintf(stderr,"[W] Endomorphism is not used in BSGS mode; disabling it automatically.\n");
 		FLAGENDOMORPHISM = 0;
+	}
+
+	/*
+	 * GLV endomorphism (-e): for each key k also checks λk / λ²k addresses.
+	 * Speeds up full-space / vanity searches (~3x more addresses per EC).
+	 * On small puzzle bit-ranges the alternate keys almost never land in-range,
+	 * so -e only adds ~6x hash work without helping — warn (keep enabled if user asked).
+	 */
+	if(FLAGENDOMORPHISM && FLAGBITRANGE && bitrange > 0 && bitrange < 128 &&
+	   FLAGMODE != MODE_VANITY) {
+		fprintf(stderr,
+			"[W] Endomorphism (-e) rarely helps puzzle bit-ranges (-b %d < 128); "
+			"it checks λ-related keys that are usually outside the window. "
+			"Consider dropping -e for puzzles.\n", bitrange);
 	}
 
 	if(FLAGCRYPTO == CRYPTO_SOL) {
@@ -2468,6 +2830,18 @@ int main(int argc, char **argv)	{
 		}
 		printf("    file=%s endomorphism=%d\n",
 			FLAGFILE ? fileName : "(default)", FLAGENDOMORPHISM);
+		if(FLAGSEARCHMODE >= SEARCHMODE_KEYHOLE)
+			printf("    walk=-x %s window_bits=%d pocket_bits=%d antiloop=%d\n",
+				searchmodes[FLAGSEARCHMODE],
+				g_research.window_bits, g_research.pocket_bits,
+				g_research.antiloop_min_dist);
+		if(g_research.modfan || g_research.hybrid_warmup || g_research.shadow_mod ||
+		   g_research.mod_step > 1)
+			printf("    bsgs_helpers: name=%s modfan=%d hybrid=%d shadow_mod=%llu M=%u R=%u\n",
+				g_research.bsgs_name[0] ? g_research.bsgs_name : "(default)",
+				g_research.modfan, g_research.hybrid_warmup,
+				(unsigned long long)g_research.shadow_mod,
+				g_research.mod_step, g_research.mod_rem);
 		printf("[+] Dry-run complete; exiting without search.\n");
 		exit(0);
 	}
@@ -4888,6 +5262,7 @@ void *thread_process_mnemonic(void *vargp) {
 									        mnemonic, pass ? pass : "");
 									fclose(fg);
 								}
+								FLAGKEYFOUND = 1;
 								free(batch_privs);
 								return 1;
 							}
@@ -5008,6 +5383,9 @@ void *thread_process_mnemonic(void *vargp) {
 						if(batch_n >= 4096) {
 							int gh = gpu_check_privkey_list(batch_privs, batch_n, 1, 0);
 							if(gh > 0) {
+								printf("\n[+] MNEMONIC FOUND (GPU EC batch)!\n");
+								printf("[+] Mnemonic: %s\n", mnemonic);
+								FLAGKEYFOUND = 1;
 								free(batch_privs);
 								return 1;
 							}
@@ -5090,6 +5468,7 @@ void *thread_process_mnemonic(void *vargp) {
 #else
 					pthread_mutex_unlock(&write_keys);
 #endif
+					FLAGKEYFOUND = 1;
 					free(batch_privs);
 					return 1;
 				}
@@ -9288,7 +9667,29 @@ void *thread_process_bsgs_random(void *vargp)	{
 			rseq_cursor.Add(&BSGS_N_double);
 			if(rseq_giants_left > 0) rseq_giants_left--;
 		} else {
-			get_next_search_key(&base_key, &n_range_start, &n_range_end);
+			/* ModFan / ShadowLedger: each thread owns rem = tid % M */
+			if((g_research.modfan || g_research.shadow_mod > 1 ||
+			    strcmp(g_research.bsgs_name, "residue") == 0) &&
+			   g_research.mod_step > 1) {
+				g_research.mod_rem = (uint32_t)(thread_number % g_research.mod_step);
+			}
+			/* HybridBSGS-style warmup: first few giants near range start */
+			static int hybrid_warm[256];
+			int tid = thread_number & 255;
+			if(g_research.hybrid_warmup && hybrid_warm[tid] < 8) {
+				base_key.Set(&n_range_start);
+				Int o; o.SetInt64((uint64_t)thread_number +
+				                  (uint64_t)hybrid_warm[tid] *
+				                  (uint64_t)(NTHREADS > 0 ? NTHREADS : 1));
+				base_key.Add(&o);
+				if(g_research.mod_step > 1)
+					snap_key_mod(&base_key, g_research.mod_step,
+					             g_research.mod_rem % g_research.mod_step);
+				clamp_key_to_range(&base_key, &n_range_start, &n_range_end);
+				hybrid_warm[tid]++;
+			} else {
+				get_next_search_key(&base_key, &n_range_start, &n_range_end);
+			}
 		}
 #if defined(_MSC_VER)
 		ReleaseMutex(bsgs_thread);
@@ -11736,10 +12137,20 @@ void menu() {
 	printf("      backward   - walk backward from end\n");
 	printf("      both       - alternate top/bottom of range\n");
 	printf("      random     - random giant steps (default)\n");
-	printf("      dance      - triple: top/bottom/random alternation\n\n");
+	printf("      dance      - triple: top/bottom/random alternation\n");
+	printf("      rseq       - random start, sequential giant chunk, reseed (--walk)\n");
+	printf("      residue    - snap giants to k ≡ R (mod M); --mod-step/--mod-rem\n");
+	printf("      modfan     - fan threads across rem = tid%%M (ModFan-style)\n");
+	printf("      shadowledger - speculative fiber mod M (--shadow-mod)\n");
+	printf("      hybrid     - warmup near range start, then random giants\n");
+	printf("      freeze-table / compact-dp - tips for -S save + RAM hygiene (-M/-k)\n");
+	printf("      dual-range - tip: -x wave or two processes on split -r\n");
+	printf("      (+ research: grumpy, orbit, handoff, sobol-giant, …)\n");
+	printf("    Honesty: BSGS is NOT Pollard kangaroo sqrt(N); table size (-n/-k) sets work/RAM.\n\n");
 
 	printf("    Example:\n");
 	printf("      keyhunt -m bsgs -f pubkeys.txt -B sequential -n 0x1000000 -t 4\n");
+	printf("      keyhunt -m bsgs -f pubkeys.txt -B modfan --mod-step 16 -t 8\n");
 	printf("      keyhunt -m bsgs -f pubkeys.txt -x auto -t 8\n\n");
 
 	printf("  kangaroo\n");
@@ -11950,8 +12361,22 @@ void menu() {
 	printf("                 spiral     - Archimedean spiral from range midpoint\n");
 	printf("                 reverse    - Inverted BSGS baby/giant step roles\n");
 	printf("                 auto       - Cycles: spiral->chaos->gravity->reverse\n");
+	printf("                 hilbert/sobol/halton/density-map - LDS / density planners\n");
+	printf("                 keyhole    - Time-share random 2^W windows (--window-bits)\n");
+	printf("                 pocket     - Coarse 2^P pockets + Sobol visit (--pocket-bits)\n");
+	printf("                 afterimage - Antiloop reseeds (XOR dist; --antiloop-dist)\n");
+	printf("                 driftcompass / twinflame / breadcrumb / clockwork\n");
+	printf("                 lottery    - Short random waves then reseed\n");
+	printf("                 wave       - Alternate low/high halves (alias: waveroulette)\n");
+	printf("               Puzzle walks are MIT reimpls of RCKangaroo ideas (not GPL code).\n");
+	printf("               No sqrt(N) kangaroo claim for address/rmd160 hash160 search.\n");
 	printf("               Works with ALL modes including BSGS.\n");
 	printf("  -rs          Same as -x rseq / -B rseq: random start, sequential chunk, reseed\n");
+	printf("  --window-bits W   Keyhole window width in bits (default 40)\n");
+	printf("  --pocket-bits P   PocketRadar buckets = 2^P (default 16)\n");
+	printf("  --shadow-mod M    ShadowLedger / fiber modulus for -B shadowledger\n");
+	printf("  --antiloop-dist D Afterimage min XOR popcount distance (default 12)\n");
+	printf("  --mod-step M / --mod-rem R   ResidueHerd snap for BSGS/gaudry/kangaroo-mod\n");
 	printf("  --mode MODE  Collider BSGS: sequential | random | rseq\n");
 	printf("  --walk N     Rseq chunk size in keys: 2M, 1B, 1T, 1000000, 0x100000\n");
 	printf("               (also --chunk). Default 1M. Implies --mode rseq if unset.\n\n");

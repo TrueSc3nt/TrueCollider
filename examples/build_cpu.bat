@@ -4,8 +4,12 @@ REM TrueCollider — build CPU (MinGW native) wrapper
 REM Requires: MSYS2 MinGW64 or the toolchain expected by build_mingw_native.bat
 REM Output: keyhunt.exe in repo root
 REM =============================================================================
-setlocal
+setlocal EnableExtensions
 cd /d "%~dp0.."
+if not exist "%CD%\keyhunt.cpp" (
+  echo [E] keyhunt.cpp missing - run from a complete TrueCollider checkout.
+  exit /b 1
+)
 echo [+] Building CPU keyhunt via build_mingw_native.bat ...
-call "%~dp0..\build_mingw_native.bat"
+call "%CD%\build_mingw_native.bat"
 exit /b %ERRORLEVEL%

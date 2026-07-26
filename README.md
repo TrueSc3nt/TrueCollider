@@ -15,7 +15,7 @@
 Based on [Keyhunt](https://github.com/albertobsd/keyhunt) by Alberto · Developed & modified by **TrueScent**  
 Repo: **[github.com/TrueSc3nt/TrueCollider](https://github.com/TrueSc3nt/TrueCollider)**
 
-> [Getting started](docs/GETTING_STARTED.md) · [Command cookbook](docs/COMMANDS.md) · [Full `-h` dump](docs/HELP_DUMP.txt) · [Speeds](docs/SPEEDS.md) · [GPU honesty](gpu/README.md) · [Windows examples](examples/) · [Roadmap](docs/ROADMAP.md)
+> [Getting started](docs/GETTING_STARTED.md) · [Command cookbook](docs/COMMANDS.md) · [Full `-h` dump](docs/HELP_DUMP.txt) · [Speeds](docs/SPEEDS.md) · [GPU honesty](gpu/README.md) · [Full mode bats](bats/) · [Windows examples](examples/) · [Roadmap](docs/ROADMAP.md)
 
 ---
 
@@ -28,19 +28,20 @@ Repo: **[github.com/TrueSc3nt/TrueCollider](https://github.com/TrueSc3nt/TrueCol
 ## Table of contents
 
 1. [Brand / what it is](#brand--what-it-is)
-2. [Quick start (Windows CPU + CUDA)](#quick-start-windows-cpu--cuda)
-3. [Full modes table](#full-modes-table--m)
-4. [Supported coins](#supported-coins--c)
-5. [Complete flag reference](#complete-flag-reference)
-6. [Per-mode command examples](#per-mode-command-examples)
-7. [Online balance checking (`-N`)](#online-balance-checking--n)
-8. [GPU / CUDA](#gpu--cuda)
-9. [BSGS tuning (`-n` / `-k` / `-M`)](#bsgs-tuning--n----k----m)
-10. [Output files](#output-files)
-11. [Performance notes](#performance-notes)
-12. [Example `.bat` index](#example-bat-index)
-13. [Docs map](#docs-map)
-14. [Disclaimer](#disclaimer)
+2. [What's new (walk + BSGS helpers)](#whats-new-walk--bsgs-helpers)
+3. [Quick start (Windows CPU + CUDA)](#quick-start-windows-cpu--cuda)
+4. [Full modes table](#full-modes-table--m)
+5. [Supported coins](#supported-coins--c)
+6. [Complete flag reference](#complete-flag-reference)
+7. [Per-mode command examples](#per-mode-command-examples)
+8. [Online balance checking (`-N`)](#online-balance-checking--n)
+9. [GPU / CUDA](#gpu--cuda)
+10. [BSGS tuning (`-n` / `-k` / `-M`)](#bsgs-tuning--n----k----m)
+11. [Output files](#output-files)
+12. [Performance notes](#performance-notes)
+13. [Example `.bat` index](#example-bat-index)
+14. [Docs map](#docs-map)
+15. [Disclaimer](#disclaimer)
 
 ---
 
@@ -66,6 +67,65 @@ keyhunt_cuda.exe -h
 ```
 
 A machine dump of the current help text lives in [`docs/HELP_DUMP.txt`](docs/HELP_DUMP.txt).
+
+---
+
+## What's new (walk + BSGS helpers)
+
+RCKangaroo-inspired **host walk planners** and **BSGS herd helpers** are wired into `-h`, `bats/`, and the deep audit. These change *where* bases / giant-steps start — they do **not** invent a magic √N oracle for address/hash160 puzzles.
+
+### New `-x` walk modes (address / rmd160 / …)
+
+| Mode | Role | Flags |
+|------|------|-------|
+| `keyhole` | Time-share random 2^W windows | `--window-bits W` (default 40) |
+| `pocket` | Coarse 2^P pockets + Sobol visit | `--pocket-bits P` (default 16) |
+| `afterimage` | Antiloop reseeds (XOR distance) | `--antiloop-dist D` (default 12) |
+| `driftcompass` / `twinflame` / `breadcrumb` / `clockwork` | Host-planned base walks | — |
+| `lottery` | Short random waves then reseed | often with `-n` |
+| `wave` | Alternate low/high halves | alias: `waveroulette` |
+
+Also present: classic Collider patterns (`sequential` `random` `rseq` `chaos` `gravity` `spiral` `reverse` `auto` `hilbert` `sobol` `halton` `density-map`).
+
+```bat
+keyhunt.exe -m address -f tests\66.txt -b 72 -l compress -t 8 -x keyhole --window-bits 40 -q
+keyhunt.exe -m rmd160 -f tests\66.rmd -b 66 -l compress -t 8 -x pocket --pocket-bits 16 -q
+keyhunt.exe -m address -f tests\66.txt -b 66 -x afterimage --antiloop-dist 12 -t 8
+keyhunt.exe -m address -f tests\66.txt -b 75 -x wave -t 8
+```
+
+**Honesty:** address/rmd160 search is **hash160 matching** in a bit range — not ECDLP kangaroo. Walk modes only replan bases.
+
+**CPU vs CUDA:** new `-x` planners are **host-planned**. Prefer CPU (`keyhunt.exe`) or `-U both` carefully; do **not** use `-e` with `-U cuda` / `-U both`. For CUDA address batches, stick to `sequential` / `random` / `rseq` unless you know the host path feeds the GPU correctly.
+
+### New / wired `-B` BSGS helpers
+
+| `-B` | Role |
+|------|------|
+| `modfan` | Fan threads across `rem = tid % M` (`--mod-step`) |
+| `shadowledger` | Speculative fiber mod M (`--shadow-mod`) |
+| `hybrid` | Warmup near range start, then random giants |
+| `residue` | Snap giants to `k ≡ R (mod M)` (`--mod-step` / `--mod-rem`) |
+| `freeze-table` / `compact-dp` | Hygiene tips for `-S` + RAM (`-M`/`-k`) |
+| `dual-range` | Tip: `-x wave` or two processes on split `-r` |
+
+```bat
+keyhunt.exe -m bsgs -f tests\125.txt -b 125 -B modfan --mod-step 16 -t 8 -S
+keyhunt.exe -m bsgs -f tests\125.txt -b 125 -B hybrid -t 8
+keyhunt.exe -m bsgs -f tests\125.txt -B shadowledger --shadow-mod 32 -t 8
+```
+
+**Honesty:** BSGS is discrete-log with a baby table — **not** Pollard kangaroo √N. Residue/ModFan shard herds; they do not change asymptotic complexity.
+
+### Run everything
+
+| Entry | Purpose |
+|-------|---------|
+| [`bats/`](bats/README.md) | 100+ per-mode scripts (`01_address` … `17_puzzles`) |
+| `bats\RUN_ALL_SMOKE.bat` | Quick known-hit / dry smoke |
+| `run_deep_audit.ps1` | Full known-hit matrix → [`docs/DEEP_AUDIT.md`](docs/DEEP_AUDIT.md) |
+| [`docs/COMMANDS.md`](docs/COMMANDS.md) | Cookbook + attribution |
+| [`COLLIDER_MODES_README.md`](COLLIDER_MODES_README.md) | `-x` pattern details |
 
 ---
 
@@ -131,7 +191,7 @@ More compilers: [docs/BUILD.md](docs/BUILD.md). Beginner path: [docs/GETTING_STA
 | `rmd160` | 40-char hex hash160 | Match raw RIPEMD-160 (skip Base58) |
 | `xpoint` | Pubkeys / x-only hex (64 / 66 / 130 chars) | Match public-key **X** |
 | `bsgs` | Compressed / uncompressed pubkeys | Baby-step giant-step DL in a range |
-| `kangaroo` | One pubkey + `-r` / `-b` | Pollard's kangaroo (**CPU only**) |
+| `kangaroo` | One pubkey + `-r` / `-b` | Pollard's kangaroo (CPU; CUDA with `-U cuda`) |
 | `vanity` | Prefix via `-v` (no `-f` required for the prefix) | Address prefix search |
 | `minikeys` | Address list (`-f`) | Bitcoin minikey (`S…`) grind |
 | `mnemonic` | Address list | BIP-39 → BIP-32 → address |
@@ -218,12 +278,14 @@ Parsed from `getopt` in `keyhunt.cpp` and `menu()` / `-h`. **Do not invent flags
 
 | Flag | Arg | Description |
 |------|-----|-------------|
-| `-B` | mode | Giant-step strategy: `sequential` `backward` `both` `random` `dance` |
+| `-B` | mode | Giant-step strategy: `sequential` `backward` `both` `random` `dance` `rseq` `residue` `modfan` `shadowledger` `hybrid` `freeze-table` `compact-dp` `dual-range` |
 | `-k` | value\|`auto` | K factor (prefer powers of 2). `auto` from RAM / `-M` |
 | `-S` | — | Save/load BSGS bloom filters + baby-step table to disk |
 | `-z` | value | Bloom size multiplier (≥ 1). Default 1 |
+| `--mod-step` / `--mod-rem` | M / R | Residue snap for BSGS / gaudry / kangaroo-mod |
+| `--shadow-mod` | M | ShadowLedger fiber modulus (`-B shadowledger`) |
 
-### Search pattern (`-x`) — Collider modes
+### Search pattern (`-x`) — Collider + walk modes
 
 | Value | Description |
 |-------|-------------|
@@ -235,10 +297,23 @@ Parsed from `getopt` in `keyhunt.cpp` and `menu()` / `-h`. **Do not invent flags
 | `spiral` | Archimedean spiral from range midpoint |
 | `reverse` | Inverted BSGS baby/giant roles |
 | `auto` | Cycle spiral → chaos → gravity → reverse |
+| `hilbert` / `sobol` / `halton` / `density-map` | Low-discrepancy / density planners |
+| `keyhole` | Random 2^W windows (`--window-bits`) |
+| `pocket` | Coarse pockets + Sobol (`--pocket-bits`) |
+| `afterimage` | Antiloop reseeds (`--antiloop-dist`) |
+| `driftcompass` / `twinflame` / `breadcrumb` / `clockwork` | Host-planned walks |
+| `lottery` | Short random waves then reseed |
+| `wave` | Alternate low/high halves (alias `waveroulette`) |
+
+| Flag | Description |
+|------|-------------|
+| `--window-bits W` | Keyhole window width in bits (default 40) |
+| `--pocket-bits P` | PocketRadar buckets = 2^P (default 16) |
+| `--antiloop-dist D` | Afterimage min XOR popcount distance (default 12) |
 
 **`-rs` vs plain `-R`:** `-R` is a convenience that sets `FLAGRANDOM` (and BSGS random giant-steps). Address/rmd160 workers already walk N keys after each base pick when not using `-x sequential`. **`-rs` / `-x rseq`** make that habit explicit, force random-base resampling, and default the chunk size to **1 048 576** keys (Mivvvy `group_size²`) unless you pass `-n`.
 
-Works with essentially all modes including BSGS. See also [`COLLIDER_MODES_README.md`](COLLIDER_MODES_README.md).
+Works with essentially all modes including BSGS. See also [`COLLIDER_MODES_README.md`](COLLIDER_MODES_README.md) and [What's new](#whats-new-walk--bsgs-helpers).
 
 ### Performance / backends
 
@@ -330,6 +405,10 @@ keyhunt.exe -m bsgs -f tests\125.txt -b 125 -R -k 512 -t 8 -S -q -s 10
 keyhunt.exe -m bsgs -f tests\125.txt -b 125 -k auto -y
 keyhunt.exe -m bsgs -f tests\125.txt -b 125 -M 8192 -k auto -t 4
 keyhunt.exe -m bsgs -f tests\125.txt -x auto -S -t 8
+keyhunt.exe -m bsgs -f tests\125.txt -b 125 -B modfan --mod-step 16 -t 8 -S
+keyhunt.exe -m bsgs -f tests\125.txt -b 125 -B hybrid -t 8
+keyhunt.exe -m bsgs -f tests\125.txt -B shadowledger --shadow-mod 32 -t 8
+keyhunt.exe -m bsgs -f tests\125.txt -B residue --mod-step 2 --mod-rem 1 -t 4
 ```
 
 ### kangaroo (CPU / CUDA)
@@ -397,9 +476,11 @@ Funding timestamp often used: `1421345234` (2015-01-15). Example:
 
 ```bat
 keyhunt.exe -m address -f tests\unsolvedpuzzles.rmd -b 72 -T 1421345234 -t 8 -x auto
+keyhunt.exe -m address -f tests\66.txt -b 72 -l compress -t 8 -x keyhole --window-bits 40 -q
+keyhunt.exe -m address -f tests\66.txt -b 66 -x pocket --pocket-bits 16 -t 8
 ```
 
-Also see `run_puzzle66_example.bat` and [`PUZZLE_SEARCH_README.md`](PUZZLE_SEARCH_README.md).
+Also see `run_puzzle66_example.bat`, [`bats/17_puzzles/`](bats/17_puzzles/), and [`PUZZLE_SEARCH_README.md`](PUZZLE_SEARCH_README.md).
 
 ---
 
@@ -596,7 +677,9 @@ Example CPU bench snapshot (older SSE host): address ~6–8 Mkeys/s with `-e`; S
 
 ## Example `.bat` index
 
-All under [`examples/`](examples/). Edit threads / targets; run from repo root or any cwd (scripts `cd` to repo root).
+**Full coverage (100+ scripts by mode/setting):** [`bats/`](bats/README.md) — start with `bats\RUN_ALL_SMOKE.bat`.
+
+Shorter curated set under [`examples/`](examples/). Edit threads / targets; run from repo root or any cwd (scripts `cd` to repo root).
 
 | Script | What it runs |
 |--------|----------------|
@@ -615,12 +698,15 @@ All under [`examples/`](examples/). Edit threads / targets; run from repo root o
 | [`minikeys_example.bat`](examples/minikeys_example.bat) | Minikeys |
 | [`xpoint_example.bat`](examples/xpoint_example.bat) | X-point |
 | [`pubkey2addr_example.bat`](examples/pubkey2addr_example.bat) | pubkey2addr |
-| [`balance_check.bat`](examples/balance_check.bat) | Documents `-N` (partial) |
+| [`balance_check.bat`](examples/balance_check.bat) | `-N` smoke (needs curl/network) |
 | [`dry_run.bat`](examples/dry_run.bat) | `-y` CPU + CUDA if present |
-| [`gpu_cuda_address.bat`](examples/gpu_cuda_address.bat) | CUDA address + `-M auto` |
+| [`gpu_cuda_address.bat`](examples/gpu_cuda_address.bat) | CUDA address (`-U cuda -M auto`) |
+| [`gpu_hybrid_both.bat`](examples/gpu_hybrid_both.bat) | Hybrid CPU+CUDA (`-U both`) |
 | [`search_rs_random_sequential.bat`](examples/search_rs_random_sequential.bat) | `-rs` random-sequential (set `USE_CUDA=1` for CUDA) |
 
-Root-level leftovers (still valid): `run_keyhunt.bat`, `run_puzzle66_example.bat`, `run_sol_sample.bat`, `run_gpu_cuda_example.bat`.
+Root helpers: `run_keyhunt.bat`, `run_puzzle66_example.bat`, `run_sol_sample.bat`, `run_gpu_cuda_example.bat`.
+
+Complete mode/settings library: [`bats/`](bats/README.md).
 
 ---
 
@@ -633,10 +719,12 @@ Root-level leftovers (still valid): `run_keyhunt.bat`, `run_puzzle66_example.bat
 | [docs/HELP_DUMP.txt](docs/HELP_DUMP.txt) | Raw `keyhunt.exe -h` |
 | [docs/SPEEDS.md](docs/SPEEDS.md) | Measured rates |
 | [docs/TEST_RESULTS.md](docs/TEST_RESULTS.md) | Smoke PASS/FAIL |
+| [docs/DEEP_AUDIT.md](docs/DEEP_AUDIT.md) | Full known-hit audit (`run_deep_audit.ps1`) |
 | [docs/BUILD.md](docs/BUILD.md) | Compilers |
 | [gpu/README.md](gpu/README.md) | CUDA / OpenCL internals |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Future work |
-| [COLLIDER_MODES_README.md](COLLIDER_MODES_README.md) | `-x` search patterns |
+| [COLLIDER_MODES_README.md](COLLIDER_MODES_README.md) | `-x` search patterns (incl. keyhole/pocket/wave/…) |
+| [bats/README.md](bats/README.md) | Full bat library index |
 | [PUZZLE_SEARCH_README.md](PUZZLE_SEARCH_README.md) | Puzzle notes |
 
 ---

@@ -75,6 +75,18 @@ OBJECTS := research_engine.o research_implants.o oldbloom.o bloom.o base58.o rmd
            ed25519/fe.o ed25519/ge.o ed25519/sc.o ed25519/keypair.o \
            ed25519/sha512_bridge.o
 
+# Windows (native MinGW / cross): use compat getopt (optional -N:: etc.)
+ifneq (,$(filter Windows% MINGW% MSYS% CYGWIN%,$(OS)))
+  OBJECTS += compat/getopt.o
+  CXXFLAGS += -DTRUECOLLIDER_USE_COMPAT_GETOPT
+  CFLAGS   += -DTRUECOLLIDER_USE_COMPAT_GETOPT
+endif
+ifeq ($(OS),Windows)
+  ifeq ($(filter compat/getopt.o,$(OBJECTS)),)
+    OBJECTS += compat/getopt.o
+  endif
+endif
+
 # On x86 (non-Termux), also compile SSE hash files
 ifneq ($(IS_X86),)
   ifneq ($(IS_TERMUX),yes)
@@ -88,6 +100,11 @@ else
 endif
 
 TARGET := keyhunt
+
+# Fail early if the tree is incomplete / corrupt
+ifeq ($(wildcard keyhunt.cpp),)
+$(error keyhunt.cpp missing - sources incomplete/corrupt. Re-clone from https://github.com/TrueSc3nt/TrueCollider)
+endif
 
 default: $(TARGET)
 
@@ -135,6 +152,9 @@ bloom.o: bloom/bloom.cpp bloom/bloom.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # C files
+compat/getopt.o: compat/getopt.c compat/getopt.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
 base58.o: base58/base58.c base58/libbase58.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
