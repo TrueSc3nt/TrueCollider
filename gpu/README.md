@@ -6,7 +6,7 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 
 ## Custom CUDA edition
 
-`keyhunt_cuda.exe` is the **custom CUDA edition**: all TrueCollider modes on `-U cuda`, plus KeyHunt-class **sequential device GRP** (MIT clean-room). CPU twin remains `keyhunt.exe`.
+`keyhunt_cuda.exe` is the **custom CUDA edition**: **CLI parity with `keyhunt.exe`** (every `-m` mode and every flag accepted), plus KeyHunt-class **sequential device GRP** (MIT clean-room). Nothing is compiled out of the CUDA binary’s mode/flag surface.
 
 - GRP window: `TCUDA_GRP_SIZE` (1024) in `gpu/cuda/secp256k1_cuda.h`
 - Packed targets: `scripts/addr_to_hash160.py` → `-f file.hash160`
@@ -15,7 +15,29 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 
 ---
 
-## Status (honest)
+## CLI parity (`keyhunt.exe` vs `keyhunt_cuda.exe`)
+
+Help dumps match for all `-m` modes and flag letters (banner / exe name differ only). `pub2rmd` is removed on **both** (use `-m rmd160`). Research aliases (`shadow160`, `weakrng`, `hybrid-dl`, `gaudry`, `wif-mask`, `hex-mask`, `kangaroo-mod`, `CreateAccountWithSeed`) map to the same host modes on both binaries.
+
+| Mode / flag | Accepted on CUDA binary | Device acceleration | Host-side remainder |
+|-------------|-------------------------|---------------------|---------------------|
+| `-m address` + `-x sequential/rseq` | Yes | **GRP** stride-1 BTC-family | Filter confirm / hit I/O |
+| `-m address` + `-x chaos/auto/…` | Yes | Host plans bases → **CUDA sequential batches** | Walk planner |
+| `-m rmd160` + `-x *` | Yes | Same as address | Walk planner |
+| `-m xpoint` / `vanity` / `pubkey2addr` | Yes | GRP or per-key EC | Prefix / table checks |
+| `-m bsgs` | Yes | Baby-table + GRP giant-step | Bloom / tables in RAM |
+| `-m kangaroo` | Yes | Batch scan (≤2²⁴) / DP walkers | DP table / collision |
+| `-m mnemonic` / `poetry` / `brainwallet` | Yes | CUDA EC after derive | **PBKDF2 / BIP39 / paths on host** |
+| `-m minikeys` | Yes | CUDA EC batch | Minikey gen on host |
+| `-c eth` / `etc` | Yes | GPU EC | **keccak160 encode host** |
+| `-c troot` | Yes | GPU EC | Taproot tweak host |
+| `-c sol` | Yes | Device ed25519 ge when ready | base58 / fallback |
+| `-e` endomorphism | Yes (never rejected) | **Skipped** — CPU endo GRP | Full λ-path on CPU |
+| `-x` planners / `--walk` / research `-R` | Yes | Bases feed CUDA when secp path armed | Planner logic host |
+| `-U opencl` | Yes if built | Hash160 only | EC on CPU |
+| `-U both` | Yes | Even threads CUDA / odd CPU | Hybrid |
+
+### Backend matrix
 
 | Backend | EC (secp256k1) | Address encode | Bloom / filter | Vendors |
 |---------|----------------|----------------|----------------|---------|
@@ -23,30 +45,15 @@ Dispatcher: `gpu/gpu_dispatcher.cpp`.
 | **OpenCL** | Host CPU | On GPU hash160 (`hash160_opencl`) | Host | NVIDIA, AMD, Intel |
 | **CPU** | Host | SSE / AVX2 / AVX-512 | Fuse or bloom | All |
 
-### What CUDA accelerates today
-
-| Path | Status |
-|------|--------|
-| BTC / LTC / DOGE / XRP / BCH / BTG / `all` — `address` / `rmd160` | **Sequential GRP=1024** (device G-table + batch inv + hash160/bloom) when stride=1; else per-key `scalar_mul_g` |
-| ETH / ETC — `address` | GPU EC (uncompressed) + host keccak + host bloom |
-| Taproot (`troot`) — `address` | GPU EC + host taproot tweak + filter |
-| Batch size | **`-M auto`/`-M MB`** sizes from free VRAM (Rotor/Collider style); **`-G`** optional override. Device launches use 256-thread grids in TDR-safe chunks (up to 64K) |
-| Device hash160 bloom search | **Shipped** (`secp_grp_search_kernel` for stride-1; `secp_search_kernel` fallback) |
-| vanity / xpoint / pubkey2addr | Stride-1 uses GRP pubkey/search; sparse/random lists keep per-key EC |
-| minikeys / mnemonic / poetry / brainwallet | GPU EC + filter (per-key; non-consecutive) |
-| BSGS | Baby-table GPU EC + **device GRP giant-step** (`tcuda_bsgs_grp_*`; host bloom). Currently serial per-cycle launches (correct, not yet throughput-tuned) |
-| SOL (`-c sol`) | **Full device** ed25519 `ge_scalarmult_base` (SHA512+clamp+ge); host-ge fallback |
-| Kangaroo | **CUDA** (`-m kangaroo -U cuda`): ≤2²⁴ GPU batch EC scan; larger multi-walker DP (device jumps, host DP table). CPU fallback |
-| OpenCL | Host EC + GPU hash160 only |
-
 ### CUDA path (`-U cuda`)
 
 1. Init: hash160 + secp self-tests → set device vs host filter; `secp_ready`.
 2. Upload bloom to device when hash160 OK (else host-only copy).
 3. Batch privkeys → device EC (+ device hash160/bloom when enabled).
 4. ETH still host keccak; host confirms hits and writes keys.
+5. `-e` / non-accelerable bits: **warn and continue on CPU** (never “not available on CUDA”).
 
-**Limits:** no `-e` on GPU EC; prefer low `-t` with CUDA; BSGS GRP on GPU is correctness-first (serial cycles).
+**Honest limits:** BIP39 PBKDF2 host; ETH keccak host; taproot tweak host; `-e` CPU-only; BSGS GRP correctness-first (serial cycles); prefer `-t 1` with CUDA.
 
 ### OpenCL path (`-U opencl`)
 

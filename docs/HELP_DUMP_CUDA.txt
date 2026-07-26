@@ -1,4 +1,4 @@
-[+] Version TrueCollider Custom CUDA Edition (TC modes + KeyHunt-class GPU hunt), developed & modified by TrueScent
+﻿[+] Version TrueCollider Custom CUDA Edition (TC modes + KeyHunt-class GPU hunt), developed & modified by TrueScent
 [+] Custom CUDA edition: all TrueCollider modes + KeyHunt-class sequential GRP hunt
 [+]   (MIT clean-room; use scripts/ for addr/eth/xpoint -> .bin packs)
 
@@ -112,13 +112,13 @@ USAGE:
       random     - random giant steps (default)
       dance      - triple: top/bottom/random alternation
       rseq       - random start, sequential giant chunk, reseed (--walk)
-      residue    - snap giants to k ≡ R (mod M); --mod-step/--mod-rem
+      residue    - snap giants to k Ôëí R (mod M); --mod-step/--mod-rem
       modfan     - fan threads across rem = tid%M (ModFan-style)
       shadowledger - speculative fiber mod M (--shadow-mod)
       hybrid     - warmup near range start, then random giants
       freeze-table / compact-dp - tips for -S save + RAM hygiene (-M/-k)
       dual-range - tip: -x wave or two processes on split -r
-      (+ research: grumpy, orbit, handoff, sobol-giant, …)
+      (+ research: grumpy, orbit, handoff, sobol-giant, ÔÇª)
     Honesty: BSGS is NOT Pollard kangaroo sqrt(N); table size (-n/-k) sets work/RAM.
 
     Example:
@@ -357,19 +357,21 @@ THREADING & SEARCH PATTERNS:
                (also --chunk). Default 1M. Implies --mode rseq if unset.
 
 PERFORMANCE:
-  -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)
+  -e           Enable GLV endomorphism (3x for address/rmd160/vanity on CPU).
+               With -U cuda: accepted; CUDA EC/GRP batch skipped (CPU endo path).
   -A mode      CPU vectorization (default: auto):
                  auto   - Detect best: AVX-512 -> AVX2 -> SSE -> scalar
                  none, sse, avx, avx2, avx512
                AVX2 = 8-wide hash160; AVX-512 = 16-wide; AVX1/SSE = 4-wide SSE.
   -U backend   GPU backend: none, cuda, opencl, both (default: none)
-                 cuda   = Custom CUDA edition (all -m modes; sequential GRP
-                          address/rmd160/xpoint toward KeyHunt-class Mk/s)
+                 cuda   = Custom CUDA edition: ALL -m modes + ALL -x/-e flags
+                          accepted; sequential GRP accelerates address/rmd160/
+                          xpoint when stride=1 (host hybrid where needed)
                  opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU
                  both   = CPU threads + CUDA GPU together (hybrid)
                keyhunt_cuda.exe: prefer -U cuda -M auto -t 1 -x sequential
-               Mnemonic/poetry use GPU EC (+ CUDA PBKDF2 when available);
-               rates are mnemonics/s, not EC Mk/s.
+               Mnemonic/poetry: host PBKDF2/derive + CUDA EC; rates = mnemonics/s.
+               ETH keccak / taproot tweak / -x planners stay host-side.
   -G N         GPU batch size hint (keys). Default: auto from -M / VRAM
   -M MB|auto   GPU/search memory budget in megabytes (KeyHunt-Cuda style).
   -f FILE      Targets: text addresses/hex OR packed .bin/.hash160/.keccak160

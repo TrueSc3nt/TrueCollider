@@ -1097,7 +1097,7 @@ int research_build_path_pack(ResearchPath *out, int max_out, int pack, int index
 void research_print_banner(void) {
 	research_init_defaults();
 	printf("[+] Research engine: mnemonic recovery / PathNova / MilkSad / Hilbert / Sobol / Shadow160 / ResidueHerd / Electrum / FuseCascade / OrbitBSGS / Collider-bridge / Multicoin\n");
-	printf("[+] GPU: -U cuda → EC/GRP + optional CUDA BIP39 PBKDF2 batch (pbkdf2_sha512_cuda). Checksum-first on host.\n");
+	printf("[+] GPU: -U cuda → CUDA EC/GRP after host BIP39 checksum + PBKDF2/derive (hybrid).\n");
 	printf("[+] Collider aliases: --pb --pk --pke --infile --htsz --baby-bits --wl --wt\n");
 	printf("[+] Collider walk: --mode sequential|random|rseq  --walk 2M|1B|1T|0x100000\n");
 }

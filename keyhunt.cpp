@@ -2781,12 +2781,22 @@ int main(int argc, char **argv)	{
 			g_backend_config.gpu_backend = GPU_BACKEND_NONE;
 		}
 		else if(!gpu_dispatcher_supports_mode(g_gpu_dispatcher, FLAGMODE)) {
-			fprintf(stderr,"[W] GPU backend does not support mode '%s'; running on CPU.\n",
+			/* Never reject a CLI mode on CUDA edition — always continue host-side. */
+			fprintf(stderr,
+				"[W] No GPU acceleration for mode '%s'; continuing on CPU (flag accepted).\n",
 				FLAGMODE == MODE_ADDRESS ? "address" :
 				FLAGMODE == MODE_RMD160 ? "rmd160" :
 				FLAGMODE == MODE_VANITY ? "vanity" :
 				FLAGMODE == MODE_BSGS ? "bsgs" :
 				FLAGMODE == MODE_KANGAROO ? "kangaroo" : "other");
+		} else if(FLAGENDOMORPHISM &&
+			  (FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160 ||
+			   FLAGMODE == MODE_VANITY || FLAGMODE == MODE_XPOINT ||
+			   FLAGMODE == MODE_PUB2ADDR || FLAGMODE == MODE_MINIKEYS)) {
+			/* -e is accepted with -U cuda; GLV λ-checks stay on the CPU GRP path. */
+			fprintf(stderr,
+				"[W] -e endomorphism: CUDA EC/GRP batch skipped; using CPU endomorphism path "
+				"(hybrid OK; mode still runs with -U cuda).\n");
 		} else if(FLAGMODE == MODE_ADDRESS || FLAGMODE == MODE_RMD160 ||
 			  FLAGMODE == MODE_VANITY || FLAGMODE == MODE_XPOINT ||
 			  FLAGMODE == MODE_PUB2ADDR || FLAGMODE == MODE_MINIKEYS ||
@@ -2809,7 +2819,12 @@ int main(int argc, char **argv)	{
 			} else if(FLAGMODE == MODE_MNEMONIC || FLAGMODE == MODE_POETRY ||
 				  FLAGMODE == MODE_BRAINWALLET) {
 				fprintf(stderr,
-					"[+] GPU seed path: derive then CUDA EC (batch %u). Rate = mnemonics/s, not EC Mk/s.\n",
+					"[+] GPU seed path: host derive/PBKDF2 then CUDA EC (batch %u). "
+					"Rate = mnemonics/s, not EC Mk/s.\n",
+					g_backend_config.gpu_batch_size);
+			} else if(FLAGCRYPTO == CRYPTO_ETH || FLAGCRYPTO == CRYPTO_ETC) {
+				fprintf(stderr,
+					"[+] GPU EC enabled for ETH/ETC (batch %u); keccak160 encode stays host-side.\n",
 					g_backend_config.gpu_batch_size);
 			} else {
 				fprintf(stderr,"[+] GPU EC enabled for mode (batch %u keys; -G / -M to tune).\n",
@@ -12525,19 +12540,21 @@ void menu() {
 	printf("               (also --chunk). Default 1M. Implies --mode rseq if unset.\n\n");
 
 	printf("PERFORMANCE:\n");
-	printf("  -e           Enable GLV endomorphism (3x speedup for address/rmd160/vanity)\n");
+	printf("  -e           Enable GLV endomorphism (3x for address/rmd160/vanity on CPU).\n");
+	printf("               With -U cuda: accepted; CUDA EC/GRP batch skipped (CPU endo path).\n");
 	printf("  -A mode      CPU vectorization (default: auto):\n");
 	printf("                 auto   - Detect best: AVX-512 -> AVX2 -> SSE -> scalar\n");
 	printf("                 none, sse, avx, avx2, avx512\n");
 	printf("               AVX2 = 8-wide hash160; AVX-512 = 16-wide; AVX1/SSE = 4-wide SSE.\n");
 	printf("  -U backend   GPU backend: none, cuda, opencl, both (default: none)\n");
-	printf("                 cuda   = Custom CUDA edition (all -m modes; sequential GRP\n");
-	printf("                          address/rmd160/xpoint toward KeyHunt-class Mk/s)\n");
+	printf("                 cuda   = Custom CUDA edition: ALL -m modes + ALL -x/-e flags\n");
+	printf("                          accepted; sequential GRP accelerates address/rmd160/\n");
+	printf("                          xpoint when stride=1 (host hybrid where needed)\n");
 	printf("                 opencl = NVIDIA/AMD/Intel GPU hash160; EC on CPU\n");
 	printf("                 both   = CPU threads + CUDA GPU together (hybrid)\n");
 	printf("               keyhunt_cuda.exe: prefer -U cuda -M auto -t 1 -x sequential\n");
-	printf("               Mnemonic/poetry use GPU EC (+ CUDA PBKDF2 when available);\n");
-	printf("               rates are mnemonics/s, not EC Mk/s.\n");
+	printf("               Mnemonic/poetry: host PBKDF2/derive + CUDA EC; rates = mnemonics/s.\n");
+	printf("               ETH keccak / taproot tweak / -x planners stay host-side.\n");
 	printf("  -G N         GPU batch size hint (keys). Default: auto from -M / VRAM\n");
 	printf("  -M MB|auto   GPU/search memory budget in megabytes (KeyHunt-Cuda style).\n");
 	printf("  -f FILE      Targets: text addresses/hex OR packed .bin/.hash160/.keccak160\n");

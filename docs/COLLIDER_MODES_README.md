@@ -38,7 +38,7 @@ Full bats: [`bats/12_patterns/`](bats/12_patterns/), [`bats/17_puzzles/`](bats/1
 | `lottery` | Short random waves then reseed | often with `-n` |
 | `wave` | Alternate low/high halves | alias: `waveroulette` |
 
-**CPU vs CUDA:** walk planners are host-planned. Prefer CPU for new `-x` modes. Do **not** use `-e` with `-U cuda` / `-U both`.
+**CPU vs CUDA:** walk planners are host-planned; with `-U cuda` each base still feeds a CUDA sequential batch. `-e` is accepted on CUDA but skips the GPU EC batch (CPU endomorphism path). See [`gpu/README.md`](../gpu/README.md) parity table.
 
 **Honesty:** address/rmd160 is hash160 matching in a bit range — walk modes only replan bases. Pubkey-known puzzles → `-m bsgs` / `-m kangaroo`.
 
