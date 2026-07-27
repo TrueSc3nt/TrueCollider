@@ -4687,7 +4687,20 @@ int main(int argc, char **argv)	{
 				free(str_total);
 			}
 		}
-	}while(continue_flag);
+		}while(continue_flag);
+	/* Wait for workers — balance check (-N / scantxoutset) can run for minutes after a hit. */
+	for(j = 0; j < NTHREADS; j++) {
+#if defined(_MSC_VER)
+		if(tid[j]) {
+			WaitForSingleObject(tid[j], INFINITE);
+			CloseHandle(tid[j]);
+			tid[j] = NULL;
+		}
+#else
+		if(tid[j])
+			pthread_join(tid[j], NULL);
+#endif
+	}
 	printf("\nEnd\n");
 #ifdef _MSC_VER
 	CloseHandle(write_keys);
@@ -11069,28 +11082,53 @@ int node_check_balance(const char *address, int crypto_type) {
 		fputs(json_payload, tf);
 		fclose(tf);
 
-		snprintf(cmd, sizeof(cmd),
-			"curl -s --max-time 15 -u %s:%s -H \"Content-Type: application/json\" "
-			"--data-binary @\"%s\" http://%s:%d/ %s",
-			rpc_user, rpc_pass, tmp_path, rpc_host, rpc_port, devnull);
-
-		fp = popen(cmd, "r");
-		if(!fp) {
+		/* Response file: Windows _popen pipes often drop long-running curl stdout. */
+		char out_path[512];
 #if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
-			_unlink(tmp_path);
-#else
-			unlink(tmp_path);
-#endif
-			return -1;
+		{
+			char tmp_dir[MAX_PATH];
+			DWORD n = GetTempPathA(sizeof(tmp_dir), tmp_dir);
+			if(n == 0 || n >= sizeof(tmp_dir))
+				snprintf(tmp_dir, sizeof(tmp_dir), ".");
+			snprintf(out_path, sizeof(out_path), "%skeyhunt_rpc_%u.out", tmp_dir, (unsigned)GetCurrentProcessId());
 		}
+#else
+		snprintf(out_path, sizeof(out_path), "/tmp/keyhunt_rpc_%d.out", (int)getpid());
+#endif
 
-		int bytes_read_rpc = fread(result, 1, sizeof(result) - 1, fp);
-		result[bytes_read_rpc] = '\0';
-		pclose(fp);
+		/*
+		 * scantxoutset walks the full UTXO set — often minutes on mainnet.
+		 * Write curl output to a file (Windows _popen pipes drop long-running stdout).
+		 */
+		snprintf(cmd, sizeof(cmd),
+			"curl -s --max-time 600 -u %s:%s -H \"Content-Type: application/json\" "
+			"--data-binary @\"%s\" -o \"%s\" http://%s:%d/ %s",
+			rpc_user, rpc_pass, tmp_path, out_path, rpc_host, rpc_port, devnull);
+
+		int rc_sys = system(cmd);
 #if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
 		_unlink(tmp_path);
 #else
 		unlink(tmp_path);
+#endif
+		fp = fopen(out_path, "rb");
+		if(!fp) {
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+			_unlink(out_path);
+#else
+			unlink(out_path);
+#endif
+			(void)rc_sys;
+			return -1;
+		}
+
+		int bytes_read_rpc = (int)fread(result, 1, sizeof(result) - 1, fp);
+		result[bytes_read_rpc] = '\0';
+		fclose(fp);
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+		_unlink(out_path);
+#else
+		unlink(out_path);
 #endif
 		if(bytes_read_rpc == 0) return -1;
 
@@ -13462,15 +13500,16 @@ void writekey(bool compressed,Int *key)	{
 	}
 	append_found_file("BTC", block);
 	printf("\nHit! Private Key: %s\npubkey: %s\nAddress %s\nrmd160 %s\n",hextemp,public_key_hex,address,hexrmd);
-	FLAGKEYFOUND = 1;
 
 #if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
 	pthread_mutex_unlock(&write_keys);
 #endif
-	/* Balance check outside the write mutex (may block on curl). writekey addresses are BTC P2PKH. */
+	/* Balance check outside the write mutex (may block on curl / scantxoutset for minutes). */
 	report_hit_balance(address, CRYPTO_BTC, "BTC");
+	/* Set after -N so main does not tear down while the check is still running. */
+	FLAGKEYFOUND = 1;
 	free(hextemp);
 	free(hexrmd);
 }
@@ -13500,7 +13539,6 @@ void writekeyeth(Int *key)	{
 	}
 	append_found_file("ETH", block);
 	printf("\n Hit!!!! Private Key: %s\naddress: %s\n",hextemp,address);
-	FLAGKEYFOUND = 1;
 #if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
@@ -13508,6 +13546,7 @@ void writekeyeth(Int *key)	{
 #endif
 	report_hit_balance(address,
 		(FLAGCRYPTO == CRYPTO_ETC) ? CRYPTO_ETC : CRYPTO_ETH, "ETH");
+	FLAGKEYFOUND = 1;
 	free(hextemp);
 }
 
@@ -13546,13 +13585,13 @@ void writekeysol(Int *key)	{
 	}
 	append_found_file("SOL", block);
 	printf("\nHit! Solana seed: %s\npubkey: %s\nAddress: %s\n", hextemp, pubkey_hex, address);
-	FLAGKEYFOUND = 1;
 #if defined(_MSC_VER)
 	ReleaseMutex(write_keys);
 #else
 	pthread_mutex_unlock(&write_keys);
 #endif
 	report_hit_balance(address, CRYPTO_SOL, "SOL");
+	FLAGKEYFOUND = 1;
 	free(hextemp);
 }
 
