@@ -767,4 +767,5 @@ See repository license. Upstream: Alberto Keyhunt, Jean Luc Pons lineage (Vanity
 
 **Donations (project tip jars from built-in help):**
 
-- BTC:1HmztBLDnwwaKAGbtALsYvCNBuoJYEic3h
+- BTC:1LVNm9RzVVhXpiDbRrEdoJc4g9ZvU5v4PE
+- Eth:0xd79ae898d56de0b9dedc0b3ce28880ce48bc79b6
